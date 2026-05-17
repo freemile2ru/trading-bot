@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --yes create-vite@latest frontend --template react-ts --yes)",
+      "Bash(npx --yes create-vite@latest frontend-app --template react-ts)",
+      "Bash(mv frontend-app/* frontend/)",
+      "Bash(mv frontend-app/.* frontend/)",
+      "Bash(npx create-vite@latest tmp-frontend --template react-ts)",
+      "Bash(npm --version)",
+      "Bash(chmod +x /Users/freemile/Desktop/AI-trader/start.sh)",
+      "Bash(which nvm *)",
+      "Read(//Users/freemile/.nvm/versions/node/**)",
+      "Bash(pip3 --version)",
+      "Bash(ls venv *)",
+      "Bash(venv/bin/python --version)",
+      "Bash(brew list *)",
+      "Read(//usr/local/bin/**)",
+      "Read(//opt/homebrew/**)",
+      "Bash(/usr/local/bin/python3.12 --version)",
+      "Bash(rm -rf /Users/freemile/Desktop/AI-trader/backend/venv)",
+      "Bash(/usr/local/bin/python3.12 -m venv /Users/freemile/Desktop/AI-trader/backend/venv)",
+      "Bash(/Users/freemile/Desktop/AI-trader/backend/venv/bin/python --version)",
+      "Bash(echo \"Done: $\\(/Users/freemile/Desktop/AI-trader/backend/venv/bin/python --version\\)\")",
+      "Bash(venv/bin/pip install *)",
+      "Bash(venv/bin/python -c \"import fastapi, pandas, numpy, anthropic, httpx, vaderSentiment; print\\('All imports OK'\\)\")",
+      "Bash(timeout 5 venv/bin/python -c ' *)",
+      "Bash(venv/bin/python -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(npx tsc *)"
+    ],
+    "additionalDirectories": [
+      "/Users/freemile/Desktop/AI-trader/tmp-frontend"
+    ]
+  }
+}

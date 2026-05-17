@@ -1,0 +1,22 @@
+# Core
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-dotenv==1.0.1
+pydantic==2.10.3
+httpx==0.28.1
+
+# Data
+ccxt==4.4.47
+pandas==2.2.3
+numpy>=1.26.0
+
+# AI / Claude
+anthropic==0.40.0
+
+# Sentiment
+textblob==0.18.0
+vaderSentiment==3.3.2
+
+# Utils
+python-dateutil==2.9.0
+pytz==2024.2

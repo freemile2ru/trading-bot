@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #0a0e1a;
+  color: #e5e7eb;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+@layer components {
+  .card {
+    @apply bg-gray-900 border border-gray-800 rounded-xl p-4;
+  }
+  .badge-buy {
+    @apply bg-emerald-900/40 text-emerald-400 border border-emerald-700/50 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+  .badge-sell {
+    @apply bg-red-900/40 text-red-400 border border-red-700/50 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+  .badge-hold {
+    @apply bg-yellow-900/40 text-yellow-400 border border-yellow-700/50 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+  .badge-neutral {
+    @apply bg-gray-800 text-gray-400 border border-gray-700 text-xs font-bold px-2 py-0.5 rounded-full;
+  }
+}
