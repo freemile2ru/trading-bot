@@ -5,7 +5,9 @@ import { SignalScores } from './components/SignalScores'
 import { Portfolio } from './components/Portfolio'
 import { PriceChart } from './components/PriceChart'
 import { PipelineStatus } from './components/PipelineStatus'
+import { AlarmBanner } from './components/AlarmBanner'
 import { useOracle } from './hooks/useOracle'
+import { useAlarm } from './hooks/useAlarm'
 import { api } from './utils/api'
 import type { Portfolio as PortfolioType } from './types/oracle'
 import clsx from 'clsx'
@@ -21,6 +23,11 @@ export default function App() {
   const [execMessage, setExecMessage] = useState<string | null>(null)
 
   const { data: oracle, loading, error, refresh, lastUpdated, countdown } = useOracle(symbol)
+
+  const { isAlarming, dismiss } = useAlarm(
+    oracle?.oracle ?? null,
+    oracle?.signal_package ?? null,
+  )
 
   const fetchPortfolio = useCallback(async () => {
     try {
@@ -58,9 +65,21 @@ export default function App() {
   const canTrade = rec && rec.action !== 'HOLD' && rec.confidence >= 60
 
   return (
-    <div className="min-h-screen bg-oracle-bg text-gray-100">
+    <div className={clsx('min-h-screen bg-oracle-bg text-gray-100', isAlarming && 'pt-14')}>
+      {/* Alarm banner — fixed at top, pushes layout down via pt-14 */}
+      {isAlarming && oracle && (
+        <AlarmBanner
+          oracle={oracle.oracle}
+          signal={oracle.signal_package}
+          onDismiss={dismiss}
+        />
+      )}
+
       {/* Header */}
-      <header className="border-b border-gray-800 px-6 py-3 sticky top-0 z-10 bg-oracle-bg/95 backdrop-blur">
+      <header className={clsx(
+        'border-b border-gray-800 px-6 py-3 z-10 bg-oracle-bg/95 backdrop-blur',
+        isAlarming ? 'sticky top-14' : 'sticky top-0',
+      )}>
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
