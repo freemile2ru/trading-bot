@@ -1,4 +1,4 @@
-import type { OracleResponse, Portfolio, PaperTrade, Candle, SignalHistoryEntry } from '../types/oracle'
+import type { OracleResponse, Portfolio, PaperTrade, Candle, SignalHistoryEntry, OracleResult, SignalPackage } from '../types/oracle'
 
 const BASE = '/api'
 
@@ -56,5 +56,21 @@ export const api = {
       del<PaperTrade>(`/paper/trade/${id}?current_price=${price}`),
     reset: (balance = 10000) =>
       post<{ message: string; balance: number }>(`/paper/reset?starting_balance=${balance}`),
+  },
+  notify: {
+    signal: (oracle: OracleResult, signal: SignalPackage) => {
+      const rec = oracle.trade_recommendation
+      return post<{ email_sent: boolean; sms_sent: boolean }>('/notify/signal', {
+        symbol: rec.symbol,
+        action: rec.action,
+        confidence: rec.confidence,
+        entry_price: rec.entry_price,
+        stop_loss: rec.stop_loss,
+        take_profit_1: rec.take_profit_1,
+        composite_score: signal.composite_score,
+        hold_duration: rec.hold_duration,
+        primary_thesis: oracle.reasoning?.primary_thesis ?? '',
+      })
+    },
   },
 }

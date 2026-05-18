@@ -26,7 +26,10 @@
       "Bash(timeout 5 venv/bin/python -c ' *)",
       "Bash(venv/bin/python -c ' *)",
       "Bash(python -c ' *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(pip list *)",
+      "Bash(./venv/bin/python3 -c ' *)",
+      "Bash(./venv/bin/python3 -c \"import analysis.technical; import analysis.scoring; print\\('OK'\\)\")"
     ],
     "additionalDirectories": [
       "/Users/freemile/Desktop/AI-trader/tmp-frontend"

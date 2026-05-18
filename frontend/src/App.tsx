@@ -13,7 +13,7 @@ import type { Portfolio as PortfolioType } from './types/oracle'
 import clsx from 'clsx'
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
-type Tab = 'signal' | 'chart' | 'portfolio'
+type Tab = 'signal' | 'portfolio'
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('signal')
@@ -187,7 +187,6 @@ export default function App() {
         <div className="flex gap-1 border-b border-gray-800">
           {([
             ['signal', BarChart2, 'Signal'],
-            ['chart', Activity, 'Chart'],
             ['portfolio', Briefcase, 'Portfolio'],
           ] as const).map(([t, Icon, label]) => (
             <button
@@ -235,18 +234,15 @@ export default function App() {
               <OracleSignal oracle={oracle.oracle} />
               <SignalScores signal={oracle.signal_package} />
             </div>
+            <PriceChart
+              symbol={symbol}
+              recommendation={oracle.oracle?.trade_recommendation}
+              timeframeSignals={oracle.signal_package.ta_summary.timeframe_signals}
+            />
             {oracle.pipeline_status && (
               <PipelineStatus status={oracle.pipeline_status} />
             )}
           </div>
-        )}
-
-        {/* Chart tab */}
-        {tab === 'chart' && oracle && (
-          <PriceChart
-            symbol={symbol}
-            recommendation={oracle.oracle?.trade_recommendation}
-          />
         )}
 
         {/* Portfolio tab */}

@@ -122,7 +122,7 @@ async def fetch_market_snapshot(symbol: str) -> dict:
     async with httpx.AsyncClient(timeout=12) as client:
         ohlcv_tasks = {
             interval: fetch_ohlcv(symbol, interval, 200, client)
-            for interval in ["15m", "1h", "4h", "1d"]
+            for interval in ["15m", "30m", "1h", "4h"]
         }
         results = await asyncio.gather(
             *ohlcv_tasks.values(),

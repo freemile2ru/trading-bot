@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { OracleResult, SignalPackage } from '../types/oracle'
+import { api } from '../utils/api'
 
-const CONFIDENCE_MIN = 75   // >= 75% confidence
+const CONFIDENCE_MIN = 70   // >= 75% confidence
 const SCORE_MIN = 0.45      // |composite_score| >= 0.45
 
 function signalKey(oracle: OracleResult): string {
@@ -12,6 +13,7 @@ function signalKey(oracle: OracleResult): string {
 function isStrongSignal(oracle: OracleResult | null, signal: SignalPackage | null): boolean {
   if (!oracle || !signal || oracle.error) return false
   const rec = oracle.trade_recommendation
+  //return true;
   return (
     rec.action !== 'HOLD' &&
     rec.confidence >= CONFIDENCE_MIN &&
@@ -68,6 +70,7 @@ class AlarmPlayer {
 export function useAlarm(oracle: OracleResult | null, signal: SignalPackage | null) {
   const [isAlarming, setIsAlarming] = useState(false)
   const dismissedKeyRef = useRef<string | null>(null)
+  const notifiedKeyRef = useRef<string | null>(null)
   const playerRef = useRef<AlarmPlayer | null>(null)
 
   const dismiss = useCallback(() => {
@@ -86,6 +89,11 @@ export function useAlarm(oracle: OracleResult | null, signal: SignalPackage | nu
       setIsAlarming(true)
       if (!playerRef.current) {
         try { playerRef.current = new AlarmPlayer() } catch { /* Web Audio unavailable */ }
+      }
+      // Fire email + SMS once per unique signal
+      if (key !== notifiedKeyRef.current) {
+        notifiedKeyRef.current = key
+        api.notify.signal(oracle, signal).catch(() => { /* notification errors are non-fatal */ })
       }
     } else if (!strong) {
       // Signal weakened — stop alarm so it re-arms on next strong signal

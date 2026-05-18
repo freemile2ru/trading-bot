@@ -4,15 +4,16 @@ import {
   ReferenceLine, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
 import { api } from '../utils/api'
-import type { Candle, TradeRecommendation } from '../types/oracle'
+import type { Candle, TradeRecommendation, TimeframeSignal } from '../types/oracle'
 import clsx from 'clsx'
 
-const INTERVALS = ['15m', '1h', '4h', '1d'] as const
+const INTERVALS = ['15m', '30m', '1h', '4h'] as const
 type Interval = typeof INTERVALS[number]
 
 interface Props {
   symbol: string
   recommendation?: TradeRecommendation
+  timeframeSignals?: Record<string, TimeframeSignal>
 }
 
 interface ChartPoint {
@@ -26,7 +27,6 @@ interface ChartPoint {
 
 function formatTime(ms: number, interval: Interval): string {
   const d = new Date(ms)
-  if (interval === '1d') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   if (interval === '4h') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
@@ -55,7 +55,7 @@ function PriceTooltip({ active, payload, label }: { active?: boolean; payload?: 
   )
 }
 
-export function PriceChart({ symbol, recommendation }: Props) {
+export function PriceChart({ symbol, recommendation, timeframeSignals }: Props) {
   const [interval, setInterval] = useState<Interval>('1h')
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(false)
@@ -70,10 +70,17 @@ export function PriceChart({ symbol, recommendation }: Props) {
       .finally(() => setLoading(false))
   }, [symbol, interval])
 
+  const srData = timeframeSignals?.[interval]
   const chartData = toChartData(candles, interval)
   const prices = candles.map(c => c.close)
-  const minPrice = prices.length ? Math.min(...prices) * 0.9995 : 0
-  const maxPrice = prices.length ? Math.max(...prices) * 1.0005 : 0
+
+  // Expand domain to include S/R levels so reference lines are visible
+  const srLevels = srData
+    ? [srData.pivot, srData.resistance_1, srData.resistance_2, srData.support_1, srData.support_2].filter(Boolean)
+    : []
+  const allPrices = [...prices, ...srLevels]
+  const minPrice = allPrices.length ? Math.min(...allPrices) * 0.999 : 0
+  const maxPrice = allPrices.length ? Math.max(...allPrices) * 1.001 : 0
 
   const rec = recommendation
   const hasLevels = rec && rec.action !== 'HOLD' && rec.entry_price > 0
@@ -113,17 +120,22 @@ export function PriceChart({ symbol, recommendation }: Props) {
       {!loading && !error && chartData.length > 0 && (
         <>
           {/* Trade level legend */}
-          {hasLevels && (
-            <div className="flex flex-wrap gap-3 text-xs">
+          <div className="flex flex-wrap gap-3 text-xs">
+            {hasLevels && <>
               <LevelTag color="text-blue-400" label="Entry" value={rec.entry_price} />
               <LevelTag color="text-red-400" label="Stop" value={rec.stop_loss} />
               <LevelTag color="text-emerald-400" label="TP1" value={rec.take_profit_1} />
               <LevelTag color="text-teal-300" label="TP2" value={rec.take_profit_2} />
-            </div>
-          )}
+            </>}
+            {srData?.resistance_2 && <LevelTag color="text-orange-300" label="R2" value={srData.resistance_2} />}
+            {srData?.resistance_1 && <LevelTag color="text-orange-400" label="R1" value={srData.resistance_1} />}
+            {srData?.pivot && <LevelTag color="text-gray-400" label="Pivot" value={srData.pivot} />}
+            {srData?.support_1 && <LevelTag color="text-green-400" label="S1" value={srData.support_1} />}
+            {srData?.support_2 && <LevelTag color="text-green-300" label="S2" value={srData.support_2} />}
+          </div>
 
           {/* Main price chart */}
-          <ResponsiveContainer width="100%" height={220}>
+          <ResponsiveContainer width="100%" height={440}>
             <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
@@ -155,6 +167,11 @@ export function PriceChart({ symbol, recommendation }: Props) {
                 <ReferenceLine y={rec.take_profit_1} stroke="#10b981" strokeDasharray="4 2" strokeWidth={1.5} />
                 <ReferenceLine y={rec.take_profit_2} stroke="#14b8a6" strokeDasharray="4 2" strokeWidth={1.5} />
               </>}
+              {srData?.pivot && <ReferenceLine y={srData.pivot} stroke="#9ca3af" strokeDasharray="2 2" strokeWidth={1} />}
+              {srData?.resistance_1 && <ReferenceLine y={srData.resistance_1} stroke="#f97316" strokeDasharray="4 2" strokeWidth={1.5} />}
+              {srData?.resistance_2 && <ReferenceLine y={srData.resistance_2} stroke="#fdba74" strokeDasharray="2 4" strokeWidth={1} />}
+              {srData?.support_1 && <ReferenceLine y={srData.support_1} stroke="#4ade80" strokeDasharray="4 2" strokeWidth={1.5} />}
+              {srData?.support_2 && <ReferenceLine y={srData.support_2} stroke="#86efac" strokeDasharray="2 4" strokeWidth={1} />}
 
               <Area
                 type="monotone"
@@ -169,7 +186,7 @@ export function PriceChart({ symbol, recommendation }: Props) {
           </ResponsiveContainer>
 
           {/* Volume chart */}
-          <ResponsiveContainer width="100%" height={50}>
+          <ResponsiveContainer width="100%" height={100}>
             <ComposedChart data={chartData} margin={{ top: 0, right: 4, left: 0, bottom: 0 }}>
               <YAxis hide domain={['auto', 'auto']} />
               <Bar dataKey="volume" name="volume" radius={[1, 1, 0, 0]}>

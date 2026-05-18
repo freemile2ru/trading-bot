@@ -29,9 +29,11 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     datefmt="%H:%M:%S",
 )
-# httpx logs every HTTP request/response at INFO — too noisy; only show warnings+
+# httpx and twilio log every HTTP request/response at INFO — too noisy; only show warnings+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("twilio").setLevel(logging.WARNING)
+logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
 logger = logging.getLogger("oracle")
 
 

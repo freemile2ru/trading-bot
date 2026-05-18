@@ -27,8 +27,17 @@ def score_macro(macro_data: dict, fear_greed: dict) -> float:
     score = 0.0
     count = 0
 
+    # Fear & Greed: contrarian at extremes, neutral in mid-range.
+    # Professional crypto traders buy extreme fear, sell extreme greed.
     fg = fear_greed.get("value", 50)
-    score += (fg - 50) / 50
+    if fg <= 15:    fg_score = 0.80    # Extreme fear → contrarian strong buy
+    elif fg <= 30:  fg_score = 0.50    # Fear → contrarian buy
+    elif fg <= 45:  fg_score = 0.15    # Mild fear → slight bullish lean
+    elif fg <= 55:  fg_score = 0.00    # Neutral
+    elif fg <= 70:  fg_score = -0.15   # Mild greed → slight bearish lean
+    elif fg <= 85:  fg_score = -0.50   # Greed → contrarian sell
+    else:           fg_score = -0.80   # Extreme greed → contrarian strong sell
+    score += fg_score
     count += 1
 
     if macro_data.get("yield_curve_inverted"):
@@ -97,6 +106,18 @@ def score_onchain(onchain: dict) -> float:
     return max(-1.0, min(1.0, score / count if count else 0.0))
 
 
+def _pick_top_headlines(news: dict) -> list[str]:
+    """Return up to 6 headlines across all categories, interleaving sources."""
+    crypto = [a.get("title") for a in (news.get("cryptopanic", []) + news.get("crypto_news", []))[:4]]
+    macro = [a.get("title") for a in news.get("macro_news", [])[:2]]
+    geo = [a.get("title") for a in news.get("geopolitical_news", [])[:1]]
+    combined = []
+    for h in crypto + macro + geo:
+        if h and h not in combined:
+            combined.append(h)
+    return combined[:6]
+
+
 def build_signal_package(
     symbol: str,
     ta_result: dict,
@@ -134,16 +155,32 @@ def build_signal_package(
     composite = max(-1.0, min(1.0, composite * alignment_mult))
 
     direction = "long" if composite > 0.1 else "short" if composite < -0.1 else "neutral"
-    confidence = min(100, int(abs(composite) * 100 * 1.5))
+
+    # Confidence from three factors:
+    #   1. Signal strength — composite magnitude (max 65 pts)
+    #   2. TF alignment bonus/penalty (up to ±20 pts)
+    #   3. Convergence — proportion of TFs agreeing (up to ±10 pts)
+    strength_conf = min(65, int(abs(composite) * 100))
+    mult = alignment.get("multiplier", 1.0)
+    if mult >= 1.4:     align_bonus = 20
+    elif mult >= 1.2:   align_bonus = 10
+    elif mult <= 0.75:  align_bonus = -20
+    else:               align_bonus = 0
+    bull_tfs = alignment.get("bullish_tfs", 0)
+    bear_tfs = alignment.get("bearish_tfs", 0)
+    total_tfs = max(alignment.get("total_tfs", 1), 1)
+    dominant = max(bull_tfs, bear_tfs)
+    conv_bonus = int((dominant / total_tfs - 0.5) * 20)   # -10 to +10
+    confidence = min(95, max(5, strength_conf + align_bonus + conv_bonus))
 
     best_tf = ta_result.get("best_timeframe", "1h")
     timeframes = ta_result.get("timeframes", {})
 
     hold_map = {
         "15m": {"strong": "2-6 hours", "moderate": "1-3 hours", "weak": "30-60 min"},
+        "30m": {"strong": "4-12 hours", "moderate": "2-6 hours", "weak": "1-2 hours"},
         "1h": {"strong": "12-48 hours", "moderate": "4-12 hours", "weak": "1-4 hours"},
         "4h": {"strong": "3-7 days", "moderate": "1-3 days", "weak": "4-12 hours"},
-        "1d": {"strong": "1-4 weeks", "moderate": "3-7 days", "weak": "1-3 days"},
     }
     strength = "strong" if abs(composite) > 0.5 else "moderate" if abs(composite) > 0.25 else "weak"
     hold_duration = hold_map.get(best_tf, {}).get(strength, "4-12 hours")
@@ -185,6 +222,8 @@ def build_signal_package(
             "bb_squeeze": d.get("bollinger_bands", {}).get("squeeze", False),
             "ema_alignment": d.get("ema_cloud", {}).get("ema_alignment"),
             "adx": d.get("adx", {}).get("adx"),
+            "adx_slope": d.get("adx", {}).get("adx_slope"),
+            "adx_momentum": d.get("adx", {}).get("trend_momentum"),
             "adx_strength": d.get("adx", {}).get("trend_strength"),
             "stoch_k": d.get("stochastic", {}).get("k"),
             "volume_ratio": d.get("volume", {}).get("volume_ratio"),
@@ -201,6 +240,10 @@ def build_signal_package(
             "ichimoku_tk_cross": d.get("ichimoku", {}).get("tk_cross"),
             "ichimoku_above_cloud": d.get("ichimoku", {}).get("above_cloud"),
             "ichimoku_cloud_color": d.get("ichimoku", {}).get("cloud_color"),
+            "vwap": d.get("vwap", {}).get("vwap"),
+            "vwap_above": d.get("vwap", {}).get("price_above_vwap"),
+            "vwap_deviation_pct": d.get("vwap", {}).get("deviation_pct"),
+            "cmf": d.get("cmf"),
             "candlestick_patterns": d.get("candlestick_patterns", {}).get("detected", []),
             "pattern_signal": d.get("candlestick_patterns", {}).get("signal"),
             "fib_position": d.get("fibonacci", {}).get("price_position"),
@@ -243,10 +286,7 @@ def build_signal_package(
         "news_summary": {
             "aggregate_sentiment": news.get("aggregate_label"),
             "total_articles": news.get("total_articles"),
-            "top_headlines": [
-                a.get("title") for a in
-                (news.get("cryptopanic", []) + news.get("crypto_news", []))[:5]
-            ],
+            "top_headlines": _pick_top_headlines(news),
         },
         "macro_summary": {
             "yield_curve_inverted": macro.get("yield_curve_inverted"),

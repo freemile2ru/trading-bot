@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """You are a professional crypto trading oracle — a battle-tes
 
 ## Internal reasoning steps (not in output — think through these then write JSON):
 1. What is the dominant market regime (trending/ranging/volatile)?
-2. Do the 4h and 1d agree on direction? What about 1h/15m?
+2. Do the 4h and 1h agree on direction? What about 30m/15m?
 3. List the 3 strongest confirming signals.
 4. List the 2 biggest risk factors and the invalidation price.
 5. Calculate precise entry (current price ± spread), stop (1.5× ATR behind S/R), TP1 (2× risk), TP2 (3× risk).
@@ -55,7 +55,7 @@ You MUST respond with ONLY a valid JSON object — no markdown, no prose, no cod
     "take_profit_2": <number>,
     "take_profit_3": <number>,
     "risk_reward_ratio": "<X:1>",
-    "timeframe": "<best trading timeframe e.g. 4h, 1d>",
+    "timeframe": "<best trading timeframe e.g. 4h, 1h>",
     "hold_duration": "<human-readable e.g. 2-5 days>",
     "confidence": <integer 0-100>,
     "position_size_suggestion": "<% of portfolio e.g. 2-3%>"
@@ -179,8 +179,9 @@ def _build_user_message(pkg: dict, global_market: dict | None) -> str:
             f"  RSI: {_fmt(d.get('rsi'), '.1f')} ({d.get('rsi_signal', 'N/A')}) | Divergence: {d.get('rsi_divergence', 'none')}",
             f"  MACD: histogram={_fmt(d.get('macd_histogram'), '.4f')}, cross={d.get('macd_cross', 'none')}",
             f"  Bollinger: {d.get('bb_position', 'N/A')} | Squeeze: {d.get('bb_squeeze', False)}",
-            f"  EMA Alignment: {d.get('ema_alignment', 'N/A')} | ADX: {_fmt(d.get('adx'), '.1f')} ({d.get('adx_strength', 'N/A')})",
-            f"  Stoch K: {_fmt(d.get('stoch_k'), '.1f')} | Volume: {d.get('volume_signal', 'N/A')}",
+            f"  EMA Alignment: {d.get('ema_alignment', 'N/A')} | ADX: {_fmt(d.get('adx'), '.1f')} ({d.get('adx_strength', 'N/A')}, {d.get('adx_momentum', 'flat')}, slope {_fmt(d.get('adx_slope'), '+.1f')})",
+            f"  Stoch K: {_fmt(d.get('stoch_k'), '.1f')} | Volume: {d.get('volume_signal', 'N/A')} | OBV: {d.get('obv_trend', 'N/A')}",
+            f"  VWAP: ${_fmt(d.get('vwap'), ',.4f')} | {'Above' if d.get('vwap_above') else 'Below'} ({_fmt(d.get('vwap_deviation_pct'), '+.2f')}%) | CMF: {_fmt(d.get('cmf'), '+.3f')}",
             f"  Ichimoku: signal={d.get('ichimoku_signal', 'N/A')}, TK_cross={d.get('ichimoku_tk_cross', 'none')}, above_cloud={d.get('ichimoku_above_cloud', 'N/A')}, cloud_color={d.get('ichimoku_cloud_color', 'N/A')}",
             f"  Candlestick: {pattern_str} → {d.get('pattern_signal', 'neutral')}",
             f"  Fibonacci: position={_fmt(d.get('fib_position', 0.5), '.2f')}, support=${_fmt(fib_sup, '.4f')}, resistance=${_fmt(fib_res, '.4f')}, near_support={d.get('fib_near_support', False)}, near_resistance={d.get('fib_near_resistance', False)}",

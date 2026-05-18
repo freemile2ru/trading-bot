@@ -171,7 +171,7 @@ export function SignalScores({ signal }: Props) {
         <div className="border-t border-gray-800 pt-3">
           <div className="text-xs text-gray-500 font-semibold uppercase tracking-wide mb-2">Top Headlines</div>
           <ul className="space-y-1">
-            {signal.news_summary.top_headlines.filter(Boolean).slice(0, 4).map((h, i) => (
+            {signal.news_summary.top_headlines.filter(Boolean).slice(0, 6).map((h, i) => (
               <li key={i} className="text-xs text-gray-400 truncate">• {h}</li>
             ))}
           </ul>

@@ -20,3 +20,6 @@ vaderSentiment==3.3.2
 # Utils
 python-dateutil==2.9.0
 pytz==2024.2
+
+# Notifications (optional — SMS requires Twilio account)
+twilio>=9.0.0

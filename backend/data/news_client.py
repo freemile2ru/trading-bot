@@ -103,8 +103,11 @@ async def fetch_all_news(symbol: str = "BTC") -> dict:
 
     cp, crypto, macro, geo = await asyncio.gather(
         fetch_cryptopanic(currencies=coin, filter_="hot"),
-        fetch_newsapi(query=f"{coin_name} crypto", page_size=15),
-        fetch_newsapi(query="Federal Reserve interest rates inflation economy", page_size=10),
+        fetch_newsapi(query=f"{coin_name} crypto earnings SEC regulation", page_size=15),
+        fetch_newsapi(
+            query="Federal Reserve FOMC interest rates inflation CPI jobs earnings",
+            page_size=10,
+        ),
         fetch_newsapi(query="war geopolitical crisis sanctions", page_size=10),
     )
 

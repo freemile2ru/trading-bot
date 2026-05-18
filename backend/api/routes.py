@@ -28,7 +28,7 @@ VALID_SYMBOLS = {
     "MATICUSDT", "UNIUSDT",
 }
 
-VALID_INTERVALS = {"1m", "5m", "15m", "1h", "4h", "1d", "1w"}
+VALID_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"}
 
 
 def _validate_symbol(symbol: str) -> str:
@@ -285,3 +285,69 @@ async def oracle_and_execute(
         oracle_reasoning=oracle.get("reasoning", {}).get("primary_thesis", ""),
     )
     return {"message": "Paper trade opened", "trade": trade, "oracle": oracle}
+
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+_NOTIFY_COOLDOWN = 300  # 5 minutes between alerts
+_last_notify_ts: float = 0.0
+
+
+class NotifySignalRequest(BaseModel):
+    symbol: str
+    action: str
+    confidence: int
+    entry_price: float
+    stop_loss: float
+    take_profit_1: float
+    composite_score: float
+    hold_duration: str
+    primary_thesis: str = ""
+
+
+@router.post("/notify/signal")
+async def notify_signal(req: NotifySignalRequest):
+    """Send email + SMS alert for a strong trade signal. Called by the frontend alarm."""
+    global _last_notify_ts
+    import time
+    import asyncio as _asyncio
+    from data.notifications import send_email, send_sms
+
+    now = time.time()
+    elapsed = now - _last_notify_ts
+    if elapsed < _NOTIFY_COOLDOWN:
+        remaining = int(_NOTIFY_COOLDOWN - elapsed)
+        return {"email_sent": False, "sms_sent": False, "cooldown_remaining_seconds": remaining}
+
+    _last_notify_ts = now
+
+    arrow = "▲" if req.action == "BUY" else "▼"
+    subject = f"{arrow} {req.action} {req.symbol} — {req.confidence}% confidence | Crypto Oracle"
+    body = (
+        f"CRYPTO ORACLE TRADE ALERT\n"
+        f"{'=' * 40}\n"
+        f"Signal:      {req.action} {req.symbol}\n"
+        f"Confidence:  {req.confidence}%\n"
+        f"Score:       {req.composite_score:+.3f}\n"
+        f"\n"
+        f"Entry:       ${req.entry_price:,.2f}\n"
+        f"Stop Loss:   ${req.stop_loss:,.2f}\n"
+        f"Take Profit: ${req.take_profit_1:,.2f}\n"
+        f"Hold:        {req.hold_duration}\n"
+        f"\n"
+        f"Thesis: {req.primary_thesis}\n"
+    )
+    sms_body = (
+        f"{arrow} {req.action} {req.symbol} | {req.confidence}% conf | "
+        f"Score {req.composite_score:+.3f} | "
+        f"Entry ${req.entry_price:,.2f} | "
+        f"Stop ${req.stop_loss:,.2f} | "
+        f"TP ${req.take_profit_1:,.2f} | "
+        f"{req.hold_duration}"
+    )
+
+    email_ok, sms_ok = await _asyncio.gather(
+        _asyncio.to_thread(send_email, subject, body),
+        _asyncio.to_thread(send_sms, sms_body),
+    )
+    return {"email_sent": email_ok, "sms_sent": sms_ok, "cooldown_remaining_seconds": 0}
