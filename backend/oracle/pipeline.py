@@ -3,12 +3,7 @@
 import asyncio
 import logging
 import time
-from data.binance_client import fetch_market_snapshot
-from data.coingecko_client import get_for_symbol, fetch_global_market
-from data.news_client import fetch_all_news
-from data.macro_client import fetch_macro_snapshot, fetch_fear_greed_index
-from data.onchain_client import fetch_onchain_snapshot
-from data.social_client import fetch_twitter_sentiment
+from data import feeds
 from analysis.technical import compute_multi_timeframe_ta
 from analysis.scoring import build_signal_package
 from oracle.claude_oracle import synthesize_trade
@@ -23,7 +18,6 @@ SOURCES = [
     "news",
     "macro",
     "fear_greed",
-    "onchain",
     "social",
 ]
 
@@ -34,7 +28,6 @@ DEFAULTS = {
     "news":          lambda _: {"aggregate_sentiment": 0, "aggregate_label": "neutral", "total_articles": 0, "cryptopanic": [], "crypto_news": [], "macro_news": [], "geopolitical_news": []},
     "macro":         lambda _: {},
     "fear_greed":    lambda _: {"value": 50, "classification": "Neutral"},
-    "onchain":       lambda sym: {"asset": sym.replace("USDT", "")},
     "social":        lambda _: {"sentiment": 0.0, "label": "neutral", "tweets_analyzed": 0},
 }
 
@@ -51,16 +44,15 @@ async def run_oracle(symbol: str = "BTCUSDT") -> dict:
     t0 = time.perf_counter()
 
     # Step 1: Parallel data fetch
-    logger.info("[1/4] Fetching data from all sources in parallel...")
+    logger.info("[1/4] Fetching data from all sources in parallel (Redis-cached)...")
     raw_results = await asyncio.gather(
-        fetch_market_snapshot(symbol),
-        get_for_symbol(symbol),
-        fetch_global_market(),
-        fetch_all_news(symbol),
-        fetch_macro_snapshot(),
-        fetch_fear_greed_index(),
-        fetch_onchain_snapshot(symbol),
-        fetch_twitter_sentiment(symbol),
+        feeds.cached_market_snapshot(symbol),
+        feeds.cached_coingecko(symbol),
+        feeds.cached_global_market(),
+        feeds.cached_news(symbol),
+        feeds.cached_macro(),
+        feeds.cached_fear_greed(),
+        feeds.cached_social(symbol),
         return_exceptions=True,
     )
 
@@ -89,7 +81,6 @@ async def run_oracle(symbol: str = "BTCUSDT") -> dict:
     news            = resolved["news"]
     macro           = resolved["macro"]
     fear_greed      = resolved["fear_greed"]
-    onchain         = resolved["onchain"]
     social          = resolved["social"]
 
     # Step 2: TA across all timeframes
@@ -115,7 +106,6 @@ async def run_oracle(symbol: str = "BTCUSDT") -> dict:
         news=news,
         macro=macro,
         fear_greed=fear_greed,
-        onchain=onchain,
         social=social,
         coingecko=cg_data,
     )
@@ -123,6 +113,22 @@ async def run_oracle(symbol: str = "BTCUSDT") -> dict:
     ticker = market_snapshot.get("ticker", {})
     if ticker.get("price"):
         signal_package["price"] = ticker["price"]
+
+    # Same FA layer the scanner uses, from the cached CMC listing (no extra API calls).
+    try:
+        from data.coinmarketcap_client import get_for_pair
+        from scanner.fundamentals import compute_fundamentals
+
+        coin, btc = await get_for_pair(symbol), await get_for_pair("BTCUSDT")
+        if coin:
+            fa = compute_fundamentals(coin, btc, global_market or {})
+            positioning, usage = await asyncio.gather(
+                feeds.cached_positioning(symbol), feeds.cached_usage(symbol), return_exceptions=True)
+            fa["positioning"] = positioning if isinstance(positioning, dict) else {}
+            fa["usage"] = usage if isinstance(usage, dict) else {}
+            signal_package["fundamentals"] = fa
+    except Exception as e:
+        logger.debug("FA unavailable for %s: %s", symbol, e)
 
     logger.info(
         "  composite=%.4f  direction=%s  confidence=%d%%  tf=%s",
@@ -144,10 +150,10 @@ async def run_oracle(symbol: str = "BTCUSDT") -> dict:
         logger.info(
             "  ✓ Claude oracle OK — action=%s  confidence=%d%%  tokens(in=%d out=%d cache_hit=%d)",
             rec.get("action", "?"),
-            rec.get("confidence", 0),
-            meta.get("input_tokens", 0),
-            meta.get("output_tokens", 0),
-            meta.get("cache_read_tokens", 0),
+            int(rec.get("confidence") or 0),        # a null breaks the %d format (logging error, no line)
+            meta.get("input_tokens") or 0,
+            meta.get("output_tokens") or 0,
+            meta.get("cache_read_tokens") or 0,
         )
 
     elapsed = time.perf_counter() - t0

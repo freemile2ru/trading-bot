@@ -67,8 +67,14 @@ class AlarmPlayer {
   }
 }
 
-export function useAlarm(oracle: OracleResult | null, signal: SignalPackage | null) {
+export function useAlarm(
+  oracle: OracleResult | null,
+  signal: SignalPackage | null,
+  symbol: string,
+  onTradeOpened?: () => void,
+) {
   const [isAlarming, setIsAlarming] = useState(false)
+  const [autoTradeMsg, setAutoTradeMsg] = useState<string | null>(null)
   const dismissedKeyRef = useRef<string | null>(null)
   const notifiedKeyRef = useRef<string | null>(null)
   const playerRef = useRef<AlarmPlayer | null>(null)
@@ -90,13 +96,19 @@ export function useAlarm(oracle: OracleResult | null, signal: SignalPackage | nu
       if (!playerRef.current) {
         try { playerRef.current = new AlarmPlayer() } catch { /* Web Audio unavailable */ }
       }
-      // Fire email + SMS once per unique signal
+
+      // Once per unique signal: notify + auto paper trade
       if (key !== notifiedKeyRef.current) {
         notifiedKeyRef.current = key
-        api.notify.signal(oracle, signal).catch(() => { /* notification errors are non-fatal */ })
+        api.notify.signal(oracle, signal).catch(() => {})
+
+        // Auto-execute paper trade (backend checks confidence >= 60 internally)
+        api.oracle.executeAndTrade(symbol).then(result => {
+          setAutoTradeMsg(result.message)
+          if (result.trade) onTradeOpened?.()
+        }).catch(() => {})
       }
     } else if (!strong) {
-      // Signal weakened — stop alarm so it re-arms on next strong signal
       if (playerRef.current) {
         playerRef.current.stop()
         playerRef.current = null
@@ -104,10 +116,9 @@ export function useAlarm(oracle: OracleResult | null, signal: SignalPackage | nu
         dismissedKeyRef.current = null
       }
     }
-  }, [oracle, signal])
+  }, [oracle, signal, symbol]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cleanup on unmount
   useEffect(() => () => { playerRef.current?.stop() }, [])
 
-  return { isAlarming, dismiss }
+  return { isAlarming, dismiss, autoTradeMsg }
 }

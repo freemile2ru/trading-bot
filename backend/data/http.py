@@ -72,6 +72,7 @@ async def get_text(
     url: str,
     *,
     params: dict | None = None,
+    headers: dict | None = None,
     timeout: float = 10.0,
     retries: int = 2,
 ) -> str:
@@ -81,7 +82,7 @@ async def get_text(
     for attempt in range(retries + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                r = await client.get(url, params=params)
+                r = await client.get(url, params=params, headers=_ascii_headers(headers, host))
                 r.raise_for_status()
                 return r.text.strip()
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
@@ -124,3 +125,8 @@ async def get_with_client(
                 await asyncio.sleep(wait)
 
     raise last_exc  # type: ignore[misc]
+
+
+def err_text(e: BaseException) -> str:
+    """An exception's message for a log line — its type when the message is empty (httpx timeouts often are)."""
+    return str(e) or type(e).__name__

@@ -25,3 +25,12 @@ body {
     @apply bg-gray-800 text-gray-400 border border-gray-700 text-xs font-bold px-2 py-0.5 rounded-full;
   }
 }
+
+/* Indeterminate loading bar (TradesPage LoadingBar) */
+@keyframes loadingbar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [role='progressbar'] > div { animation: none; width: 100%; opacity: 0.6; }
+}

@@ -27,6 +27,8 @@ export interface MarketContext {
   trend: 'bullish' | 'bearish' | 'ranging'
   volatility: 'low' | 'medium' | 'high'
   market_phase: 'accumulation' | 'markup' | 'distribution' | 'markdown' | 'uncertain'
+  regime: 'trending' | 'ranging' | 'volatile'
+  tf_alignment: 'aligned_bullish' | 'aligned_bearish' | 'mixed'
   btc_dominance_impact: string
   macro_environment: string
 }
@@ -81,7 +83,13 @@ export interface TimeframeSignal {
   fib_nearest_resistance: number
   fib_near_support: boolean
   fib_near_resistance: boolean
+  fib_support_touches: number
+  fib_resistance_touches: number
   market_regime: string
+  market_structure: string
+  structure_score: number
+  macd_histogram_roc: number
+  macd_histogram_expanding: boolean
 }
 
 export interface SignalPackage {
@@ -99,7 +107,6 @@ export interface SignalPackage {
     technical: number
     sentiment: number
     macro: number
-    onchain: number
   }
   ta_summary: {
     consensus_label: string
@@ -197,6 +204,15 @@ export interface PaperTrade {
   pnl_pct: number
   risk_reward: number
   close_reason: string | null
+  // Futures (absent on trades recorded before the futures model)
+  leverage?: number
+  notional_usd?: number
+  margin_usd?: number
+  liquidation_price?: number
+  roe_pct?: number
+  fees_usd?: number
+  funding_usd?: number
+  entry_type?: 'market' | 'limit'
 }
 
 export interface EquityPoint {
@@ -214,6 +230,12 @@ export interface Portfolio {
   open_trades: PaperTrade[]
   closed_trades: PaperTrade[]
   equity_history: EquityPoint[]
+  margin_used?: number
+  free_margin?: number
+  open_risk_usd?: number
+  fees_paid?: number
+  funding_paid?: number
+  futures?: { max_leverage: number; margin_mode: string; taker_fee: number; maker_fee: number }
   stats: {
     total_trades: number
     open_trades: number
@@ -226,20 +248,3 @@ export interface Portfolio {
   }
 }
 
-export interface SignalHistoryEntry {
-  ts: string
-  symbol: string
-  price: number
-  action: 'BUY' | 'SELL' | 'HOLD'
-  direction: string
-  confidence: number
-  timeframe: string
-  entry_price: number
-  stop_loss: number
-  take_profit_1: number
-  composite_score: number
-  elapsed_seconds: number
-  sources_ok: number
-  sources_total: number
-  primary_thesis: string
-}

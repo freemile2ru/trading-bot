@@ -1,50 +1,87 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock } from 'lucide-react'
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
+import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users } from 'lucide-react'
+import { AllSignals } from './components/AllSignals'
 import { OracleSignal } from './components/OracleSignal'
 import { SignalScores } from './components/SignalScores'
-import { Portfolio } from './components/Portfolio'
 import { PriceChart } from './components/PriceChart'
 import { PipelineStatus } from './components/PipelineStatus'
 import { AlarmBanner } from './components/AlarmBanner'
+import { DataWatchBanner } from './components/DataWatchBanner'
+import { MarketStateChip } from './components/MarketStateChip'
+import { CalendarChip } from './components/CalendarChip'
 import { useOracle } from './hooks/useOracle'
 import { useAlarm } from './hooks/useAlarm'
 import { api } from './utils/api'
-import type { Portfolio as PortfolioType } from './types/oracle'
 import clsx from 'clsx'
 
+// Tabs other than All Signals load on first open — the chart libraries alone are most of the bundle.
+const TradeHistory = lazy(() => import('./components/TradeHistory').then(m => ({ default: m.TradeHistory })))
+const TradesPage = lazy(() => import('./components/TradesPage').then(m => ({ default: m.TradesPage })))
+const LivePage = lazy(() => import('./components/LivePage').then(m => ({ default: m.LivePage })))
+const TradeTerminal = lazy(() => import('./components/trade/TradeTerminal').then(m => ({ default: m.TradeTerminal })))
+const RetiredPage = lazy(() => import('./components/RetiredPage').then(m => ({ default: m.RetiredPage })))
+const LabPage = lazy(() => import('./components/LabPage').then(m => ({ default: m.LabPage })))
+const CopyPage = lazy(() => import('./components/CopyPage').then(m => ({ default: m.CopyPage })))
+const MarketsPage = lazy(() => import('./components/MarketsPage').then(m => ({ default: m.MarketsPage })))
+const BooksPage = lazy(() => import('./components/BooksPage').then(m => ({ default: m.BooksPage })))
+const CalendarPage = lazy(() => import('./components/CalendarPage').then(m => ({ default: m.CalendarPage })))
+const NewsPage = lazy(() => import('./components/NewsPage').then(m => ({ default: m.NewsPage })))
+const Portfolio = lazy(() => import('./components/Portfolio').then(m => ({ default: m.Portfolio })))
+
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
-type Tab = 'signal' | 'portfolio'
+type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'lab' | 'retired' | 'live' | 'books'
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('signal')
+  // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
+  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'portfolio', 'trades', 'history', 'markets', 'copy', 'lab', 'retired', 'live', 'books']
+  const [tab, setTabState] = useState<Tab>(() => {
+    const h = window.location.hash.slice(1).split('/')[0] as Tab
+    return TABS.includes(h) ? h : 'all'
+  })
+  const setTab = useCallback((t: Tab) => {
+    setTabState(t)
+    if (window.location.hash.slice(1).split('/')[0] !== t) window.history.replaceState(null, '', `#${t}`)
+  }, [])
+  // In-page links (<a href="#live">) switch tabs too.
+  useEffect(() => {
+    const onHash = () => {
+      const h = window.location.hash.slice(1).split('/')[0] as Tab
+      if (TABS.includes(h)) setTabState(h)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const [symbol, setSymbol] = useState('BTCUSDT')
-  const [portfolio, setPortfolio] = useState<PortfolioType | null>(null)
   const [executing, setExecuting] = useState(false)
   const [execMessage, setExecMessage] = useState<string | null>(null)
-
-  const { data: oracle, loading, error, refresh, lastUpdated, countdown } = useOracle(symbol)
-
-  const { isAlarming, dismiss } = useAlarm(
-    oracle?.oracle ?? null,
-    oracle?.signal_package ?? null,
-  )
-
-  const fetchPortfolio = useCallback(async () => {
+  const [tradingSymbol, setTradingSymbol] = useState<string | null>(null)
+  // Which systems are trading real orders — shown as a red badge in the header on every tab.
+  const [liveSystems, setLiveSystems] = useState<string[]>([])
+  const refreshLive = useCallback(async () => {
     try {
-      setPortfolio(await api.paper.portfolio())
+      const s = await api.live.status()
+      setLiveSystems(Object.entries(s.systems).filter(([, v]) => v.live).map(([k]) => k))
     } catch {
-      // silently ignore — portfolio is secondary
+      // the badge is informational — the Live tab shows errors
     }
   }, [])
-
-  // Auto-refresh portfolio every 30s if there are open trades
   useEffect(() => {
-    fetchPortfolio()
-    const interval = setInterval(() => {
-      if (portfolio?.stats.open_trades) fetchPortfolio()
-    }, 30_000)
-    return () => clearInterval(interval)
-  }, [fetchPortfolio, portfolio?.stats.open_trades])
+    refreshLive()
+    const id = setInterval(refreshLive, 30_000)
+    return () => clearInterval(id)
+  }, [refreshLive])
+
+  // Only runs once the Signal tab has been opened — see the note in useOracle.
+  const [signalTabOpened, setSignalTabOpened] = useState(tab === 'signal')
+  const { data: oracle, loading, error, refresh, lastUpdated, countdown } =
+    useOracle(symbol, signalTabOpened)
+
+  const { isAlarming, dismiss, autoTradeMsg } = useAlarm(
+    oracle?.oracle ?? null,
+    oracle?.signal_package ?? null,
+    symbol,
+    () => setTab('trades'),
+  )
 
   async function handleExecute() {
     setExecuting(true)
@@ -52,14 +89,33 @@ export default function App() {
     try {
       const result = await api.oracle.executeAndTrade(symbol)
       setExecMessage(result.message)
-      await fetchPortfolio()
-      if (result.trade) setTab('portfolio')
+      if (result.trade) setTab('trades')
     } catch (e) {
       setExecMessage(e instanceof Error ? e.message : 'Execution failed')
     } finally {
       setExecuting(false)
     }
   }
+
+  const openSignalTab = useCallback((next: string) => {
+    setSymbol(next)
+    setSignalTabOpened(true)
+    setTab('signal')
+  }, [])
+
+  const handleSignalTrade = useCallback(async (tradeSymbol: string) => {
+    setTradingSymbol(tradeSymbol)
+    setExecMessage(null)
+    try {
+      const result = await api.oracle.executeAndTrade(tradeSymbol)
+      setExecMessage(result.message)
+      if (result.trade) setTab('trades')
+    } catch (e) {
+      setExecMessage(e instanceof Error ? e.message : 'Execution failed')
+    } finally {
+      setTradingSymbol(null)
+    }
+  }, [setTab])
 
   const rec = oracle?.oracle?.trade_recommendation
   const canTrade = rec && rec.action !== 'HOLD' && rec.confidence >= 60
@@ -75,23 +131,35 @@ export default function App() {
         />
       )}
 
+      <DataWatchBanner />
+
       {/* Header */}
       <header className={clsx(
-        'border-b border-gray-800 px-6 py-3 z-10 bg-oracle-bg/95 backdrop-blur',
+        'border-b border-gray-800 py-3 z-10 bg-oracle-bg/95 backdrop-blur',
         isAlarming ? 'sticky top-14' : 'sticky top-0',
       )}>
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+        <div className={clsx('mx-auto px-4 sm:px-6 flex items-center justify-between',
+          'max-w-none')}>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
               <Zap className="w-5 h-5 text-white" />
             </div>
             <div>
               <div className="font-black text-white text-lg leading-none">Crypto Oracle</div>
-              <div className="text-xs text-gray-500">AI-Powered Trading Signals</div>
+              <div className="hidden sm:block text-xs text-gray-500">AI-Powered Trading Signals</div>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
+            <MarketStateChip />
+            <CalendarChip />
+            {liveSystems.length > 0 && (
+              <button onClick={() => setTab('live')}
+                className="text-[11px] font-black tracking-wider bg-rose-600 hover:bg-rose-500 text-white px-2 py-1 rounded animate-pulse whitespace-nowrap"
+                title={`Real orders are being sent to Binance: ${liveSystems.join(', ')}`}>
+                LIVE<span className="hidden sm:inline"> · {liveSystems.join(', ')}</span><span className="sm:hidden"> · {liveSystems.length}</span>
+              </button>
+            )}
             {/* Live price */}
             {oracle?.signal_package?.price && (
               <div className="text-right hidden sm:block">
@@ -126,9 +194,10 @@ export default function App() {
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
-        {/* Symbol selector + controls */}
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Full browser width — the trading screens need the room; px keeps content off the edges. */}
+      <div className={clsx('mx-auto px-3 sm:px-5 2xl:px-8 py-5 space-y-5', 'max-w-none')}>
+        {/* Symbol selector + controls — only relevant to the per-symbol Signal tab */}
+        <div className={clsx('flex flex-wrap items-center gap-2', tab !== 'signal' && 'hidden')}>
           <div className="flex gap-1.5 flex-wrap">
             {SYMBOLS.map(s => (
               <button
@@ -171,29 +240,58 @@ export default function App() {
           </div>
         </div>
 
-        {/* Exec message */}
-        {execMessage && (
-          <div className={clsx(
-            'text-sm px-4 py-2 rounded-lg border',
-            execMessage.includes('opened')
-              ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400'
-              : 'bg-gray-800 border-gray-700 text-gray-400',
-          )}>
-            {execMessage}
+        {/* Exec / auto-trade messages */}
+        {(execMessage || autoTradeMsg) && (
+          <div className="space-y-1">
+            {execMessage && (
+              <div className={clsx(
+                'text-sm px-4 py-2 rounded-lg border',
+                execMessage.includes('opened')
+                  ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400'
+                  : 'bg-gray-800 border-gray-700 text-gray-400',
+              )}>
+                {execMessage}
+              </div>
+            )}
+            {autoTradeMsg && (
+              <div className={clsx(
+                'text-sm px-4 py-2 rounded-lg border',
+                autoTradeMsg.includes('opened')
+                  ? 'bg-blue-900/30 border-blue-800 text-blue-400'
+                  : 'bg-gray-800 border-gray-700 text-gray-400',
+              )}>
+                ⚡ Auto-trade: {autoTradeMsg}
+              </div>
+            )}
           </div>
         )}
 
         {/* Tabs */}
-        <div className="flex gap-1 border-b border-gray-800">
+        <div className="flex gap-1 border-b border-gray-800 overflow-x-auto">
           {([
+            ['all', Radar, 'All Signals'],
             ['signal', BarChart2, 'Signal'],
+            ['news', Newspaper, 'News'],
+            ['calendar', CalendarClock, 'Calendar'],
+            ['trade', CandlestickChart, 'Trade'],
             ['portfolio', Briefcase, 'Portfolio'],
+            ['trades', List, 'Trades'],
+            ['history', History, 'History'],
+            ['markets', Globe2, 'Markets'],
+            ['copy', Users, 'Copy'],
+            ['lab', Microscope, 'Lab'],
+            ['retired', Archive, 'Retired'],
+            ['live', ShieldAlert, 'Live'],
+            ['books', Layers, 'Books'],
           ] as const).map(([t, Icon, label]) => (
             <button
               key={t}
-              onClick={() => setTab(t)}
+              onClick={() => {
+                if (t === 'signal') setSignalTabOpened(true)
+                setTab(t)
+              }}
               className={clsx(
-                'flex items-center gap-2 pb-3 px-1 mr-3 text-sm font-semibold border-b-2 transition-all',
+                'flex items-center gap-2 pb-3 px-1 mr-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap shrink-0',
                 tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300',
               )}
             >
@@ -204,15 +302,24 @@ export default function App() {
         </div>
 
         {/* Error */}
-        {error && (
+        {tab === 'signal' && error && (
           <div className="flex items-center gap-2 bg-red-900/30 border border-red-800 rounded-lg px-4 py-3 text-red-400 text-sm">
             <AlertCircle className="w-4 h-4 shrink-0" />
             {error}
           </div>
         )}
 
+        {/* All Signals tab */}
+        {tab === 'all' && (
+          <AllSignals
+            onSelectSymbol={openSignalTab}
+            onTrade={handleSignalTrade}
+            trading={tradingSymbol}
+          />
+        )}
+
         {/* Loading skeleton */}
-        {loading && !oracle && (
+        {tab === 'signal' && loading && !oracle && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {[1, 2].map(i => (
               <div key={i} className="card animate-pulse h-64">
@@ -231,7 +338,7 @@ export default function App() {
         {tab === 'signal' && oracle && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <OracleSignal oracle={oracle.oracle} />
+              <OracleSignal oracle={oracle.oracle} lastUpdated={lastUpdated} />
               <SignalScores signal={oracle.signal_package} />
             </div>
             <PriceChart
@@ -245,10 +352,33 @@ export default function App() {
           </div>
         )}
 
-        {/* Portfolio tab */}
-        {tab === 'portfolio' && portfolio && (
-          <Portfolio portfolio={portfolio} onRefresh={fetchPortfolio} />
-        )}
+        <Suspense fallback={<div className="card text-sm text-gray-500">Loading…</div>}>
+          {/* Binance-style terminal: your own orders, paper or live (main wallet) */}
+          {tab === 'news' && <NewsPage />}
+          {tab === 'calendar' && <CalendarPage />}
+          {tab === 'trade' && <TradeTerminal />}
+
+          {/* Portfolio tab */}
+          {tab === 'portfolio' && <Portfolio onOpenTrades={() => setTab('trades')} />}
+
+          {/* Every trade from every system */}
+          {tab === 'trades' && <TradesPage />}
+
+          {/* Trade history + backtest — both wallets */}
+          {tab === 'history' && <TradeHistory />}
+
+          {/* Side experiments: what does Claude add, and can it trade on its own? */}
+          {tab === 'lab' && <LabPage />}
+
+          {/* Everything we tried that failed, with the evidence */}
+          {tab === 'markets' && <MarketsPage />}
+          {tab === 'copy' && <CopyPage />}
+          {tab === 'books' && <BooksPage />}
+          {tab === 'retired' && <RetiredPage />}
+
+          {/* Paper/live switch per system, Binance account, kill switch, audit */}
+          {tab === 'live' && <LivePage onChange={refreshLive} />}
+        </Suspense>
       </div>
     </div>
   )

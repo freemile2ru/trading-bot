@@ -12,7 +12,6 @@ const SOURCE_LABELS: Record<string, string> = {
   news: 'News',
   macro: 'FRED Macro',
   fear_greed: 'Fear & Greed',
-  onchain: 'On-chain',
   social: 'Twitter/X',
 }
 

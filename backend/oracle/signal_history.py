@@ -1,40 +1,24 @@
-"""Persist oracle signal results so accuracy can be tracked over time."""
+"""Persist oracle signal results so accuracy can be tracked over time.
 
-import json
-import os
-import threading
+Stored in signals.db (storage/signals.py), uncapped. This used to be data/signal_history.json,
+which kept only the last 100 entries; that file is imported once by storage/migrate.py.
+"""
+
 from datetime import datetime, timezone
 
-HISTORY_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "signal_history.json")
-MAX_ENTRIES = 100
-_lock = threading.Lock()
+from storage import signals
 
 
-def _load() -> list[dict]:
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE) as f:
-            return json.load(f)
-    return []
-
-
-def _save(entries: list[dict]) -> None:
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    tmp = HISTORY_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(entries, f, indent=2, default=str)
-    os.replace(tmp, HISTORY_FILE)
-
-
-def save_signal(pipeline_result: dict) -> None:
-    """Store a condensed snapshot of an oracle result."""
+def summarize(pipeline_result: dict) -> dict:
+    """A condensed snapshot of an oracle result."""
     pkg = pipeline_result.get("signal_package", {})
     oracle = pipeline_result.get("oracle", {})
     rec = oracle.get("trade_recommendation", {})
     status = pipeline_result.get("pipeline_status", {})
-
-    entry = {
+    return {
         "ts": datetime.now(timezone.utc).isoformat(),
         "symbol": pipeline_result.get("symbol"),
+        "source": pipeline_result.get("source", "oracle"),
         "price": pkg.get("price"),
         "action": rec.get("action"),
         "direction": rec.get("direction"),
@@ -50,19 +34,8 @@ def save_signal(pipeline_result: dict) -> None:
         "primary_thesis": oracle.get("reasoning", {}).get("primary_thesis", ""),
     }
 
-    with _lock:
-        entries = _load()
-        entries.append(entry)
-        if len(entries) > MAX_ENTRIES:
-            entries = entries[-MAX_ENTRIES:]
-        _save(entries)
+
+def save_signal(pipeline_result: dict) -> None:
+    signals.add_oracle_signal(summarize(pipeline_result))
 
 
-def get_history(symbol: str | None = None, limit: int = 20) -> list[dict]:
-    with _lock:
-        entries = _load()
-
-    if symbol:
-        entries = [e for e in entries if e.get("symbol") == symbol.upper()]
-
-    return list(reversed(entries[-limit:]))

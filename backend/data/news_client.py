@@ -1,14 +1,26 @@
-"""News aggregation: CryptoPanic + NewsAPI for crypto/macro/geopolitical news."""
+"""News for one coin: the scraped, Claude-classified headlines (news/) plus CryptoPanic.
 
-import asyncio
+NewsAPI was dropped on 2026-09-29: its free tier (100 calls a day) meant per-coin news was
+cached for 6 hours, and its results were scored by VADER. The scraper reads 15 sources on
+their own schedules and Claude reads every headline — see news/.
+"""
+
+import logging
 import os
-from data.http import get_json
+
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+from data import cache
+from data.http import get_json
+
+logger = logging.getLogger("data.news")
+
+CRYPTOPANIC_TTL = 1800
+CRYPTOPANIC_WEIGHT = 0.2         # of the blended sentiment, when CryptoPanic has posts for the coin
 
 _vader = SentimentIntensityAnalyzer()
 
 CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1"
-NEWSAPI_BASE = "https://newsapi.org/v2"
 
 
 async def fetch_cryptopanic(
@@ -56,75 +68,32 @@ def _parse_cryptopanic_post(p: dict) -> dict:
     }
 
 
-async def fetch_newsapi(
-    query: str,
-    language: str = "en",
-    sort_by: str = "publishedAt",
-    page_size: int = 20,
-) -> list[dict]:
-    key = os.getenv("NEWS_API_KEY", "")
-    if not key:
-        return []
-    try:
-        data = await get_json(
-            f"{NEWSAPI_BASE}/everything",
-            params={
-                "q": query,
-                "language": language,
-                "sortBy": sort_by,
-                "pageSize": page_size,
-                "apiKey": key,
-            },
-            timeout=15,
-        )
-        return [_parse_newsapi_article(a) for a in data.get("articles", [])]
-    except Exception:
-        return []
-
-
-def _parse_newsapi_article(a: dict) -> dict:
-    text = f"{a.get('title', '')} {a.get('description', '')}"
-    scores = _vader.polarity_scores(text)
-    return {
-        "source": a.get("source", {}).get("name", "newsapi"),
-        "title": a.get("title"),
-        "description": a.get("description"),
-        "url": a.get("url"),
-        "published_at": a.get("publishedAt"),
-        "sentiment_compound": scores["compound"],
-        "sentiment_label": _label(scores["compound"]),
-    }
-
-
 async def fetch_all_news(symbol: str = "BTC") -> dict:
-    """Fetch crypto news + macro/geopolitical news in parallel."""
-    coin = symbol.replace("USDT", "")
-    coin_name = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana"}.get(coin, coin)
-
-    cp, crypto, macro, geo = await asyncio.gather(
-        fetch_cryptopanic(currencies=coin, filter_="hot"),
-        fetch_newsapi(query=f"{coin_name} crypto earnings SEC regulation", page_size=15),
-        fetch_newsapi(
-            query="Federal Reserve FOMC interest rates inflation CPI jobs earnings",
-            page_size=10,
-        ),
-        fetch_newsapi(query="war geopolitical crisis sanctions", page_size=10),
-    )
-
-    all_articles = cp + crypto + macro + geo
-    avg_sentiment = (
-        sum(a["sentiment_compound"] for a in all_articles) / len(all_articles)
-        if all_articles else 0.0
-    )
-
+    """The coin's news reading. Scraped news is local (news.db), so only CryptoPanic is cached."""
+    from news import scoring
+    coin = symbol.removesuffix("USDT")
+    try:
+        cp = await cache.cached(cache.key("cryptopanic", coin), CRYPTOPANIC_TTL,
+                                lambda: fetch_cryptopanic(currencies=coin, filter_="hot"))
+    except Exception:
+        cp = []
+    n = scoring.for_coin(coin)
+    score = n["score"]
+    if cp:
+        cp_avg = sum(a["sentiment_compound"] for a in cp) / len(cp)
+        score = (1 - CRYPTOPANIC_WEIGHT) * score + CRYPTOPANIC_WEIGHT * cp_avg
+    market = n["market"]
     return {
         "cryptopanic": cp,
-        "crypto_news": crypto,
-        "macro_news": macro,
-        "geopolitical_news": geo,
-        "aggregate_sentiment": avg_sentiment,
-        "aggregate_label": _label(avg_sentiment),
-        "total_articles": len(all_articles),
+        "crypto_news": n["top"],
+        "macro_news": market["top"],
+        "geopolitical_news": [],
+        "aggregate_sentiment": round(score, 4),
+        "aggregate_label": _label(score),
+        "total_articles": n["stories"] + market["stories"] + len(cp),
+        # Tells analysis.scoring the aggregate is already the final news score.
+        "scraped": {"score": n["score"], "coin_score": n["coin_score"], "market_score": market["score"],
+                    "stories": n["stories"], "stories_6h": n["stories_6h"], "burst": n["burst"]},
     }
 
 

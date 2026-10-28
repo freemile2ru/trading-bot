@@ -7,7 +7,7 @@ AI-powered crypto trading signal engine combining live Technical Analysis, Funda
 ```
 Data Sources          Analysis Layer        Oracle Brain         Output
 ──────────────────    ──────────────────    ────────────────    ──────────────────
-Binance API           TA Engine             Claude Opus 4.7     Trade Recommendation
+Binance API           TA Engine             Claude Opus 5.5     Trade Recommendation
 CoinGecko          →  (RSI/MACD/BB/        (synthesizes all  → Entry / SL / TP
 CryptoPanic           ADX/ATR/EMA)          signals into a      Direction / TF
 NewsAPI               Sentiment Scoring     structured call)    Hold Duration

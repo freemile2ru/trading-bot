@@ -25,13 +25,32 @@ def macd(close: pd.Series) -> dict:
     fast = ema(close, 12)
     slow = ema(close, 26)
     line = fast - slow
-    signal = ema(line, 9)
-    histogram = line - signal
+    signal_line = ema(line, 9)
+    histogram = line - signal_line
+
+    hist_val = float(histogram.iloc[-1])
+    hist_roc = 0.0
+    hist_expanding = False
+    clean_hist = histogram.dropna()
+    if len(clean_hist) >= 4:
+        h = clean_hist.iloc[-4:]
+        # Per-bar rate of change over last 3 bars
+        hist_roc = float(h.iloc[-1] - h.iloc[-3]) / 2
+        # Expanding: same sign and growing in magnitude for 2 consecutive bars
+        # bool() is required — chained numpy scalar comparisons return numpy.bool_
+        # which FastAPI's jsonable_encoder cannot serialize.
+        hist_expanding = bool(
+            (h.iloc[-1] > 0 and h.iloc[-1] > h.iloc[-2] > h.iloc[-3]) or
+            (h.iloc[-1] < 0 and h.iloc[-1] < h.iloc[-2] < h.iloc[-3])
+        )
+
     return {
         "macd_line": float(line.iloc[-1]),
-        "signal_line": float(signal.iloc[-1]),
-        "histogram": float(histogram.iloc[-1]),
-        "cross": _macd_cross(line, signal),
+        "signal_line": float(signal_line.iloc[-1]),
+        "histogram": hist_val,
+        "histogram_roc": round(hist_roc, 6),
+        "histogram_expanding": hist_expanding,
+        "cross": _macd_cross(line, signal_line),
     }
 
 
@@ -53,7 +72,11 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     gain = delta.clip(lower=0).rolling(period).mean()
     loss = (-delta.clip(upper=0)).rolling(period).mean()
     rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    out = 100 - (100 / (1 + rs))
+    # A window with no down-close is RSI 100 (and a flat one 50), not NaN: NaN here flowed into the
+    # score as a +1 slope (min(1.0, nan) is 1.0) and broke JSON responses carrying the reading.
+    no_loss = (loss == 0) & gain.notna()
+    return out.mask(no_loss & (gain > 0), 100.0).mask(no_loss & (gain == 0), 50.0)
 
 
 def rsi(close: pd.Series, period: int = 14) -> float:
@@ -96,7 +119,9 @@ def stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> dict:
     high_max = df["high"].rolling(k_period).max()
     k = 100 * (df["close"] - low_min) / (high_max - low_min).replace(0, np.nan)
     d = k.rolling(d_period).mean()
-    return {"k": float(k.iloc[-1]), "d": float(d.iloc[-1])}
+    k_val, d_val = float(k.iloc[-1]), float(d.iloc[-1])
+    # A flat window has no range: mid-scale, not NaN.
+    return {"k": 50.0 if np.isnan(k_val) else k_val, "d": 50.0 if np.isnan(d_val) else d_val}
 
 
 def bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> dict:
@@ -105,8 +130,9 @@ def bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) ->
     upper = mid + std_dev * std
     lower = mid - std_dev * std
     price = float(close.iloc[-1])
-    width = float((upper.iloc[-1] - lower.iloc[-1]) / mid.iloc[-1]) * 100
-    pct_b = float((price - lower.iloc[-1]) / (upper.iloc[-1] - lower.iloc[-1]))
+    band = float(upper.iloc[-1] - lower.iloc[-1])
+    width = band / float(mid.iloc[-1]) * 100 if mid.iloc[-1] else 0.0
+    pct_b = (price - float(lower.iloc[-1])) / band if band else 0.5      # zero-width band: price sits on it
     return {
         "upper": float(upper.iloc[-1]),
         "mid": float(mid.iloc[-1]),
@@ -151,6 +177,9 @@ def adx(df: pd.DataFrame, period: int = 14) -> dict:
     adx_val = dx.ewm(span=period, adjust=False).mean()
 
     v = float(adx_val.iloc[-1])
+    if not np.isfinite(v):                   # a series with no range at all: no trend to measure
+        return {"adx": 0.0, "adx_slope": 0.0, "trend_momentum": "flat", "plus_di": 0.0, "minus_di": 0.0,
+                "trend_strength": "weak", "direction": "neutral"}
 
     # 3-bar slope: positive = trend strengthening, negative = trend exhausting
     clean = adx_val.dropna()
@@ -338,20 +367,38 @@ def fibonacci_levels(df: pd.DataFrame, lookback: int = 50) -> dict:
     if diff == 0:
         return {"error": "no_price_range"}
 
-    levels = {
-        "0.0": round(swing_high, 4),
-        "0.236": round(swing_high - 0.236 * diff, 4),
-        "0.382": round(swing_high - 0.382 * diff, 4),
-        "0.5": round(swing_high - 0.5 * diff, 4),
-        "0.618": round(swing_high - 0.618 * diff, 4),
-        "0.786": round(swing_high - 0.786 * diff, 4),
-        "1.0": round(swing_low, 4),
-    }
+    # Retracements run back from the end of the swing: down from the high after an
+    # up-swing, up from the low after a down-swing. Always measuring from the high framed
+    # every swing as a rally, so the levels of a sell-off weren't the mirror of a rally's.
+    up_swing = window["low"].idxmin() <= window["high"].idxmax()
+    end, sign = (swing_high, -1) if up_swing else (swing_low, 1)
+    levels = {r: round(end + sign * float(r) * diff, 4) for r in ("0.0", "0.236", "0.382", "0.5", "0.618", "0.786")}
+    levels["1.0"] = round(swing_low if up_swing else swing_high, 4)
 
     fib_values = sorted(levels.values())
     nearest_support = max((v for v in fib_values if v <= price), default=swing_low)
     nearest_resistance = min((v for v in fib_values if v >= price), default=swing_high)
     price_position = (price - swing_low) / diff
+
+    # Count how many bars have tested (touched within 0.5%) each key level.
+    # Use 2× lookback so tested levels are recognised even if formed earlier.
+    touch_window = df.tail(lookback * 2)
+    tol = 0.005
+    sup_touches = int(
+        ((touch_window["low"] >= nearest_support * (1 - tol)) &
+         (touch_window["low"] <= nearest_support * (1 + tol))).sum()
+    )
+    res_touches = int(
+        ((touch_window["high"] >= nearest_resistance * (1 - tol)) &
+         (touch_window["high"] <= nearest_resistance * (1 + tol))).sum()
+    )
+
+    # In a tight range the levels sit under 1% apart, so price is often "near" both. Only
+    # the closer one counts — checking support first used to turn every such tie bullish.
+    d_sup = (price - nearest_support) / price
+    d_res = (nearest_resistance - price) / price
+    near_support = d_sup < 0.01 and d_sup < d_res
+    near_resistance = d_res < 0.01 and d_res < d_sup
 
     return {
         "swing_high": round(swing_high, 4),
@@ -360,9 +407,67 @@ def fibonacci_levels(df: pd.DataFrame, lookback: int = 50) -> dict:
         "nearest_support": round(nearest_support, 4),
         "nearest_resistance": round(nearest_resistance, 4),
         "price_position": round(price_position, 3),
-        "near_support": (price - nearest_support) / price < 0.01,
-        "near_resistance": (nearest_resistance - price) / price < 0.01 if nearest_resistance > price else False,
+        "near_support": near_support,
+        "near_resistance": near_resistance,
+        "nearest_support_touches": min(sup_touches, 5),
+        "nearest_resistance_touches": min(res_touches, 5),
     }
+
+
+def market_structure(df: pd.DataFrame, lookback: int = 60) -> dict:
+    """Detect bullish (HH+HL) or bearish (LH+LL) price structure using pivot swing points.
+
+    Pivot size of 3 means a bar must be the highest/lowest within ±3 bars to qualify.
+    Score magnitude reflects how much higher/lower the new swings are relative to prior ones.
+    """
+    window = df.tail(lookback)
+    highs = window["high"].values
+    lows = window["low"].values
+    n = len(highs)
+
+    if n < 15:
+        return {"structure": "unclear", "score": 0.0}
+
+    pivot = 3
+    swing_highs: list[float] = []
+    swing_lows: list[float] = []
+
+    for i in range(pivot, n - pivot):
+        local_hi = max(highs[i - pivot: i + pivot + 1])
+        local_lo = min(lows[i - pivot: i + pivot + 1])
+        if highs[i] >= local_hi:
+            swing_highs.append(float(highs[i]))
+        if lows[i] <= local_lo:
+            swing_lows.append(float(lows[i]))
+
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return {"structure": "unclear", "score": 0.0}
+
+    sh1, sh2 = swing_highs[-2], swing_highs[-1]
+    sl1, sl2 = swing_lows[-2], swing_lows[-1]
+
+    hh = sh2 > sh1
+    hl = sl2 > sl1
+    lh = sh2 < sh1
+    ll = sl2 < sl1
+
+    if hh and hl:
+        structure = "bullish"
+        score = min(1.0, ((sh2 - sh1) / sh1 + (sl2 - sl1) / sl1) * 10)
+    elif lh and ll:
+        structure = "bearish"
+        score = -min(1.0, ((sh1 - sh2) / sh1 + (sl1 - sl2) / sl1) * 10)
+    elif lh and hl:
+        structure = "contracting"
+        score = 0.0
+    elif hh and ll:
+        structure = "expanding"
+        score = 0.0
+    else:
+        structure = "unclear"
+        score = 0.0
+
+    return {"structure": structure, "score": round(score, 3)}
 
 
 def candlestick_patterns(df: pd.DataFrame) -> dict:
@@ -484,61 +589,80 @@ def compute_tf_alignment(scores: list[float]) -> dict:
 def _regime_indicator_weights(regime: str) -> dict:
     """Per-indicator weights tuned to the current market regime.
 
-    Trending  → boost trend-following (EMA, MACD, Ichimoku, ADX); penalise mean-reversion
+    Trending  → boost trend-following (EMA, MACD, Ichimoku, ADX, Structure); penalise mean-reversion
     Ranging   → boost mean-reversion (RSI, Stoch, BB, Fib, Patterns); penalise trend-following
     Volatile  → boost flow/cloud (VWAP, CMF, Ichimoku, divergence); reduce everything noisy
     """
     if regime == "trending":
         return {
-            "rsi":      1.0,   # Level signals lie in strong trends
-            "rsi_div":  2.0,   # Divergence = early exhaustion warning — important
-            "macd":     3.0,   # Excellent trend-following signal
-            "bb":       0.8,   # Squeeze useful; overbought/oversold not
-            "adx":      2.5,   # Trend strength + direction confirmation
-            "stoch":    0.5,   # Mean-reversion oscillator, unreliable in trends
-            "ema":      3.5,   # Primary trend filter — highest weight
-            "ichimoku": 3.0,   # Cloud confluence is conviction multiplier
-            "patterns": 1.0,   # Less reliable in strong persistent trends
-            "fib":      0.5,   # Retracement levels less relevant
-            "vwap":     2.0,   # Institutional bias reference
-            "cmf":      2.0,   # Flow confirms the trend
+            "rsi":       1.0,   # Level signals lie in strong trends
+            "rsi_div":   2.0,   # Divergence = early exhaustion warning — important
+            "macd":      3.0,   # Excellent trend-following signal
+            "bb":        0.8,   # Squeeze useful; overbought/oversold not
+            "adx":       2.5,   # Trend strength + direction confirmation
+            "stoch":     0.5,   # Mean-reversion oscillator, unreliable in trends
+            "ema":       3.5,   # Primary trend filter — highest weight
+            "ichimoku":  3.0,   # Cloud confluence is conviction multiplier
+            "patterns":  1.0,   # Less reliable in strong persistent trends
+            "fib":       0.5,   # Retracement levels less relevant
+            "vwap":      2.0,   # Institutional bias reference
+            "cmf":       2.0,   # Flow confirms the trend
+            "structure": 3.0,   # HH/HL or LH/LL is the primary trend confirmation
         }
     elif regime == "ranging":
         return {
-            "rsi":      3.0,   # Primary oscillator for range-bound price
-            "rsi_div":  1.5,   # Divergence signals ahead of breakout
-            "macd":     1.0,   # False crossovers plague ranging markets
-            "bb":       2.5,   # %B overbought/oversold reliable in ranges
-            "adx":      0.5,   # Low ADX → direction signal is noise
-            "stoch":    3.0,   # Excellent mean-reversion oscillator
-            "ema":      1.0,   # Often crisscrossing, mixed signal
-            "ichimoku": 1.0,   # Kumo thin / unreliable in sideways
-            "patterns": 2.0,   # Reversal patterns at range extremes shine
-            "fib":      2.5,   # S/R levels define range boundaries
-            "vwap":     1.5,   # Mean-reversion anchor
-            "cmf":      1.5,   # Flow shows breakout direction potential
+            "rsi":       3.0,   # Primary oscillator for range-bound price
+            "rsi_div":   1.5,   # Divergence signals ahead of breakout
+            "macd":      1.0,   # False crossovers plague ranging markets
+            "bb":        2.5,   # %B overbought/oversold reliable in ranges
+            "adx":       0.5,   # Low ADX → direction signal is noise
+            "stoch":     3.0,   # Excellent mean-reversion oscillator
+            "ema":       1.0,   # Often crisscrossing, mixed signal
+            "ichimoku":  1.0,   # Kumo thin / unreliable in sideways
+            "patterns":  2.0,   # Reversal patterns at range extremes shine
+            "fib":       2.5,   # S/R levels define range boundaries
+            "vwap":      1.5,   # Mean-reversion anchor
+            "cmf":       1.5,   # Flow shows breakout direction potential
+            "structure": 0.5,   # Ranging: no sustained HH/HL → low weight
         }
     else:  # volatile
         return {
-            "rsi":      1.0,   # Whipsaws; level signals unreliable
-            "rsi_div":  2.5,   # Key divergence warning in volatile markets
-            "macd":     1.5,   # Histogram direction > crossovers
-            "bb":       1.0,   # Wide bands already priced in
-            "adx":      1.0,   # High ADX but direction flips fast
-            "stoch":    0.8,   # Mean-reversion unreliable with high volatility
-            "ema":      1.5,   # Long EMAs as S/R reference
-            "ichimoku": 3.5,   # Wide cloud = best S/R zone in volatility
-            "patterns": 2.0,   # Reversal candles at extremes most reliable
-            "fib":      0.8,   # Fast moves skip levels
-            "vwap":     2.5,   # Critical anchor during volatile sessions
-            "cmf":      2.5,   # Volume flow under pressure = direction signal
+            "rsi":       1.0,   # Whipsaws; level signals unreliable
+            "rsi_div":   2.5,   # Key divergence warning in volatile markets
+            "macd":      1.5,   # Histogram direction > crossovers
+            "bb":        1.0,   # Wide bands already priced in
+            "adx":       1.0,   # High ADX but direction flips fast
+            "stoch":     0.8,   # Mean-reversion unreliable with high volatility
+            "ema":       1.5,   # Long EMAs as S/R reference
+            "ichimoku":  3.5,   # Wide cloud = best S/R zone in volatility
+            "patterns":  2.0,   # Reversal candles at extremes most reliable
+            "fib":       0.8,   # Fast moves skip levels
+            "vwap":      2.5,   # Critical anchor during volatile sessions
+            "cmf":       2.5,   # Volume flow under pressure = direction signal
+            "structure": 1.5,   # Some swing structure survives high volatility
         }
+
+
+def _finite(obj):
+    """NaN/inf → None, recursively. FastAPI refuses to serialise NaN (allow_nan=False), so one
+    degenerate indicator (a zero range, a zero ATR) must not take a whole response down."""
+    if isinstance(obj, dict):
+        return {k: _finite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_finite(v) for v in obj]
+    if isinstance(obj, (float, np.floating)) and not np.isfinite(obj):
+        return None
+    return obj
 
 
 def compute_ta(candles: list[dict], interval: str = "1h") -> dict:
     """Compute all indicators for a set of candles."""
     if len(candles) < 60:
         return {"error": "insufficient_data", "interval": interval}
+    return _finite(_compute_ta(candles, interval))
+
+
+def _compute_ta(candles: list[dict], interval: str) -> dict:
 
     df = ohlcv_to_df(candles)
     close = df["close"]
@@ -563,6 +687,7 @@ def compute_ta(candles: list[dict], interval: str = "1h") -> dict:
 
     vwap_data = vwap(df)
     cmf_val = chaikin_money_flow(df)
+    ms = market_structure(df)
 
     score = _compute_signal_score(
         rsi_val=rsi_val,
@@ -580,6 +705,7 @@ def compute_ta(candles: list[dict], interval: str = "1h") -> dict:
         vwap_data=vwap_data,
         cmf_val=cmf_val,
         regime=regime.get("regime", "ranging"),
+        structure_data=ms,
     )
 
     return {
@@ -601,6 +727,7 @@ def compute_ta(candles: list[dict], interval: str = "1h") -> dict:
         "fibonacci": fibs,
         "candlestick_patterns": patterns,
         "market_regime": regime,
+        "market_structure": ms,
         "vwap": vwap_data,
         "cmf": round(cmf_val, 4),
         "signal_score": round(score, 3),
@@ -624,10 +751,21 @@ def _compute_signal_score(
     vwap_data=None,
     cmf_val=None,
     regime: str = "ranging",
+    structure_data=None,
 ) -> float:
-    """Regime-aware signal scoring. Each indicator produces a score in [-1, +1],
-    multiplied by its regime-tuned weight. Volume ratio is applied as a final
-    confidence multiplier so high-volume signals carry more conviction."""
+    """Regime-aware signal scoring.
+
+    Each indicator produces a raw score. Scores are weighted by regime, summed,
+    then divided by total weight for a normalised average in [-1, +1].
+    Volume is applied last as a direction-aware conviction multiplier.
+
+    Five improvements over a naive weighted average:
+    1. Market structure (HH/HL vs LH/LL) as an explicit indicator.
+    2. MACD histogram rate-of-change: building momentum > stale positive histogram.
+    3. Fibonacci proximity scaled by how many times price has tested that level.
+    4. Direction-aware volume: low volume on a pullback in an uptrend is healthy.
+    5. Candlestick patterns multiplied by location context (key level vs mid-range).
+    """
     wt = _regime_indicator_weights(regime)
     points = 0.0
     total_weight = 0.0
@@ -643,9 +781,8 @@ def _compute_signal_score(
     rsi_slope = 0.0
     if len(rsi_recent) >= 5:
         slope = float(rsi_recent.iloc[-1]) - float(rsi_recent.iloc[-5])
-        rsi_slope = max(-1.0, min(1.0, slope / 20.0))  # ±20 RSI pts = max signal
+        rsi_slope = max(-1.0, min(1.0, slope / 20.0))
 
-    # Trending: momentum direction > level; ranging: level > momentum
     if regime == "trending":
         rsi_score = rsi_level * 0.3 + rsi_slope * 0.7
     else:
@@ -661,14 +798,27 @@ def _compute_signal_score(
         elif divergence["bearish"]:  points -= w
         total_weight += w
 
-    # ── MACD: fresh cross > ongoing histogram ────────────────────────────────
+    # ── MACD: cross quality + histogram momentum (Fix 2) ────────────────────
+    # A fresh cross is highest conviction. When no cross, distinguish between
+    # an expanding histogram (momentum building) and a shrinking one (fading).
     w = wt["macd"]
     cross = macd_data.get("cross", "none")
     hist = macd_data.get("histogram", 0)
-    if cross == "bullish_cross":     macd_score = 1.0
-    elif cross == "bearish_cross":   macd_score = -1.0
-    elif hist > 0:                   macd_score = 0.5
-    else:                            macd_score = -0.5
+    hist_roc = macd_data.get("histogram_roc", 0)
+    hist_expanding = macd_data.get("histogram_expanding", False)
+
+    if cross == "bullish_cross":
+        macd_score = 1.0
+    elif cross == "bearish_cross":
+        macd_score = -1.0
+    elif hist > 0:
+        if hist_expanding:       macd_score = 0.75   # momentum building
+        elif hist_roc < 0:       macd_score = 0.20   # histogram shrinking → fading
+        else:                    macd_score = 0.50   # stable positive
+    else:
+        if hist_expanding:       macd_score = -0.75  # bearish momentum building
+        elif hist_roc > 0:       macd_score = -0.20  # bearish histogram shrinking
+        else:                    macd_score = -0.50
     points += w * macd_score
     total_weight += w
 
@@ -679,8 +829,7 @@ def _compute_signal_score(
     elif pct_b < 0.2:         bb_score = 0.65
     elif pct_b > 0.95:        bb_score = -1.0
     elif pct_b > 0.8:         bb_score = -0.65
-    elif bb.get("squeeze"):   bb_score = 0.2   # squeeze → volatility coming, slight bullish
-    else:                     bb_score = 0.0
+    else:                     bb_score = 0.0   # a squeeze says a move is coming, not which way
     points += w * bb_score
     total_weight += w
 
@@ -688,12 +837,8 @@ def _compute_signal_score(
     w = wt["adx"]
     adx_val_raw = adx_data.get("adx", 0)
     if adx_val_raw >= 20:
-        # Linear magnitude: 0.0 at ADX=20, 1.0 at ADX=50
         strength = min(1.0, (adx_val_raw - 20) / 30.0)
         adx_score = strength if adx_data["direction"] == "bullish" else -strength
-        # Slope multiplier: strengthening trend gets up to 40% boost;
-        # exhausting trend gets up to 40% reduction.
-        # ±15 ADX pts over 3 bars ≈ max realistic slope → clamp to [0.6, 1.4]
         slope = adx_data.get("adx_slope", 0)
         slope_mult = max(0.6, min(1.4, 1.0 + slope / 15.0))
         adx_score = max(-1.0, min(1.0, adx_score * slope_mult))
@@ -702,7 +847,7 @@ def _compute_signal_score(
     points += w * adx_score
     total_weight += w
 
-    # ── Stochastic: level + K/D cross ───────────────────────────────────────
+    # ── Stochastic: level + K/D cross in extreme zones ──────────────────────
     w = wt["stoch"]
     k = stoch.get("k", 50)
     d = stoch.get("d", 50)
@@ -711,7 +856,6 @@ def _compute_signal_score(
     elif k < 35:     stoch_score = 0.4
     elif k > 65:     stoch_score = -0.4
     else:            stoch_score = 0.0
-    # K/D cross within extreme zones adds conviction
     if k > d and k < 40:    stoch_score = max(stoch_score, 0.65)
     elif k < d and k > 60:  stoch_score = min(stoch_score, -0.65)
     points += w * stoch_score
@@ -720,12 +864,11 @@ def _compute_signal_score(
     # ── EMA Cloud + 200 EMA long-term anchor ────────────────────────────────
     w = wt["ema"]
     alignment = emas.get("ema_alignment", "mixed")
-    if alignment == "bullish_aligned":     ema_base = 0.8
-    elif alignment == "bearish_aligned":   ema_base = -0.8
-    elif emas.get("golden_cross"):          ema_base = 0.4
-    elif emas.get("death_cross"):           ema_base = -0.4
-    else:                                   ema_base = 0.0
-    # 200 EMA long-term bias: adds ±0.2
+    if alignment == "bullish_aligned":    ema_base = 0.8
+    elif alignment == "bearish_aligned":  ema_base = -0.8
+    elif emas.get("golden_cross"):        ema_base = 0.4
+    elif emas.get("death_cross"):         ema_base = -0.4
+    else:                                 ema_base = 0.0
     ema_200_adj = 0.2 if emas.get("price_above_200ema") else -0.2
     ema_score = max(-1.0, min(1.0, ema_base + ema_200_adj))
     points += w * ema_score
@@ -750,15 +893,33 @@ def _compute_signal_score(
         points += w * max(-1.0, min(1.0, ichi_score))
         total_weight += w
 
-    # ── Candlestick Patterns ─────────────────────────────────────────────────
+    # ── Candlestick Patterns × Location Context (Fix 5) ─────────────────────
+    # A reversal pattern at a Fibonacci level or S/R extreme is high-conviction.
+    # The same pattern in the middle of the range is mostly noise.
+    # Score range: [-2, +2] before normalisation (intentional — key-level patterns
+    # should outweigh a single non-confluent indicator).
     if patterns and patterns.get("count", 0) > 0:
         w = wt["patterns"]
         sig = patterns.get("signal", "neutral")
-        if sig == "bullish":    points += w
-        elif sig == "bearish":  points -= w
+        base_score = 1.0 if sig == "bullish" else -1.0 if sig == "bearish" else 0.0
+
+        if base_score != 0.0 and fibs and not fibs.get("error"):
+            pos = fibs.get("price_position", 0.5)
+            bullish_at_support = base_score > 0 and (fibs.get("near_support") or pos < 0.25)
+            bearish_at_resistance = base_score < 0 and (fibs.get("near_resistance") or pos > 0.75)
+            in_midrange = 0.35 < pos < 0.65
+
+            if bullish_at_support or bearish_at_resistance:
+                base_score *= 2.0   # pattern at key level: double conviction
+            elif in_midrange:
+                base_score *= 0.35  # mid-range pattern: mostly noise
+
+        points += w * base_score
         total_weight += w
 
-    # ── Fibonacci S/R proximity ──────────────────────────────────────────────
+    # ── Fibonacci S/R proximity × Level Strength (Fix 3) ────────────────────
+    # Levels tested 3+ times are well-established S/R; untested levels carry less weight.
+    # Strength multiplier: 1.0 (0 tests) → 1.6 (3+ tests).
     if fibs and not fibs.get("error"):
         w = wt["fib"]
         pos = fibs.get("price_position", 0.5)
@@ -767,6 +928,15 @@ def _compute_signal_score(
         elif pos < 0.25:                      fib_score = 0.5
         elif pos > 0.75:                      fib_score = -0.5
         else:                                 fib_score = 0.0
+
+        if fib_score != 0.0:
+            touches = (
+                fibs.get("nearest_support_touches", 0) if fib_score > 0
+                else fibs.get("nearest_resistance_touches", 0)
+            )
+            strength_mult = 1.0 + min(touches, 3) * 0.2  # 1.0 → 1.6
+            fib_score = max(-1.0, min(1.0, fib_score * strength_mult))
+
         points += w * fib_score
         total_weight += w
 
@@ -775,7 +945,6 @@ def _compute_signal_score(
         w = wt["vwap"]
         dev = abs(vwap_data.get("deviation_pct", 0))
         above = vwap_data.get("price_above_vwap", False)
-        # Extended deviations from VWAP carry mean-reversion risk → weaker signal
         if above:
             vwap_score = 0.8 if dev <= 3 else 0.4 if dev <= 7 else 0.1
         else:
@@ -786,22 +955,41 @@ def _compute_signal_score(
     # ── CMF: money flow pressure ─────────────────────────────────────────────
     if cmf_val is not None:
         w = wt["cmf"]
-        # Scale: ±0.33 CMF ≈ strong pressure → max signal
         cmf_score = max(-1.0, min(1.0, float(cmf_val) * 3.0))
         points += w * cmf_score
         total_weight += w
 
-    # ── Volume confirmation multiplier ───────────────────────────────────────
-    # High-volume moves are higher conviction; low-volume signals are noise
+    # ── Market Structure: HH/HL vs LH/LL (Fix 1) ────────────────────────────
+    if structure_data:
+        w = wt["structure"]
+        points += w * structure_data.get("score", 0.0)
+        total_weight += w
+
+    # ── Volume: direction-aware confidence multiplier (Fix 4) ────────────────
+    # High volume → higher conviction (standard).
+    # Low volume on a pullback AGAINST the composite direction = healthy consolidation
+    # (smart money not participating) → minimal penalty.
+    # Low volume confirming the composite direction = concerning → full penalty.
+    raw = points / total_weight if total_weight else 0.0
+
     vol_mult = 1.0
     if volume_data:
         ratio = volume_data.get("volume_ratio", 1.0)
-        if ratio >= 2.5:    vol_mult = 1.20
-        elif ratio >= 1.5:  vol_mult = 1.10
-        elif ratio <= 0.35: vol_mult = 0.80
-        elif ratio <= 0.65: vol_mult = 0.92
+        if ratio >= 2.5:
+            vol_mult = 1.20
+        elif ratio >= 1.5:
+            vol_mult = 1.10
+        elif ratio <= 0.35:
+            obv_trend = volume_data.get("obv_trend", "falling")
+            # Low-volume pullback: OBV still rising while price dips in uptrend (or vice versa)
+            is_healthy_pullback = (
+                (obv_trend == "rising" and raw > 0.1) or
+                (obv_trend == "falling" and raw < -0.1)
+            )
+            vol_mult = 0.92 if is_healthy_pullback else 0.80
+        elif ratio <= 0.65:
+            vol_mult = 0.92
 
-    raw = points / total_weight if total_weight else 0.0
     return max(-1.0, min(1.0, raw * vol_mult))
 
 
@@ -818,7 +1006,7 @@ def _score_label(score: float) -> str:
 
 
 # Higher timeframes carry more weight in the consensus score
-_TF_WEIGHTS = {"4h": 0.40, "1h": 0.30, "30m": 0.20, "15m": 0.10}
+_TF_WEIGHTS = {"4h": 0.35, "1h": 0.35, "30m": 0.20, "15m": 0.10}
 
 
 def compute_multi_timeframe_ta(ohlcv_by_interval: dict[str, list[dict]]) -> dict:
@@ -866,7 +1054,7 @@ def _pick_best_timeframe(results: dict) -> str:
         score = abs(data.get("signal_score", 0))
         reliability = _TF_WEIGHTS.get(tf, 0.10)
         # ADX-weighted quality: strong trend on higher TF > weak signal on lower TF
-        adx_bonus = min(0.2, data.get("adx", {}).get("adx", 0) / 200)
+        adx_bonus = min(0.2, ((data.get("adx") or {}).get("adx") or 0) / 200)
         return score * reliability + adx_bonus
 
     valid = [(tf, d) for tf, d in results.items() if "signal_score" in d and not d.get("error")]

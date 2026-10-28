@@ -1,6 +1,5 @@
 """Binance public API — OHLCV, order book, funding rates, ticker."""
 
-import asyncio
 import httpx
 from data.http import get_with_client
 
@@ -66,6 +65,34 @@ async def fetch_ticker_24h(
             await client.aclose()
 
 
+async def fetch_tickers_24h(symbols: list[str]) -> dict[str, dict]:
+    """24h stats for many symbols (Binance weight 40 per 21–100 symbols). Batched, and anything that isn't a plain
+    ASCII symbol is dropped first — a listing named in Chinese characters once 400'd the whole request."""
+    import json
+    from data.http import get_json
+
+    clean = [s for s in symbols if s.isascii() and s.isalnum()]
+    data: list = []
+    for i in range(0, len(clean), 60):
+        data += await get_json(
+            f"{BASE}/ticker/24hr",
+            params={"symbols": json.dumps(clean[i:i + 60], separators=(",", ":"))},
+        )
+    out = {}
+    for d in data:
+        last = float(d["lastPrice"])
+        out[d["symbol"]] = {
+            "price": last,
+            "price_change_pct": float(d["priceChangePercent"]),
+            "high": float(d["highPrice"]),
+            "low": float(d["lowPrice"]),
+            "quote_volume": float(d["quoteVolume"]),
+            "trades": int(d.get("count") or 0),
+            "range_pct": (float(d["highPrice"]) - float(d["lowPrice"])) / last * 100 if last else 0.0,
+        }
+    return out
+
+
 async def fetch_order_book(
     symbol: str,
     limit: int = 20,
@@ -92,50 +119,61 @@ async def fetch_order_book(
             await client.aclose()
 
 
-async def fetch_funding_rate(
-    symbol: str,
-    client: httpx.AsyncClient | None = None,
-) -> dict:
-    """Futures funding rate — positive means longs pay shorts (bearish bias)."""
-    own = client is None
-    if own:
-        client = httpx.AsyncClient(timeout=12)
-    try:
-        r = await get_with_client(client, f"{FAPI}/premiumIndex", params={"symbol": symbol})
-        d = r.json()
-        return {
-            "symbol": d["symbol"],
-            "mark_price": float(d["markPrice"]),
-            "index_price": float(d["indexPrice"]),
-            "funding_rate": float(d["lastFundingRate"]),
-            "next_funding_time": d["nextFundingTime"],
-        }
-    except Exception:
-        return {}
-    finally:
-        if own:
-            await client.aclose()
+# ── USDⓈ-M perpetuals: the venue trades are simulated on ─────────────────────────
+
+async def fetch_futures_minute_bars(symbol: str, start_ms: int, limit: int = 1000) -> list[dict]:
+    """Perpetual 1m klines from `start_ms` — fills, stops and liquidations are walked on these."""
+    from data.http import get_json
+
+    rows = await get_json(
+        f"{FAPI}/klines",
+        params={"symbol": symbol, "interval": "1m", "startTime": start_ms, "limit": limit},
+    )
+    return [
+        {"open_time": r[0], "open": float(r[1]), "high": float(r[2]),
+         "low": float(r[3]), "close": float(r[4]), "close_time": r[6]}
+        for r in rows
+    ]
 
 
-async def fetch_market_snapshot(symbol: str) -> dict:
-    """Gather all Binance data for a symbol in parallel."""
-    async with httpx.AsyncClient(timeout=12) as client:
-        ohlcv_tasks = {
-            interval: fetch_ohlcv(symbol, interval, 200, client)
-            for interval in ["15m", "30m", "1h", "4h"]
-        }
-        results = await asyncio.gather(
-            *ohlcv_tasks.values(),
-            fetch_ticker_24h(symbol, client),
-            fetch_order_book(symbol, 20, client),
-            return_exceptions=True,
-        )
+async def fetch_futures_klines(symbol: str, interval: str = "4h", limit: int = 100) -> list[dict]:
+    """The latest perpetual klines (most recent last)."""
+    from data.http import get_json
 
-    intervals = list(ohlcv_tasks.keys())
-    snapshot: dict = {"symbol": symbol, "ohlcv": {}, "ticker": {}, "order_book": {}}
-    for i, interval in enumerate(intervals):
-        snapshot["ohlcv"][interval] = results[i] if not isinstance(results[i], Exception) else []
-    n = len(intervals)
-    snapshot["ticker"] = results[n] if not isinstance(results[n], Exception) else {}
-    snapshot["order_book"] = results[n + 1] if not isinstance(results[n + 1], Exception) else {}
-    return snapshot
+    rows = await get_json(f"{FAPI}/klines", params={"symbol": symbol, "interval": interval, "limit": limit})
+    return [{"open_time": r[0], "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]),
+             "close_time": r[6]} for r in rows]
+
+
+async def fetch_futures_price(symbol: str) -> float | None:
+    from data.http import get_json
+
+    d = await get_json(f"{FAPI}/ticker/price", params={"symbol": symbol})
+    return float(d["price"]) if d.get("price") else None
+
+
+async def fetch_funding_history(symbol: str, start_ms: int) -> list[dict]:
+    """Every funding settlement since `start_ms` (8h on most perpetuals, hourly on some — paged, so a
+    week of hourly settlements isn't cut off at the old limit of 100)."""
+    from data.http import get_json
+
+    out, t = [], start_ms
+    while True:
+        rows = await get_json(f"{FAPI}/fundingRate", params={"symbol": symbol, "startTime": t, "limit": 1000})
+        out += [{"time": int(r["fundingTime"]), "rate": float(r["fundingRate"]),
+                 "mark": float(r.get("markPrice") or 0) or None} for r in rows]
+        if len(rows) < 1000:
+            return out
+        t = int(rows[-1]["fundingTime"]) + 1
+
+
+async def fetch_perpetual_symbols() -> list[str]:
+    """Every trading USDT-margined perpetual."""
+    from data.http import get_json
+
+    info = await get_json(f"{FAPI}/exchangeInfo", timeout=20.0)
+    return [
+        s["symbol"] for s in info.get("symbols", [])
+        if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT"
+        and s.get("status") == "TRADING"
+    ]

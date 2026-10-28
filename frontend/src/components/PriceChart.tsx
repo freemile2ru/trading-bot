@@ -62,12 +62,14 @@ export function PriceChart({ symbol, recommendation, timeframeSignals }: Props) 
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let stale = false                 // a slower reply for the previous symbol/interval must not win
     setLoading(true)
     setError(null)
     api.market.ohlcv(symbol, interval, 120)
-      .then(r => setCandles(r.candles))
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
+      .then(r => { if (!stale) setCandles(r.candles) })
+      .catch(e => { if (!stale) setError(e.message) })
+      .finally(() => { if (!stale) setLoading(false) })
+    return () => { stale = true }
   }, [symbol, interval])
 
   const srData = timeframeSignals?.[interval]

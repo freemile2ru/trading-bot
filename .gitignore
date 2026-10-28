@@ -14,5 +14,24 @@ node_modules/
 # Runtime data — keep out of git
 backend/data/paper_trades.json
 backend/data/paper_trades.json.tmp
+backend/data/auto_trades.json
+backend/data/auto_trades.json.tmp
 backend/data/signal_history.json
 backend/data/signal_history.json.tmp
+backend/data/scalper_*.db
+backend/data/scalper_*.db-wal
+backend/data/scalper_*.db-shm
+backend/data/impulse_*.db*
+backend/data/backups/
+backend/data/state.db*
+backend/data/swing_trading.db*
+backend/data/signals.db*
+backend/data/*.migrated.json
+backend/data/research_cache/
+backend/data/live.db*
+logs/
+backend/data/news.db*
+backend/data/recorder.db*
+backend/data/copy_trading.db*
+backend/data/positioning.db*
+backend/data/unlocks.db*

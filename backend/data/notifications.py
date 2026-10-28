@@ -1,44 +1,18 @@
-"""Email (SMTP/Gmail) and SMS (Twilio) notifications for trade signals."""
+"""Trade-signal notifications. SMS via Twilio; email is currently disabled."""
 
 import os
 import logging
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 _log = logging.getLogger(__name__)
 
 
 def send_email(subject: str, body: str) -> bool:
+    """Email alerts are disabled — SMS (Twilio) is the only active channel.
+
+    The SMTP implementation was removed as unreachable code; it's in git history
+    (data/notifications.py at the initial commits) if email is wanted again.
+    """
     return False
-
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_pass = os.getenv("SMTP_PASSWORD", "")
-    to_email = os.getenv("NOTIFY_EMAIL", "")
-
-    if not all([smtp_user, smtp_pass, to_email]):
-        _log.warning("Email not configured — set SMTP_USER, SMTP_PASSWORD, NOTIFY_EMAIL in .env")
-        return False
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = smtp_user
-    msg["To"] = to_email
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-        _log.info("Email sent to %s", to_email)
-        return True
-    except Exception as exc:
-        _log.error("Email send failed: %s", exc)
-        return False
 
 
 def send_sms(body: str) -> bool:

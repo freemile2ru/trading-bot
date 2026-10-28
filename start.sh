@@ -22,6 +22,14 @@ echo "Starting backend on http://localhost:8000 ..."
 python main.py &
 BACKEND_PID=$!
 
+# Keep the Mac awake while the backend runs: a sleeping Mac gets no prices, so stops aren't
+# managed and the experiments lose days (2026-10-14..17). -i: no idle sleep; -s: no system
+# sleep on mains power. Closing the lid on battery still sleeps it. Ends with the backend.
+if command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -i -s -w $BACKEND_PID &
+  echo "Keeping the Mac awake while the backend runs (caffeinate)."
+fi
+
 # Frontend
 cd ../frontend
 if [ ! -d "node_modules" ]; then
