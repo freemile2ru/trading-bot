@@ -44,7 +44,8 @@ RETIRED_SYSTEMS = {"scalper": "order-flow scalper, retired 2026-09-29", "scalper
                    "signals_claude": "signals · Claude, retired 2026-10-25", "hold72": "hold vs BTC, retired 2026-10-24", "fade24": "fade the scanner, retired 2026-10-28",
                    "stocks_rules": "stocks scanner rules, retired 2026-10-12", "futures_rules": "futures scanner rules, retired 2026-10-12",
                    "stocks_claude": "stocks Claude-confirmed, retired 2026-10-19", "futures_claude": "futures Claude-confirmed, retired 2026-10-19"}
-SORTABLE = {"closed_ts", "opened_ts", "net_pnl", "gross_pnl", "r", "hold_min", "symbol", "notional"}
+SORTABLE = {"closed_ts", "opened_ts", "net_pnl", "gross_pnl", "r", "hold_min", "symbol", "notional",
+            "system", "direction", "exit_reason", "entry_price", "exit_price", "outcome", "costs", "leverage"}
 
 
 def _ts(iso) -> float | None:
@@ -167,6 +168,9 @@ def all_rows() -> tuple[list[dict], dict]:
     if e_rows:
         initial["events"] = _capital.initial("events", events.INITIAL_BALANCE)
         rows += e_rows
+    elif "events" in _capital.PLAN:
+        # Holds its share of the programme's capital between events — part of the whole portfolio even before a trade.
+        initial["events"] = _capital.initial("events", events.INITIAL_BALANCE)
     from experiments import carry_q
     q_rows = carry_q.rows()
     if q_rows:
@@ -247,7 +251,12 @@ def trades(filters: dict, sort: str = "closed_ts", order: str = "desc", page: in
     selected = [r for r in rows if matches(r, filters)]
     key = sort if sort in SORTABLE else "closed_ts"
     # Open trades have no close time: sort them by when they opened, ahead of closed ones.
-    val = (lambda r: r["closed_ts"] or r["opened_ts"] or 0) if key == "closed_ts" else (lambda r: r.get(key))
+    if key == "closed_ts":
+        val = lambda r: r["closed_ts"] or r["opened_ts"] or 0
+    elif key == "costs":                                   # fees + funding, the Trades page's "Costs" column
+        val = lambda r: (r.get("fees") or 0) + (r.get("funding") or 0)
+    else:
+        val = lambda r: r.get(key)
     present = [r for r in selected if val(r) is not None]
     missing = [r for r in selected if val(r) is None]
     present.sort(key=val, reverse=order == "desc")
@@ -433,21 +442,29 @@ def portfolio(include_retired: bool = False) -> dict:
         out[system] = {"label": SYSTEMS[system],
                        **metrics([r for r in rows if r["system"] == system], initial.get(system, 0), series)}
 
-    # Combined paper systems: sum each one's equity on a shared hourly clock (forward-filled).
-    # Live money is never folded into this paper total — live systems stand on their own.
-    curves_p = {s: c for s, c in curves.items() if s in paper_systems}
-    hours = sorted({int(p["ts"] // 3600) for c in curves_p.values() for p in c})
-    combined, last = [], {s: initial.get(s, 0) for s in paper_systems}
-    idx = {s: 0 for s in paper_systems}
-    for h in hours:
-        for s, c in curves_p.items():
-            while idx[s] < len(c) and c[idx[s]]["ts"] // 3600 <= h:
-                last[s] = c[idx[s]]["equity"]
-                idx[s] += 1
-        combined.append((h * 3600.0, sum(last.values())))
-    total_initial = sum(initial.get(s, 0) for s in paper_systems)
-    out["all"] = {"label": "All paper systems",
-                  **metrics([r for r in rows if r["system"] in paper_systems], total_initial, combined)}
+    def combine(systems: tuple[str, ...]) -> list[tuple[float, float]]:
+        """Sum the systems' equity on a shared hourly clock (forward-filled)."""
+        cs = {s: curves[s] for s in systems if s in curves}
+        hours = sorted({int(p["ts"] // 3600) for c in cs.values() for p in c})
+        combined, last, idx = [], {s: initial.get(s, 0) for s in cs}, {s: 0 for s in cs}
+        for h in hours:
+            for s, c in cs.items():
+                while idx[s] < len(c) and c[idx[s]]["ts"] // 3600 <= h:
+                    last[s] = c[idx[s]]["equity"]
+                    idx[s] += 1
+            combined.append((h * 3600.0, sum(last.values())))
+        return combined
+
+    # "all": the main and autotrader paper wallets (the original paper total). "everything": every paper book —
+    # the whole $50k programme. Live money is never folded into either — live ledgers stand on their own.
+    combined = combine(paper_systems)
+    out["all"] = {"label": "Main + autotrader (paper)",
+                  **metrics([r for r in rows if r["system"] in paper_systems], sum(initial.get(s, 0) for s in paper_systems), combined)}
     curves["all"] = _thin(combined)
+    every = tuple(s for s in present if not s.endswith("_live"))
+    whole = combine(every)
+    out["everything"] = {"label": "Whole portfolio (every paper book)",
+                         **metrics([r for r in rows if r["system"] in every], sum(initial.get(s, 0) for s in every), whole)}
+    curves["everything"] = _thin(whole)
     return {"systems": out, "curves": curves, "updated_at": time.time(), "include_retired": include_retired,
             "retired_systems": RETIRED_SYSTEMS}

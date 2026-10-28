@@ -39,7 +39,14 @@ TREND_DAYS = 126
 # Daily volatility target per name (2026-10-27: 1% → 2.5%). At 1% the stock book split $10k over 23 names into ~$200
 # positions and sat on $3.5k of exposure; 2.5% puts it near fully invested at the 3× the book allows, roughly the
 # 10–15% annual volatility trend programmes usually run at. Applies to positions opened from the next rebalance.
-TREND_VOL_TARGET = float(os.getenv("MARKETS_TREND_VOL_TARGET", "0.025"))
+# Sizing (2026-10-28): a name gets equity × VOL_TARGET / its 20-day volatility, capped so the names in an uptrend
+# together hold at most TREND_GROSS × equity. The old rule divided equity by ALL names (20+) and so held ~$200 a
+# name on a $10k book — wins of a few dollars whatever the trend did.
+# 2.8× gross since 2026-10-29 (was 1.5×). The leverage round asked for 7–10×, but the 15% disaster stop caps a name's
+# leverage at 3× (liquidation must sit 2× the stop distance away — trading/futures.safe_leverage), so the margin for
+# anything past ~2.8× gross does not exist. A tighter stop would allow more; the whipsaw lab said tighter stops lose.
+TREND_VOL_TARGET = float(os.getenv("MARKETS_TREND_VOL_TARGET", "0.35"))
+TREND_GROSS = float(os.getenv("MARKETS_TREND_GROSS", "2.8"))
 TREND_DISASTER = 0.15
 # Hysteresis (2026-10-23): enter above +TREND_BAND, exit below −TREND_BAND. With a bare "> 0" rule the
 # books flapped — GOOGL and AMZN out, in and out again within days. On 10 years of daily data
@@ -296,7 +303,10 @@ async def trend_rebalance(market: str, force: bool = False) -> list[str]:
     held = {t["symbol"]: t for t in w.get_portfolio()["open_trades"]}
     syms = MARKETS[market]["symbols"]
     changes = []
-    equity = w.get_portfolio()["total_equity"]
+    from trading import capital
+    equity = capital.sizing_equity(book, w.get_portfolio()["total_equity"])
+    # First pass: every name's trend and volatility, so sizing knows how many are long this rebalance.
+    stats: dict[str, tuple[float, bool, float]] = {}
     for perp, yt in syms.items():
         try:
             s = await _yahoo_daily(yt)
@@ -307,7 +317,9 @@ async def trend_rebalance(market: str, force: bool = False) -> list[str]:
             continue
         trend = float(s.iloc[-1] / s.iloc[-1 - TREND_DAYS] - 1)
         up = trend > -TREND_BAND if perp in held else trend > TREND_BAND
-        vol = s.pct_change().iloc[-20:].std()
+        stats[perp] = (trend, up, float(s.pct_change().iloc[-20:].std()))
+    n_long = sum(1 for _, up, _ in stats.values() if up) or 1
+    for perp, (trend, up, vol) in stats.items():
         if perp in held and not up:
             price = await monitor.live_price(perp) or held[perp]["current_price"]
             await asyncio.to_thread(w.close_trade_manually, held[perp]["id"], price, "trend_flip")
@@ -321,7 +333,7 @@ async def trend_rebalance(market: str, force: bool = False) -> list[str]:
             price = await monitor.live_price(perp)
             if not price or not vol:
                 continue
-            notional = equity * min(TREND_VOL_TARGET / vol, 1.0) / len(syms)
+            notional = min(equity * TREND_VOL_TARGET / vol, equity * TREND_GROSS / n_long)
             t = await asyncio.to_thread(
                 w.open_trade, symbol=perp, direction="long", entry_price=price, stop_loss=price * (1 - TREND_DISASTER),
                 take_profit_1=price * 1.5, take_profit_2=price * 2.0, notional_usd=notional, timeframe="1d",

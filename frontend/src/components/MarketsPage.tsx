@@ -6,6 +6,7 @@ import { fmtUsd, fmtUsdSigned } from '../utils/format'
 import type { BooksResponse } from '../types/books'
 import type { MarketBook, MarketKey, MarketSummary } from '../types/markets'
 import { BookCard } from './BooksPage'
+import { SortHeader, useSort } from './ui/Sortable'
 
 const MARKETS: [MarketKey, string, string][] = [
   ['crypto', 'Crypto', 'The crypto books: autotrader, signal experiments, Claude swing, carry, Hold-72'],
@@ -114,17 +115,23 @@ function PicksCard({ s }: { s: MarketSummary }) {
 }
 
 function ScanTable({ s }: { s: MarketSummary }) {
+  const t = useSort(s.scans, {
+    instrument: r => r.base, price: r => r.price, conviction: r => r.conviction,
+    rules: r => (r.rules?.enter ? `0 enter ${r.rules.direction}` : r.rules?.direction ? `1 ${r.rules.direction}` : '2 none'),
+  })
   if (!s.scans.length) return <p className="text-xs text-gray-500">The first scan runs about a minute after start-up, then every {Math.round(s.sweep_s / 60)} minutes.</p>
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500 text-left">
-          <th className="py-1.5 pr-3 font-normal">Instrument</th><th className="py-1.5 pr-3 font-normal text-right">Price</th>
-          <th className="py-1.5 pr-3 font-normal text-right">Conviction</th><th className="py-1.5 pr-3 font-normal">Rules say</th>
+          <th className="py-1.5 pr-3 font-normal"><SortHeader k="instrument" sort={t.sort} onSort={t.toggle}>Instrument</SortHeader></th>
+          <th className="py-1.5 pr-3 font-normal text-right"><SortHeader k="price" sort={t.sort} onSort={t.toggle} align="right">Price</SortHeader></th>
+          <th className="py-1.5 pr-3 font-normal text-right"><SortHeader k="conviction" sort={t.sort} onSort={t.toggle} align="right">Conviction</SortHeader></th>
+          <th className="py-1.5 pr-3 font-normal"><SortHeader k="rules" sort={t.sort} onSort={t.toggle}>Rules say</SortHeader></th>
           <th className="py-1.5 font-normal">Why / Claude</th>
         </tr></thead>
         <tbody>
-          {s.scans.map(r => (
+          {t.rows.map(r => (
             <tr key={r.symbol} className="border-t border-gray-800">
               <td className="py-1.5 pr-3 font-semibold text-gray-100">{r.base}</td>
               <td className="py-1.5 pr-3 text-right tabular-nums text-gray-300">{r.price.toPrecision(6)}</td>

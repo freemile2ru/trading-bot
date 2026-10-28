@@ -52,7 +52,7 @@ export function TargetPanel() {
           </div>
           <div className="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden"><div className="h-full rounded-full bg-gray-500" style={{ width: `${pctExp * 100}%` }} /></div>
           <div className="mt-1 text-[11px] text-gray-500">
-            {t.expected >= r.target ? 'the books in place should cover the target' : `${fmtUsd(r.gap_expected, 0)}/day more needed in deployed edge`} · programme capital {fmtUsd(t.added, 0)} on {fmtUsd(t.equity, 0)} equity
+            {t.expected >= r.target ? 'the books in place should cover the target' : `${fmtUsd(r.gap_expected, 0)}/day more needed in deployed edge`} · {fmtUsd(t.equity, 0)} equity across the books · target = {(r.target / t.equity * 100).toFixed(2)}% a day
           </div>
         </div>
 
@@ -90,7 +90,9 @@ export function TargetPanel() {
                 <tr key={b.book} className={clsx('border-t border-gray-800/60', i === planned.length && 'border-t-2 border-gray-700')}>
                   <td className="py-1 text-gray-200">{b.label}{b.open_positions > 0 && <span className="ml-1 text-[10px] text-gray-500">{b.open_positions} open</span>}</td>
                   <td className="py-1 text-right font-mono text-gray-300">{fmtUsd(b.equity, 0)}</td>
-                  <td className="py-1 text-right font-mono text-gray-400">{b.planned ? `${fmtUsd(b.planned, 0)}${b.added ? '' : ' (pending)'}` : '—'}</td>
+                  <td className="py-1 text-right font-mono text-gray-400" title={b.shortfall ? `${fmtUsdSigned(b.shortfall, 0)} still to move — cash is tied up in open positions` : undefined}>
+                    {b.planned ? `${fmtUsd(b.planned, 0)}${b.shortfall ? ` (${fmtUsdSigned(b.shortfall, 0)} pending)` : ''}` : '—'}
+                  </td>
                   <td className={clsx('py-1 text-right font-mono', tone(b.today))}>{fmtUsdSigned(b.today, 0)}</td>
                   <td className={clsx('py-1 text-right font-mono', tone(b.avg7))}>{fmtUsdSigned(b.avg7, 0)}</td>
                   <td className={clsx('py-1 text-right font-mono', tone(b.avg30))}>{fmtUsdSigned(b.avg30, 0)}</td>
@@ -101,7 +103,7 @@ export function TargetPanel() {
             </tbody>
           </table>
           <div className="mt-2 text-[10px] text-gray-600">
-            Per-day figures come from each book's equity curve with deposits taken out; days without data count as zero in the averages. "Expected" is what the evidence behind a book says it should earn at its current positions — blank where no edge has been shown. The books above the line carry programme capital; the ones below stay at base size.
+            Per-day figures come from each book's equity curve with deposits and withdrawals taken out; days without data count as zero in the averages. "Expected" is what the evidence behind a book says it should earn at its current positions — blank where no edge has been shown. "Programme" is each book's share of the $50k; a withdrawal that cannot be made yet (cash tied up in open positions) shows as pending and completes as they close.
           </div>
         </div>
       )}

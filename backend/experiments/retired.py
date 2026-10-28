@@ -412,4 +412,7 @@ def summary() -> dict:
     out.sort(key=lambda x: -x["score"]["score"])
     for i, item in enumerate(out, 1):
         item["rank"] = i
-    return {"retired": out, "weights": WEIGHTS, "updated_at": time.time()}
+    # Studies the research shelf rejected live here too, so the Lab shows only what is still open or in use.
+    from experiments import research_index
+    research = [e for e in research_index.shelf() if e["status"] == "rejected"]
+    return {"retired": out, "research": research, "weights": WEIGHTS, "updated_at": time.time()}

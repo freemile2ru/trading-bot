@@ -9,6 +9,9 @@ import { TradeDrawer } from './TradeDrawer'
 import { DebriefSection } from './DebriefViews'
 import { LedgerSwitch } from './ui/LedgerSwitch'
 import { useLedger } from '../hooks/useLedger'
+import { SortHeader, useSort } from './ui/Sortable'
+
+const EMPTY: never[] = []
 
 /* The History tab answers "what have the trades taught us?" — the questions no other page
    covers: which entry inputs pay, which exit rule works best, whether our interventions and
@@ -102,6 +105,10 @@ function lessons(ins: HistoryInsights, ex: ExitComparison | null): string[] {
 
 function InsightTable({ title, subtitle, rows }: { title: string; subtitle: string; rows: InsightGroup[] }) {
   const max = Math.max(0.5, ...rows.map(r => Math.abs(r.avg_r ?? 0)))
+  const t = useSort(rows, { key: r => r.key, trades: r => r.trades, won: r => r.win_rate, avg: r => r.avg_r, pnl: r => r.pnl })
+  const th = (k: string, label: string, cls: string) => (
+    <th className={clsx('font-semibold pb-1.5', cls)}><SortHeader k={k} sort={t.sort} onSort={t.toggle} align={cls.includes('right') ? 'right' : 'left'}>{label}</SortHeader></th>
+  )
   return (
     <div className="card">
       <div className="text-sm font-semibold text-white">{title}</div>
@@ -110,15 +117,15 @@ function InsightTable({ title, subtitle, rows }: { title: string; subtitle: stri
         <table className="w-full text-xs">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-              <th className="text-left font-semibold pb-1.5" />
-              <th className="text-right font-semibold pb-1.5">Trades</th>
-              <th className="text-right font-semibold pb-1.5">Won</th>
-              <th className="font-semibold pb-1.5 text-center w-[38%]">Average result</th>
-              <th className="text-right font-semibold pb-1.5">P&L</th>
+              {th('key', 'Group', 'text-left')}
+              {th('trades', 'Trades', 'text-right')}
+              {th('won', 'Won', 'text-right')}
+              {th('avg', 'Average result', 'text-center w-[38%]')}
+              {th('pnl', 'P&L', 'text-right')}
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => {
+            {t.rows.map(r => {
               const small = r.trades < MIN_SAMPLE
               const w = Math.min(1, Math.abs(r.avg_r ?? 0) / max) * 50
               return (
@@ -173,6 +180,12 @@ function StoryCard({ t, onOpen }: { t: TradeStory; onOpen: () => void }) {
 // ── Exit policy comparison (shadow book) ─────────────────────────────────────
 
 function ExitPolicies({ data }: { data: ExitComparison | null }) {
+  const t = useSort(data?.policies ?? EMPTY, {
+    policy: p => p.policy, trades: p => p.trades, avg: p => p.avg_r, total: p => p.total_r, win: p => p.win_rate, hold: p => p.avg_hold_h,
+  })
+  const th = (k: string, label: string, right = false) => (
+    <th className={clsx('py-2 pr-3 font-semibold', right && 'text-right')}><SortHeader k={k} sort={t.sort} onSort={t.toggle} align={right ? 'right' : 'left'}>{label}</SortHeader></th>
+  )
   if (!data) return null
 
   const scored = data.policies.filter(p => p.trades > 0)
@@ -197,17 +210,17 @@ function ExitPolicies({ data }: { data: ExitComparison | null }) {
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-800">
-                <th className="py-2 pr-3 font-semibold">Policy</th>
-                <th className="py-2 pr-3 font-semibold text-right">Trades</th>
-                <th className="py-2 pr-3 font-semibold text-right">Avg R</th>
-                <th className="py-2 pr-3 font-semibold text-right">Total R</th>
-                <th className="py-2 pr-3 font-semibold text-right">Win</th>
-                <th className="py-2 pr-3 font-semibold text-right">Avg hold</th>
+                {th('policy', 'Policy')}
+                {th('trades', 'Trades', true)}
+                {th('avg', 'Avg R', true)}
+                {th('total', 'Total R', true)}
+                {th('win', 'Win', true)}
+                {th('hold', 'Avg hold', true)}
                 <th className="py-2 font-semibold">How they ended</th>
               </tr>
             </thead>
             <tbody>
-              {data.policies.map(p => (
+              {t.rows.map(p => (
                 <tr key={p.policy} className="border-b border-gray-800/60 align-top">
                   <td className="py-2 pr-3">
                     <div className="flex items-center gap-1.5">

@@ -19,7 +19,7 @@ from storage.db import SWING_DB
 from trading.paper_trader import PaperWallet
 
 ENABLED = os.getenv("EXPERIMENTS_ENABLED", "true").lower() != "false"
-RISK_PCT = float(os.getenv("EXPERIMENT_RISK_PCT", "1.0"))        # signals books: % of equity at the stop
+RISK_PCT = float(os.getenv("EXPERIMENT_RISK_PCT", "3.0"))        # signals books: % of equity at the stop (3 since 2026-10-29)
 
 LABELS = {
     "auto_rules": "Autotrader · no Claude",

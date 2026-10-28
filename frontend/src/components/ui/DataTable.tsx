@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { SortHeader, sortRows, type Accessors, type SortState, type SortValue } from './Sortable'
 
 export interface Column<T> {
   key: string
@@ -8,15 +9,22 @@ export interface Column<T> {
   /** Tailwind width class, e.g. "w-24" — keeps columns from drifting between tables. */
   width?: string
   title?: string
+  /** Client-side sorting: how to read this column's value. */
+  sortValue?: (row: T) => SortValue
+  /** Server-side sorting: the key sent back through `onSort` (the API sorts the page). */
+  sortKey?: string
   render: (row: T, index: number) => ReactNode
 }
 
 /**
  * One table style for the whole app: quiet uppercase headers, right-aligned tabular
  * numbers, row hover, and a real empty state. Wraps horizontally on narrow screens.
+ *
+ * Sorting: a column with `sortValue` sorts in the browser; with `sort`/`onSort` given, a
+ * column with `sortKey` asks the caller (the API) to sort instead.
  */
 export function DataTable<T>({
-  columns, rows, rowKey, empty = 'Nothing here yet.', dense = false, onRowClick, footer,
+  columns, rows, rowKey, empty = 'Nothing here yet.', dense = false, onRowClick, footer, sort, onSort,
 }: {
   columns: Column<T>[]
   rows: T[]
@@ -25,7 +33,23 @@ export function DataTable<T>({
   dense?: boolean
   onRowClick?: (row: T) => void
   footer?: ReactNode
+  sort?: SortState | null
+  onSort?: (key: string) => void
 }) {
+  const controlled = !!onSort
+  const [local, setLocal] = useState<SortState | null>(null)
+  const accessors = useMemo<Accessors<T>>(
+    () => Object.fromEntries(columns.filter(c => c.sortValue).map(c => [c.key, c.sortValue!])),
+    [columns],
+  )
+  const shown = useMemo(() => (controlled ? rows : sortRows(rows, accessors, local)), [controlled, rows, accessors, local])
+  const toggle = (key: string) => setLocal(s => {
+    if (s?.key === key) return { key, dir: s.dir === 'desc' ? 'asc' : 'desc' }
+    const sample = rows.map(accessors[key]).find(v => v != null)
+    return { key, dir: typeof sample === 'number' ? 'desc' : 'asc' }
+  })
+  const state = controlled ? (sort ?? null) : local
+
   const pad = dense ? 'px-3 py-1.5' : 'px-3 py-2.5'
   const align = (a?: string) => (a === 'right' ? 'text-right' : a === 'center' ? 'text-center' : 'text-left')
   return (
@@ -33,24 +57,29 @@ export function DataTable<T>({
       <table className="w-full text-xs border-separate border-spacing-0">
         <thead>
           <tr>
-            {columns.map(c => (
-              <th
-                key={c.key}
-                title={c.title}
-                className={clsx(
-                  pad, align(c.align), c.width,
-                  'sticky top-0 bg-gray-900 font-semibold text-[10px] uppercase tracking-wider text-gray-500',
-                  'border-b border-gray-800 whitespace-nowrap',
-                  c.title && 'cursor-help',
-                )}
-              >
-                {c.header}
-              </th>
-            ))}
+            {columns.map(c => {
+              const key = controlled ? c.sortKey : (c.sortValue ? c.key : undefined)
+              return (
+                <th
+                  key={c.key}
+                  title={key ? undefined : c.title}
+                  className={clsx(
+                    pad, align(c.align), c.width,
+                    'sticky top-0 bg-gray-900 font-semibold text-[10px] uppercase tracking-wider text-gray-500',
+                    'border-b border-gray-800 whitespace-nowrap',
+                    c.title && !key && 'cursor-help',
+                  )}
+                >
+                  {key
+                    ? <SortHeader k={key} sort={state} onSort={controlled ? onSort! : toggle} title={c.title} align={c.align}>{c.header}</SortHeader>
+                    : c.header}
+                </th>
+              )
+            })}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
+          {shown.map((row, i) => (
             <tr
               key={rowKey(row, i)}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
@@ -70,7 +99,7 @@ export function DataTable<T>({
               ))}
             </tr>
           ))}
-          {rows.length === 0 && (
+          {shown.length === 0 && (
             <tr>
               <td colSpan={columns.length} className="px-3 py-8 text-center text-gray-500">{empty}</td>
             </tr>

@@ -4,6 +4,14 @@ import clsx from 'clsx'
 import { api } from '../utils/api'
 import type { NewsFilters, NewsItem, NewsResearch, NewsScope, NewsScores, NewsSort, NewsStatus, ReactionStats } from '../types/news'
 import { EditionCard, ImportantNews, MoodCard, useLatestEdition } from './news/Briefing'
+import { SortHeader, useSort, type SortState } from './ui/Sortable'
+
+const EMPTY: never[] = []
+const TH = ({ k, sort, onSort, children, right, title }: { k: string; sort: SortState | null; onSort: (k: string) => void; children: React.ReactNode; right?: boolean; title?: string }) => (
+  <th className={clsx('px-2 py-1.5 font-normal', right ? 'text-right' : 'text-left')}>
+    <SortHeader k={k} sort={sort} onSort={onSort} align={right ? 'right' : 'left'} title={title}>{children}</SortHeader>
+  </th>
+)
 
 const SCOPES: [NewsScope | 'pending' | '', string][] = [
   ['', 'All'], ['coin', 'Coins'], ['market', 'Market'], ['macro', 'Macro'], ['pending', 'Waiting for Claude'], ['irrelevant', 'Ignored'],
@@ -215,11 +223,17 @@ function StatCells({ s }: { s: ReactionStats }) {
 }
 
 function ResearchPanel({ r }: { r: NewsResearch | null }) {
+  const acc = {
+    group: (g: ReactionStats & { event_type?: string; importance?: number }) => g.event_type ?? g.importance, calls: (g: ReactionStats) => g.n,
+    h1: (g: ReactionStats) => g.r_1h.avg_signed_pct, h4: (g: ReactionStats) => g.r_4h.avg_signed_pct, h24: (g: ReactionStats) => g.r_24h.avg_signed_pct,
+  }
+  const byType = useSort(r?.by_event_type ?? EMPTY, acc)
+  const byImp = useSort(r?.by_importance ?? EMPTY, acc)
   if (!r) return <div className="card h-32 animate-pulse" />
-  const head = (
+  const head = (t: { sort: SortState | null; toggle: (key: string) => void }) => (
     <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-      <th className="px-2 py-1.5 text-left font-normal">Group</th><th className="px-2 py-1.5 text-right font-normal">Calls</th>
-      <th className="px-2 py-1.5 text-right font-normal">1 h</th><th className="px-2 py-1.5 text-right font-normal">4 h</th><th className="px-2 py-1.5 text-right font-normal">24 h</th>
+      <TH k="group" sort={t.sort} onSort={t.toggle}>Group</TH><TH k="calls" sort={t.sort} onSort={t.toggle} right>Calls</TH>
+      <TH k="h1" sort={t.sort} onSort={t.toggle} right>1 h</TH><TH k="h4" sort={t.sort} onSort={t.toggle} right>4 h</TH><TH k="h24" sort={t.sort} onSort={t.toggle} right>24 h</TH>
     </tr>
   )
   return (
@@ -234,16 +248,16 @@ function ResearchPanel({ r }: { r: NewsResearch | null }) {
       </div>
       {!r.overall.n ? <p className="text-xs text-gray-500">No labelled headlines yet — the first 1-hour reactions appear an hour after collection starts.</p> : (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 overflow-x-auto">
-          <table className="w-full text-xs"><thead>{head}</thead><tbody>
+          <table className="w-full text-xs"><thead>{head(byType)}</thead><tbody>
             <tr className="border-t border-gray-800 font-semibold"><td className="px-2 py-1.5 text-gray-100">All calls</td>
               <td className="px-2 py-1.5 text-right tabular-nums text-gray-300">{r.overall.n}</td><StatCells s={r.overall} /></tr>
-            {r.by_event_type.map(g => (
+            {byType.rows.map(g => (
               <tr key={g.event_type} className="border-t border-gray-800"><td className="px-2 py-1.5 text-gray-300">{typeLabel(g.event_type)}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-gray-400">{g.n}</td><StatCells s={g} /></tr>
             ))}
           </tbody></table>
-          <table className="w-full text-xs self-start"><thead>{head}</thead><tbody>
-            {r.by_importance.map(g => (
+          <table className="w-full text-xs self-start"><thead>{head(byImp)}</thead><tbody>
+            {byImp.rows.map(g => (
               <tr key={g.importance} className="border-t border-gray-800"><td className="px-2 py-1.5 text-gray-300"><Importance n={g.importance} /> importance {g.importance}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums text-gray-400">{g.n}</td><StatCells s={g} /></tr>
             ))}
@@ -255,17 +269,24 @@ function ResearchPanel({ r }: { r: NewsResearch | null }) {
 }
 
 function SourcesPanel({ status }: { status: NewsStatus }) {
+  const t = useSort(status.sources, {
+    source: s => s.name, every: s => s.every_s, ok: s => s.last_ok, newest: s => s.newest, kept: s => s.items_total, old: s => s.stale_dropped,
+    problem: s => (s.last_error && (!s.last_ok || (s.last_poll ?? 0) > s.last_ok) ? s.last_error : null),
+  })
+  const th = (k: string, label: string, right = false, title?: string) => (
+    <th className={clsx('py-1.5 pr-3 font-normal', right && 'text-right')}><SortHeader k={k} sort={t.sort} onSort={t.toggle} align={right ? 'right' : 'left'} title={title}>{label}</SortHeader></th>
+  )
   return (
     <section className="card space-y-2 overflow-x-auto">
       <h3 className="text-sm font-semibold text-white">Sources</h3>
       <table className="w-full text-xs">
         <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500 text-left">
-          <th className="py-1.5 pr-3 font-normal">Source</th><th className="py-1.5 pr-3 font-normal">Every</th><th className="py-1.5 pr-3 font-normal">Last OK</th>
-          <th className="py-1.5 pr-3 font-normal">Newest item</th><th className="py-1.5 pr-3 font-normal text-right">Kept</th>
-          <th className="py-1.5 pr-3 font-normal text-right" title="Items older than 48 h when first read">Too old</th><th className="py-1.5 font-normal">Problem</th>
+          {th('source', 'Source')}{th('every', 'Every')}{th('ok', 'Last OK')}
+          {th('newest', 'Newest item')}{th('kept', 'Kept', true)}
+          {th('old', 'Too old', true, 'Items older than 48 h when first read')}{th('problem', 'Problem')}
         </tr></thead>
         <tbody>
-          {status.sources.map(s => {
+          {t.rows.map(s => {
             const stale = s.newest && Date.now() / 1000 - s.newest > 3 * 86400
             return (
               <tr key={s.name} className="border-t border-gray-800">

@@ -43,7 +43,9 @@ HOLD_DAYS_BY_KIND = {"spot listing": float(os.getenv("EVENTS_HOLD_DAYS_LISTING",
                      "futures launch": float(os.getenv("EVENTS_HOLD_DAYS_LAUNCH", "30")),
                      "delisting": float(os.getenv("EVENTS_HOLD_DAYS_DELISTING", "7"))}
 HOLD_DAYS = max(HOLD_DAYS_BY_KIND.values())
-LEG_PCT = float(os.getenv("EVENTS_LEG_PCT", "10"))
+# 35% a leg since 2026-10-29 (was 10): ten pairs × two legs × 35% = 7× gross on the book, as asked. One event hitting its
+# 25% pair stop costs ~9% of the book.
+LEG_PCT = float(os.getenv("EVENTS_LEG_PCT", "35"))
 MAX_OPEN = int(os.getenv("EVENTS_MAX_OPEN", "10"))        # month-long holds need more slots
 DISASTER_PCT = float(os.getenv("EVENTS_DISASTER_PCT", "25"))
 FUNDING_KILL = float(os.getenv("EVENTS_FUNDING_KILL", "0.005"))     # one settlement costing the short ≥ 0.5%

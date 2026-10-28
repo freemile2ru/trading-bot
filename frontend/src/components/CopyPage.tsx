@@ -4,6 +4,10 @@ import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
 import type { CopyStatus, CopyLeader } from '../types/copy'
+import { SortHeader, useSort, type SortState } from './ui/Sortable'
+
+const EMPTY: never[] = []
+const leaderName = (l: CopyLeader) => (l.nickname_en && l.nickname_en.length < 40 ? l.nickname_en : l.nickname)
 
 const pct = (v: number | null | undefined, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`
 const tone = (v: number | null | undefined) => v == null ? 'text-gray-500' : v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-gray-300'
@@ -67,7 +71,7 @@ function Holdings({ l }: { l: CopyLeader }) {
 }
 
 function LeaderRow({ l }: { l: CopyLeader }) {
-  const name = l.nickname_en && l.nickname_en.length < 40 ? l.nickname_en : l.nickname
+  const name = leaderName(l)
   const hl = l.venue === 'hyperliquid'
   return (
     <tr className="border-t border-gray-800/70 align-top">
@@ -104,6 +108,17 @@ export function CopyPage() {
     return () => { live = false; clearInterval(id) }
   }, [])
   const refresh = async () => { setBusy(true); try { setD(await api.copy.refresh()) } finally { setBusy(false) } }
+  const leaders = useSort(d?.leaders ?? EMPTY, {
+    leader: l => leaderName(l), roi: l => l.roi, mdd: l => l.mdd, weeks: l => l.stats.weeks_positive_pct, sharpe: l => l.stats.sharpe,
+    pnl: l => l.copier_pnl, score: l => l.score, style: l => l.profile.median_hold_h,
+  })
+  const open = useSort(d?.open ?? EMPTY, {
+    position: p => `${p.symbol} ${p.direction}`, leader: p => p.leader, entry: p => p.entry, vs: p => p.moved_pct_at_entry,
+    lag: p => p.age_h_at_entry, pnl: p => p.pnl_usd,
+  })
+  const skipped = useSort(d?.skipped ?? EMPTY, { position: s => `${s.symbol} ${s.side}`, why: s => s.reason, went: s => s.outcome_pct })
+  const H = ({ k, s, children, right }: { k: string; s: { sort: SortState | null; toggle: (key: string) => void }; children: React.ReactNode; right?: boolean }) =>
+    <th className={clsx('font-semibold pb-1', right ? 'text-right' : 'text-left')}><SortHeader k={k} sort={s.sort} onSort={s.toggle} align={right ? 'right' : 'left'}>{children}</SortHeader></th>
 
   if (err && !d) return <div className="card text-sm text-rose-300">Copy trading unavailable: {err}</div>
   if (!d) return <div className="card text-sm text-gray-500">Loading…</div>
@@ -133,12 +148,12 @@ export function CopyPage() {
           <table className="w-full text-xs min-w-[64rem]">
             <thead>
               <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-                <th className="text-left font-semibold pb-1">Leader</th><th className="text-left font-semibold pb-1">90-day ROI curve</th>
-                <th className="text-right font-semibold pb-1">ROI</th><th className="text-right font-semibold pb-1">Max DD</th><th className="text-right font-semibold pb-1">Weeks up</th>
-                <th className="text-right font-semibold pb-1">Sharpe</th><th className="text-right font-semibold pb-1">Copier / month P&L</th><th className="text-right font-semibold pb-1">Score</th><th className="text-left font-semibold pb-1">Their style (what we judge entries against)</th>
+                <H k="leader" s={leaders}>Leader</H><th className="text-left font-semibold pb-1">90-day ROI curve</th>
+                <H k="roi" s={leaders} right>ROI</H><H k="mdd" s={leaders} right>Max DD</H><H k="weeks" s={leaders} right>Weeks up</H>
+                <H k="sharpe" s={leaders} right>Sharpe</H><H k="pnl" s={leaders} right>Copier / month P&L</H><H k="score" s={leaders} right>Score</H><H k="style" s={leaders}>Their style (what we judge entries against)</H>
               </tr>
             </thead>
-            <tbody>{d.leaders.map(l => [<LeaderRow key={l.id} l={l} />, <Holdings key={l.id + ':p'} l={l} />])}</tbody>
+            <tbody>{leaders.rows.map(l => [<LeaderRow key={l.id} l={l} />, <Holdings key={l.id + ':p'} l={l} />])}</tbody>
           </table>
           {!d.leaders.length && <div className="text-xs text-gray-500 py-2">Nobody has passed the bar yet.</div>}
         </div>
@@ -170,9 +185,9 @@ export function CopyPage() {
           <h3 className="text-sm font-semibold text-white inline-flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-gray-400" /> Open copies</h3>
           {d.open.length === 0 ? <div className="text-xs text-gray-500">Nothing copied right now — a leader's new position is copied only within ¼ of their typical hold and before it has run half their typical win.</div> : (
             <table className="w-full text-xs">
-              <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500"><th className="text-left font-semibold pb-1">Position</th><th className="text-left font-semibold pb-1">Leader</th><th className="text-right font-semibold pb-1">Our entry</th><th className="text-right font-semibold pb-1">Vs theirs</th><th className="text-right font-semibold pb-1">Lag</th><th className="text-right font-semibold pb-1">P&L</th></tr></thead>
+              <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500"><H k="position" s={open}>Position</H><H k="leader" s={open}>Leader</H><H k="entry" s={open} right>Our entry</H><H k="vs" s={open} right>Vs theirs</H><H k="lag" s={open} right>Lag</H><H k="pnl" s={open} right>P&L</H></tr></thead>
               <tbody>
-                {d.open.map((p, i) => (
+                {open.rows.map((p, i) => (
                   <tr key={i} className="border-t border-gray-800/70">
                     <td className="py-1.5"><span className={clsx('font-semibold', p.direction === 'long' ? 'text-emerald-300' : 'text-rose-300')}>{p.direction}</span> <span className="font-mono text-gray-200">{p.symbol.replace('USDT', '')}</span><div className="text-[10px] text-gray-500">{when(p.opened_at)}</div></td>
                     <td className="py-1.5 text-gray-300">{p.leader}{p.venue && <span className="text-gray-600"> · {p.venue}</span>}{(p.consensus ?? 1) >= 2 && <span className="ml-1 text-[10px] text-blue-300">×{p.consensus} agree</span>}</td>
@@ -211,9 +226,9 @@ export function CopyPage() {
           <p className="text-[11px] text-gray-500">A leader's position we saw but didn't copy, the price at that moment, and the move from there to the leader's exit — the too-late rule is right when these are small or negative.</p>
           {d.skipped.length === 0 ? <div className="text-xs text-gray-500">Nothing skipped yet.</div> : (
             <table className="w-full text-xs">
-              <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500"><th className="text-left font-semibold pb-1">Position</th><th className="text-left font-semibold pb-1">Why skipped</th><th className="text-right font-semibold pb-1">Then went</th></tr></thead>
+              <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500"><H k="position" s={skipped}>Position</H><H k="why" s={skipped}>Why skipped</H><H k="went" s={skipped} right>Then went</H></tr></thead>
               <tbody>
-                {d.skipped.map((s, i) => (
+                {skipped.rows.map((s, i) => (
                   <tr key={i} className="border-t border-gray-800/70 align-top">
                     <td className="py-1.5 whitespace-nowrap"><span className={clsx('font-semibold', s.side === 'long' ? 'text-emerald-300' : 'text-rose-300')}>{s.side}</span> <span className="font-mono text-gray-200">{s.symbol.replace('USDT', '')}</span><div className="text-[10px] text-gray-500">{s.leader} · {whenTs(s.ts)}</div></td>
                     <td className="py-1.5 text-gray-400">{s.reason}</td>

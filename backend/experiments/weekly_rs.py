@@ -27,12 +27,14 @@ logger = logging.getLogger("experiments.weekly_rs")
 
 BOOK = "weekly_rs"
 TOP = 5
-NOTIONAL_PCT = float(os.getenv("WEEKLY_RS_NOTIONAL_PCT", "10"))
+# 25% a name since 2026-10-29 (was 10): ten names → 2.5× gross, the most the 30% disaster stop allows (a position's
+# liquidation must sit beyond its stop, which caps leverage at 3×). The research ran at 10% / 2×.
+NOTIONAL_PCT = float(os.getenv("WEEKLY_RS_NOTIONAL_PCT", "25"))
 DISASTER_PCT = float(os.getenv("WEEKLY_RS_DISASTER_PCT", "30"))
 LOOKBACK_BARS = 42                     # 7 days of 4h candles
 # A 30% stop leaves the automatic leverage at 1×, so ten positions would need the whole balance as margin.
 # At 2× liquidation sits ~49% away — well beyond the stop.
-LEVERAGE = 2
+LEVERAGE = int(os.getenv("WEEKLY_RS_LEVERAGE", "3"))             # per-position leverage: 3× is the cap for a 30% stop
 UNIVERSE = ["ETHUSDT", "SOLUSDT", "QNTUSDT", "ZECUSDT", "XRPUSDT", "NEARUSDT", "SUIUSDT", "WLDUSDT", "DOGEUSDT",
             "HYPEUSDT", "ENAUSDT", "UNIUSDT", "TAOUSDT", "PUMPUSDT", "BNBUSDT", "AVAXUSDT", "1000PEPEUSDT", "ARBUSDT",
             "BCHUSDT", "ONDOUSDT", "LINKUSDT", "FILUSDT", "ADAUSDT", "DASHUSDT", "LTCUSDT", "AAVEUSDT", "PENGUUSDT",

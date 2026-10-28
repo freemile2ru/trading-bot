@@ -44,8 +44,11 @@ SPOT_OF = {"XAUUSDT": "PAXGUSDT"}             # perp → the spot asset that hed
 # that's ~$1.40 a day on the book. 2× doubles it; the risk is the short perp leg's margin in a sharp rally.
 # 3× since 2026-10-28 (paper): flat markets are carry's best conditions and the one place scaling is sound. The spot
 # leg margins the short; the risk at 3× is the short perp's margin in a sharp rally, which a real account must size for.
-NOTIONAL_X = float(os.getenv("CARRY_NOTIONAL_X", "3.0"))
+# 8× since 2026-10-29 (paper, asked for: 7–10× across the books on $50k). The short perp's margin in a sharp rally is the
+# risk a real account would have to carry; the basis moving is the risk while it's on.
+NOTIONAL_X = float(os.getenv("CARRY_NOTIONAL_X", "8.0"))
 TOP_UP_BELOW = 0.8               # add a position when a coin holds under 80% of its target notional
+TRIM_ABOVE = 1.25                # unwind positions when a coin holds over 125% of it (capital taken out)
 INITIAL_BALANCE = 10_000.0
 SPOT_FEE = 0.0010
 FUNDING_CHECK_S = 900
@@ -62,6 +65,7 @@ _lock = threading.Lock()
 _con = None
 _path = SWING_DB
 _last_funding_check = {"at": 0.0}
+_last_tick: dict = {}
 
 
 def use(path: str) -> None:
@@ -97,6 +101,17 @@ def open_positions() -> list[dict]:
 
 def closed_positions() -> list[dict]:
     return _rows("SELECT * FROM carry WHERE status='closed' ORDER BY closed_ts")
+
+
+def erase_closed(reason: str) -> int:
+    """Remove closed rows with this close reason. For ledger artefacts only (the 2026-10-28 whole-position trims that
+    closed and reopened the book while capital was being cut), never for trades the book actually took."""
+    with _lock:
+        con = _db()
+        n = con.execute("DELETE FROM carry WHERE status='closed' AND close_reason=?", (reason,)).rowcount
+        con.commit()
+    logger.warning("Carry: erased %d closed rows with reason %r", n, reason)
+    return n
 
 
 # ── Accounting (pure) ──────────────────────────────────────────────────────────
@@ -169,6 +184,36 @@ async def _close(p: dict, reason: str, now: float) -> dict | None:
     return {**done, "status": "closed", "net": net, "close_reason": reason}
 
 
+async def _reduce(p: dict, notional_out: float, reason: str, now: float) -> dict | None:
+    """Close part of a position: the part becomes its own closed row (same entries, its share of fees and funding);
+    the rest stays open. Whole-position closes can't land on a target — this can."""
+    frac = min(1.0, notional_out / p["notional"]) if p["notional"] else 1.0
+    if frac >= 0.999:
+        return await _close(p, reason, now)
+    spot, perp = await _prices(p["symbol"])
+    if not spot or not perp:
+        return None
+    spot_x, perp_x = spot * (1 - futures.SLIPPAGE), perp * (1 + futures.SLIPPAGE)
+    part = {**p, "id": uuid.uuid4().hex[:12], "qty": p["qty"] * frac, "notional": round(p["notional"] * frac, 2),
+            "fees": (p["fees"] or 0) * frac, "funding": (p["funding"] or 0) * frac}
+    fees = part["fees"] + leg_fees(part["qty"], spot_x, perp_x)
+    net = round(mark_pnl({**part, "fees": fees}, spot_x, perp_x), 4)
+    with _lock:
+        con = _db()
+        con.execute("INSERT INTO carry (id, symbol, qty, spot_entry, perp_entry, notional, opened_ts, status, closed_ts, spot_exit, "
+                    "perp_exit, close_reason, fees, funding, funding_through_ms, spot_mark, perp_mark, net, data) "
+                    "VALUES (?,?,?,?,?,?,?,'closed',?,?,?,?,?,?,?,?,?,?,?)",
+                    (part["id"], p["symbol"], part["qty"], p["spot_entry"], p["perp_entry"], part["notional"], p["opened_ts"], now,
+                     spot_x, perp_x, reason, round(fees, 4), round(part["funding"], 4), p.get("funding_through_ms"), spot, perp, net,
+                     json.dumps({**json.loads(p.get("data") or "{}"), "part_of": p["id"]})))
+        con.execute("UPDATE carry SET qty=?, notional=?, fees=?, funding=? WHERE id=?",
+                    (p["qty"] * (1 - frac), round(p["notional"] * (1 - frac), 2), round((p["fees"] or 0) * (1 - frac), 4),
+                     round((p["funding"] or 0) * (1 - frac), 4), p["id"]))
+        con.commit()
+    logger.info("Carry reduced %s by $%.0f — %s, net $%.2f on the part", p["symbol"], part["notional"], reason, net)
+    return {**part, "status": "closed", "net": net, "close_reason": reason}
+
+
 async def _settle_funding(p: dict, now: float) -> float:
     """Add every funding settlement since the last one counted. Positive rate: the short receives."""
     from data.binance_client import fetch_funding_history
@@ -198,11 +243,30 @@ async def tick(now: float | None = None) -> None:
             await _close(p, "switched_off", now)
         return
     target = target_notional()
+    last = {"at": now, "target": round(target), "held": {}, "opened": [], "errors": []}
     for sym in COINS:
-        held = sum(p["notional"] for p in positions if p["symbol"] == sym)
+        mine = [p for p in positions if p["symbol"] == sym]
+        held = sum(p["notional"] for p in mine)
+        last["held"][sym] = round(held)
         if held < TOP_UP_BELOW * target:
             # Top up rather than close and reopen (which would pay both legs' fees twice).
-            await _open(sym, now, target - held)
+            try:
+                if await _open(sym, now, target - held):
+                    last["opened"].append(sym)
+                else:
+                    last["errors"].append(f"{sym}: no price")
+            except Exception as e:
+                last["errors"].append(f"{sym}: {e.__class__.__name__}: {e}")
+        elif held > TRIM_ABOVE * target:
+            # Capital was taken out of the book: reduce the largest positions until the coin is back at target.
+            excess = held - target
+            for p in sorted(mine, key=lambda p: -p["notional"]):
+                if excess <= 0:
+                    break
+                out = min(excess, p["notional"])
+                if await _reduce(p, out, "trim_to_capital", now):
+                    excess -= out
+    _last_tick.update(last)                                  # what the last tick decided — shown in status()
     check_funding = now - _last_funding_check["at"] >= FUNDING_CHECK_S
     for p in open_positions():
         spot, perp = await _prices(p["symbol"])
@@ -245,7 +309,7 @@ def status() -> dict:
     ps = open_positions()
     earned = sum(p["funding"] or 0 for p in _rows("SELECT funding FROM carry"))
     return {"coins": COINS, "notional_x": NOTIONAL_X, "open": len(ps), "equity": round(equity(), 2),
-            "funding_earned": round(earned, 2), "positions": [
+            "funding_earned": round(earned, 2), "last_tick": _last_tick, "positions": [
                 {"symbol": p["symbol"], "notional": p["notional"], "funding": round(p["funding"] or 0, 4),
                  "basis_bps_now": round(((p["perp_mark"] or 0) / (p["spot_mark"] or 1) - 1) * 1e4, 2) if p["spot_mark"] else None,
                  "pnl": round(mark_pnl(p, p["spot_mark"] or p["spot_entry"], p["perp_mark"] or p["perp_entry"]), 2),

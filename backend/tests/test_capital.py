@@ -66,7 +66,7 @@ def test_breaker_trips_once_after_a_week(monkeypatch):
     import ops.watchdog
     monkeypatch.setattr(ops.watchdog, "_notify", fake_notify)
     monkeypatch.setattr(target, "log_pair_equity", lambda now=None: {})
-    rep = {"totals": {"avg7": -150.0, "today": -10.0}, "books": [{"days": 8}], "paused": None}
+    rep = {"totals": {"avg7": target.TRIP_AVG7 - 50.0, "today": -10.0}, "books": [{"days": 8}], "paused": None}
     monkeypatch.setattr(target, "report", lambda now=None, max_age_s=60: dict(rep))
     out = asyncio.run(target.tick(1_800_000_000.0))
     assert out["paused"] and notes == ["Daily target: breaker tripped"]

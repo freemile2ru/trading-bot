@@ -43,7 +43,7 @@ def test_design_picks_sigma_strikes_and_sizes_to_risk():
     assert strikes[("put", "buy")] < strikes[("put", "sell")] < 80_000 < strikes[("call", "sell")] < strikes[("call", "buy")]
     assert d["credit"] > 0 and d["max_loss"] > 0
     assert d["max_loss"] <= 10_000 * vp.RISK_PCT / 100 + 1e-6          # sized to the risk budget
-    assert d["qty"] % 0.1 == pytest.approx(0, abs=1e-9) and d["qty"] >= 0.1
+    assert d["qty"] * 10 == pytest.approx(round(d["qty"] * 10)) and d["qty"] >= 0.1      # whole 0.1 BTC lots
     assert vp.design(_chain()[:4], "BTC", NOW + 7 * 86400, NOW, 10_000) is None     # too thin a chain
     assert vp.design(_chain(), "BTC", NOW + 7 * 86400, NOW, 100) is None            # can't afford a lot
 

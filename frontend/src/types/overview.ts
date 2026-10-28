@@ -152,10 +152,10 @@ export interface SystemMetrics {
   }
 }
 
-export type OverviewKey = SystemKey | 'all'
+export type OverviewKey = SystemKey | 'all' | 'everything'
 
 export interface PortfolioOverview {
-  systems: Partial<Record<OverviewKey, SystemMetrics>> & { all: SystemMetrics }
+  systems: Partial<Record<OverviewKey, SystemMetrics>> & { all: SystemMetrics; everything?: SystemMetrics }
   curves: Partial<Record<OverviewKey, { ts: number; equity: number }[]>>
   updated_at: number
 }
@@ -238,7 +238,7 @@ export interface TradeAnalytics {
 }
 
 export interface TargetBook {
-  book: string; label: string; equity: number; added: number; planned: number | null
+  book: string; label: string; equity: number; added: number; planned: number | null; shortfall?: number
   today: number; avg7: number; avg30: number; days: number; since: string | null
   expected: number | null; expected_why: string; open_positions: number
 }

@@ -8,6 +8,7 @@ import type { CoinStatus, FiredSignal, ScanRow, Setup, WatchlistEntry } from '..
 import { useSignalStream } from '../hooks/useSignalStream'
 import { useCoinStatus } from '../hooks/useCoinStatus'
 import { AutoTraderPanel } from './AutoTraderPanel'
+import { SortHeader, useSort } from './ui/Sortable'
 
 function fmtPrice(n: number | null | undefined): string {
   if (n == null) return '—'
@@ -250,6 +251,17 @@ export function AllSignals({
   // actionable about them, so surfacing them here is noise. A fired signal keeps its
   // symbol on the watchlist for as long as it is tradeable, so nothing live is hidden.
   const watchedRows = rows.filter(r => watched.has(r.symbol))
+  // Column sorting; the default order (no sort chosen) is by |conviction| from the stream.
+  const table = useSort(watchedRows, {
+    coin: r => r.base, price: r => r.price, change: r => r.change_24h, vsbtc: r => (r.base === 'BTC' ? null : r.fa?.rs_vs_btc_24h),
+    conviction: r => r.conviction, news: r => r.news?.score, conf: r => r.confidence, setups: r => r.setups?.length ?? 0,
+    why: r => watchlist.find(w => w.symbol === r.symbol)?.added_at, age: r => r.scanned_at,
+  })
+  const TH = ({ k, children, right, title }: { k: string; children: React.ReactNode; right?: boolean; title?: string }) => (
+    <th className={clsx('font-semibold px-3 py-2.5', right ? 'text-right' : 'text-left')}>
+      <SortHeader k={k} sort={table.sort} onSort={table.toggle} align={right ? 'right' : 'left'} title={title}>{children}</SortHeader>
+    </th>
+  )
   // When nothing is live: how close the strongest coins are to the firing bar, and what each still lacks.
   const minConv = meta?.scanner?.min_conviction ?? 0.45
   const minConf = meta?.scanner?.min_confidence ?? 65
@@ -421,16 +433,16 @@ export function AllSignals({
           <table className="w-full text-sm min-w-[56rem]">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-gray-500 border-b border-gray-800">
-                <th className="text-left font-semibold px-3 py-2.5">Coin</th>
-                <th className="text-right font-semibold px-3 py-2.5">Price</th>
-                <th className="text-right font-semibold px-3 py-2.5">24h</th>
-                <th className="text-right font-semibold px-3 py-2.5" title="24h move minus BTC's">vs BTC</th>
-                <th className="text-left font-semibold px-3 py-2.5">Conviction</th>
-                <th className="text-right font-semibold px-3 py-2.5" title="News score, −1…+1: Claude-classified headlines weighted by importance and age (News tab)">News</th>
-                <th className="text-right font-semibold px-3 py-2.5">Conf</th>
-                <th className="text-left font-semibold px-3 py-2.5 min-w-[12rem]">Setups</th>
-                <th className="text-left font-semibold px-3 py-2.5">Why watched</th>
-                <th className="text-right font-semibold px-3 py-2.5">Age</th>
+                <TH k="coin">Coin</TH>
+                <TH k="price" right>Price</TH>
+                <TH k="change" right>24h</TH>
+                <TH k="vsbtc" right title="24h move minus BTC's">vs BTC</TH>
+                <TH k="conviction">Conviction</TH>
+                <TH k="news" right title="News score, −1…+1: Claude-classified headlines weighted by importance and age (News tab)">News</TH>
+                <TH k="conf" right>Conf</TH>
+                <th className="text-left font-semibold px-3 py-2.5 min-w-[12rem]"><SortHeader k="setups" sort={table.sort} onSort={table.toggle}>Setups</SortHeader></th>
+                <TH k="why" title="Sorted by how long the coin has been watched">Why watched</TH>
+                <TH k="age" right>Age</TH>
                 <th className="w-16" />
               </tr>
             </thead>
@@ -446,7 +458,7 @@ export function AllSignals({
                   </td>
                 </tr>
               )}
-              {watchedRows.map(row => (
+              {table.rows.map(row => (
                 <ScanTableRow
                   key={row.symbol}
                   row={row}

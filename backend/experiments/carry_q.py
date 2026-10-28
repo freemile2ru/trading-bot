@@ -29,8 +29,9 @@ logger = logging.getLogger("experiments.carry_q")
 BOOK = "carry_q"
 LABEL = "Carry Q · quarterly basis"
 COINS = [c.strip() for c in os.getenv("CARRY_Q_COINS", "BTCUSDT,ETHUSDT").split(",") if c.strip()]
-NOTIONAL_X = float(os.getenv("CARRY_Q_NOTIONAL_X", "3.0"))       # 3× since 2026-10-28 (paper), with carry
+NOTIONAL_X = float(os.getenv("CARRY_Q_NOTIONAL_X", "8.0"))       # 8× since 2026-10-29 (paper), with carry
 TOP_UP_BELOW = 0.8               # add a position when a coin holds under 80% of its target notional
+TRIM_ABOVE = 1.25                # unwind positions when a coin holds over 125% of it (capital taken out)
 ROLL_DAYS = float(os.getenv("CARRY_Q_ROLL_DAYS", "7"))
 INITIAL_BALANCE = 10_000.0
 SPOT_FEE = 0.0010
@@ -48,6 +49,7 @@ _lock = threading.Lock()
 _con = None
 _path = SWING_DB
 _contracts: dict = {"at": 0.0, "by": {}}
+_last_tick: dict = {}
 
 
 def use(path: str) -> None:
@@ -189,6 +191,46 @@ async def _close(p: dict, reason: str, now: float) -> dict | None:
     return {**p, "status": "closed", "net": net, "close_reason": reason}
 
 
+def erase_closed(reason: str) -> int:
+    """Remove closed rows with this close reason. For ledger artefacts only (the 2026-10-28 whole-position trims that
+    closed and reopened the book while capital was being cut), never for trades the book actually took."""
+    with _lock:
+        con = _db()
+        n = con.execute("DELETE FROM carry_q WHERE status='closed' AND close_reason=?", (reason,)).rowcount
+        con.commit()
+    logger.warning("Carry Q: erased %d closed rows with reason %r", n, reason)
+    return n
+
+
+async def _reduce(p: dict, notional_out: float, reason: str, now: float) -> dict | None:
+    """Close part of a position: the part becomes its own closed row (same entries and locked basis, its share of
+    fees); the rest stays open. Whole-position closes can't land on a target — this can."""
+    frac = min(1.0, notional_out / p["notional"]) if p["notional"] else 1.0
+    if frac >= 0.999:
+        return await _close(p, reason, now)
+    spot, fut = await _prices(p["symbol"], p["contract"])
+    if not spot or not fut:
+        return None
+    spot_x, fut_x = spot * (1 - futures.SLIPPAGE), fut * (1 + futures.SLIPPAGE)
+    part = {**p, "id": uuid.uuid4().hex[:12], "qty": p["qty"] * frac, "notional": round(p["notional"] * frac, 2),
+            "fees": (p["fees"] or 0) * frac}
+    fees = part["fees"] + leg_fees(part["qty"], spot_x, fut_x)
+    net = round(mark_pnl({**part, "fees": fees}, spot_x, fut_x), 4)
+    with _lock:
+        con = _db()
+        con.execute("INSERT INTO carry_q (id, symbol, contract, qty, spot_entry, fut_entry, notional, opened_ts, delivery_ts, basis_ann, "
+                    "status, closed_ts, spot_exit, fut_exit, close_reason, fees, net, spot_mark, fut_mark, data) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,'closed',?,?,?,?,?,?,?,?,?)",
+                    (part["id"], p["symbol"], p["contract"], part["qty"], p["spot_entry"], p["fut_entry"], part["notional"],
+                     p["opened_ts"], p["delivery_ts"], p["basis_ann"], now, spot_x, fut_x, reason, round(fees, 4), net, spot, fut,
+                     json.dumps({**json.loads(p.get("data") or "{}"), "part_of": p["id"]})))
+        con.execute("UPDATE carry_q SET qty=?, notional=?, fees=? WHERE id=?",
+                    (p["qty"] * (1 - frac), round(p["notional"] * (1 - frac), 2), round((p["fees"] or 0) * (1 - frac), 4), p["id"]))
+        con.commit()
+    logger.info("Carry Q reduced %s (%s) by $%.0f — %s, net $%.2f on the part", p["symbol"], p["contract"], part["notional"], reason, net)
+    return {**part, "status": "closed", "net": net, "close_reason": reason}
+
+
 async def tick(now: float | None = None) -> None:
     """Every minute: open what's missing, roll what's near delivery, mark; unwind when switched off."""
     from experiments import books
@@ -201,14 +243,32 @@ async def tick(now: float | None = None) -> None:
             await _close(p, "switched_off", now)
         return
     target = target_notional()
+    last = {"at": now, "target": round(target), "held": {}, "opened": [], "errors": []}
     for sym in COINS:
         mine = [p for p in positions if p["symbol"] == sym]
         for p in list(mine):                                 # a copy: removing while iterating skipped the next one
             if p["delivery_ts"] - now <= ROLL_DAYS * 86400 and await _close(p, "roll", now):
                 mine.remove(p)
         held = sum(p["notional"] for p in mine)
+        last["held"][sym] = round(held)
         if held < TOP_UP_BELOW * target:
-            await _open(sym, now, target - held)            # top up rather than close and reopen (fees twice)
+            try:
+                if await _open(sym, now, target - held):    # top up rather than close and reopen (fees twice)
+                    last["opened"].append(sym)
+                else:
+                    last["errors"].append(f"{sym}: no contract or price")
+            except Exception as e:
+                last["errors"].append(f"{sym}: {e.__class__.__name__}: {e}")
+        elif held > TRIM_ABOVE * target:
+            # Capital was taken out of the book: reduce the largest positions until the coin is back at target.
+            excess = held - target
+            for p in sorted(mine, key=lambda p: -p["notional"]):
+                if excess <= 0:
+                    break
+                out = min(excess, p["notional"])
+                if await _reduce(p, out, "trim_to_capital", now):
+                    excess -= out
+    _last_tick.update(last)                                  # what the last tick decided — shown in status()
     for p in open_positions():
         spot, fut = await _prices(p["symbol"], p["contract"])
         if spot and fut:
@@ -240,7 +300,7 @@ def rows() -> list[dict]:
 
 def status() -> dict:
     ps, now = open_positions(), time.time()
-    return {"coins": COINS, "notional_x": NOTIONAL_X, "open": len(ps), "equity": round(equity(), 2),
+    return {"coins": COINS, "notional_x": NOTIONAL_X, "open": len(ps), "equity": round(equity(), 2), "last_tick": _last_tick,
             "positions": [{"symbol": p["symbol"], "contract": p["contract"], "notional": p["notional"],
                            "basis_locked_pct": round(p["basis_ann"] * 100, 2), "days_to_delivery": round((p["delivery_ts"] - now) / 86400, 1),
                            "pnl": round(mark_pnl(p, p["spot_mark"] or p["spot_entry"], p["fut_mark"] or p["fut_entry"]), 2),

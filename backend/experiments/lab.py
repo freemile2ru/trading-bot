@@ -215,6 +215,8 @@ def summary(ledger: str = "both") -> dict:
         })
 
     from experiments import research_index
-    return {"experiments": experiments, "research_shelf": research_index.shelf(), "comparisons": comparisons, "min_trades": MIN_TRADES,
+    # Rejected studies move to the Retired tab (experiments/retired.py); the Lab keeps what is in use or still open.
+    shelf = [e for e in research_index.shelf() if e["status"] != "rejected"]
+    return {"experiments": experiments, "research_shelf": shelf, "comparisons": comparisons, "min_trades": MIN_TRADES,
             "claude_swing": {**claude_swing.status(), "reviews": claude_swing.reviews()[:20]},
             "enabled": books.ENABLED, "ledger": ledger, "updated_at": time.time()}

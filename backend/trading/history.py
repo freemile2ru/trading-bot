@@ -324,6 +324,10 @@ def exit_comparison(wallet: str = "all", ledger: str = "both") -> dict:
             "fixed": "Stop to breakeven+costs at 1.5R, full exit at 2.5R",
             "legacy": "Previous rules: stop to exact entry at 1.5R, exit at 2.5R, hard expiry 4h–72h",
             "hold": "Baseline: original stop or 2.5R only, until max hold",
+            "protect_quick": "As protect, breakeven already at +0.5R; cut at 6h if under +0.25R",
+            "protect_cut6": "As protect; cut at 6h if under +0.5R",
+            "protect_trim": "As protect; close half the position once −0.3R against it",
+            "protect_run": "As protect, but a trade at least +0.5R at the 24h bell gets another day under the trail (up to a week) instead of leaving flat",
         },
     }
 

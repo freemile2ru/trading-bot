@@ -350,7 +350,7 @@ export function LabPage() {
       {data.research_shelf && data.research_shelf.length > 0 && (
         <>
           <h3 className="text-sm font-bold text-white pt-1">Research shelf</h3>
-          <p className="text-[11px] text-gray-500 -mt-2">Every study, the question it asked, what the data said and what was done about it. Findings are read from each study's results file; rerun the script to reproduce.</p>
+          <p className="text-[11px] text-gray-500 -mt-2">Studies still in use or waiting on data: the question asked, what the data said and what was done about it. Findings are read from each study's results file; rerun the script to reproduce. Rejected studies are on the <a href="#retired" className="text-blue-300 hover:underline">Retired tab</a>.</p>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
             {data.research_shelf.map(r => (
               <section key={r.key} className="card space-y-1.5 text-xs">

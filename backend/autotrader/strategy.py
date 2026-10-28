@@ -31,14 +31,14 @@ ENTRY_SCORE = int(os.getenv("AUTOTRADER_ENTRY_SCORE", "60"))
 # (2026-09-28) despite that replay result — set AUTOTRADER_ALLOW_SHORTS=false to go long-only.
 ALLOW_SHORTS = os.getenv("AUTOTRADER_ALLOW_SHORTS", "true").lower() == "true"
 MAX_BTC_VOL = float(os.getenv("AUTOTRADER_MAX_BTC_VOL", "37"))      # % annualized; 0 = no gate
-RISK_PCT = float(os.getenv("AUTOTRADER_RISK_PCT", "1.0"))        # % of equity lost at the stop
+RISK_PCT = float(os.getenv("AUTOTRADER_RISK_PCT", "3.0"))        # % of equity lost at the stop (3 since 2026-10-29; .env may pin it)
 # Futures: notional can exceed equity; these cap how far. Margin (notional / leverage) is
 # checked by the wallet, and total open risk by MAX_OPEN_RISK_PCT.
 MAX_POSITION_PCT = float(os.getenv("AUTOTRADER_MAX_POSITION_PCT", "300"))   # notional per position
 MAX_GROSS_PCT = float(os.getenv("AUTOTRADER_MAX_GROSS_PCT", "600"))         # notional across the wallet
 # Portfolio heat: the sum of every open position's loss-at-stop. Six correlated alt longs
 # are one bet on BTC; this caps what that one bet can cost.
-MAX_OPEN_RISK_PCT = float(os.getenv("AUTOTRADER_MAX_OPEN_RISK_PCT", "4.0"))
+MAX_OPEN_RISK_PCT = float(os.getenv("AUTOTRADER_MAX_OPEN_RISK_PCT", "12.0"))
 
 TP1_R = 1.5          # stop moves to breakeven here
 TP2_R = 2.5          # the trade closes as a win here

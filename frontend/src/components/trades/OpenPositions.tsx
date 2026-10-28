@@ -4,6 +4,7 @@ import { api } from '../../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../../utils/format'
 import { useBinanceStream } from '../../hooks/useBinanceStream'
 import { SYSTEM_LABEL, isLive, positionActions, type SystemKey, type UnifiedOrder, type UnifiedTrade } from '../../types/overview'
+import { SortHeader, useSort } from '../ui/Sortable'
 
 // Same look as the Trade tab's account panel (Binance palette).
 const th = 'px-3 py-2 text-left font-normal text-[#848e9c] whitespace-nowrap'
@@ -79,6 +80,13 @@ function Positions({ rows, marks, onChanged, onOpen }: {
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const key = (p: UnifiedTrade) => `${p.system}:${p.id}`
+  const sorted = useSort(rows, {
+    symbol: p => p.symbol, system: p => SYSTEM_LABEL[p.system], side: p => p.direction, size: p => p.notional,
+    entry: p => p.entry_price, mark: p => livePnl(p, marks).mark, liq: p => p.liquidation, margin: p => p.margin,
+    pnl: p => livePnl(p, marks).pnl, stop: p => p.stop_loss, open: p => p.hold_min,
+  })
+  const HEAD: [string, string][] = [['Symbol', 'symbol'], ['System', 'system'], ['Side', 'side'], ['Size', 'size'], ['Entry', 'entry'], ['Mark', 'mark'],
+    ['Liq.', 'liq'], ['Margin', 'margin'], ['PnL (ROE)', 'pnl'], ['Stop / Target', 'stop'], ['Open for', 'open'], ['', '']]
 
   async function close(p: UnifiedTrade) {
     const live = isLive(p.system)
@@ -105,9 +113,9 @@ function Positions({ rows, marks, onChanged, onOpen }: {
     <>
       {err && <p className="px-3 pt-2 text-[#f6465d]">{err}</p>}
       <table className="w-full">
-        <thead><tr>{['Symbol', 'System', 'Side', 'Size', 'Entry', 'Mark', 'Liq.', 'Margin', 'PnL (ROE)', 'Stop / Target', 'Open for', ''].map((h, i) => <th key={i} className={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{HEAD.map(([h, k], i) => <th key={i} className={th}>{k ? <SortHeader k={k} sort={sorted.sort} onSort={sorted.toggle}>{h}</SortHeader> : h}</th>)}</tr></thead>
         <tbody>
-          {rows.map(p => {
+          {sorted.rows.map(p => {
             const { mark, pnl } = livePnl(p, marks)
             const roe = p.margin ? pnl / p.margin * 100 : null
             const acts = positionActions(p.system)
@@ -178,6 +186,12 @@ function fmtOpen(min: number | null): string {
 function Orders({ rows, onChanged }: { rows: UnifiedOrder[]; onChanged: (m?: string) => void }) {
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const sorted = useSort(rows, {
+    placed: o => o.placed_at, symbol: o => o.symbol, system: o => SYSTEM_LABEL[o.system], side: o => o.direction, limit: o => o.limit_price,
+    now: o => o.current_price, size: o => o.notional_usd, stop: o => o.stop_loss, target: o => o.take_profit, expires: o => o.expires_at,
+  })
+  const HEAD: [string, string][] = [['Placed', 'placed'], ['Symbol', 'symbol'], ['System', 'system'], ['Side', 'side'], ['Limit', 'limit'], ['Price now', 'now'],
+    ['Size', 'size'], ['Stop', 'stop'], ['Target', 'target'], ['Expires', 'expires'], ['', '']]
   async function cancel(o: UnifiedOrder) {
     if (isLive(o.system) && !confirm(`Cancel the LIVE ${o.symbol} limit order on Binance?`)) return
     setBusy(o.id); setErr(null)
@@ -190,9 +204,9 @@ function Orders({ rows, onChanged }: { rows: UnifiedOrder[]; onChanged: (m?: str
     <>
       {err && <p className="px-3 pt-2 text-[#f6465d]">{err}</p>}
       <table className="w-full">
-        <thead><tr>{['Placed', 'Symbol', 'System', 'Side', 'Limit', 'Price now', 'Size', 'Stop', 'Target', 'Expires', ''].map((h, i) => <th key={i} className={th}>{h}</th>)}</tr></thead>
+        <thead><tr>{HEAD.map(([h, k], i) => <th key={i} className={th}>{k ? <SortHeader k={k} sort={sorted.sort} onSort={sorted.toggle}>{h}</SortHeader> : h}</th>)}</tr></thead>
         <tbody>
-          {rows.map(o => (
+          {sorted.rows.map(o => (
             <tr key={`${o.system}:${o.id}`} className="border-t border-[#2b3139]">
               <td className={clsx(td, 'text-[#848e9c]')}>{o.placed_at ? new Date(o.placed_at * 1000).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
               <td className={clsx(td, 'font-semibold')}>{o.symbol}</td>

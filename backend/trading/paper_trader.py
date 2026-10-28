@@ -1020,6 +1020,23 @@ class PaperWallet:
             logger.info("%s: deposit $%.2f (%s) → balance %.2f", self.label, amount, note, state["balance"])
             return state["balance"]
 
+    def withdraw(self, amount: float, note: str = "withdrawal") -> float:
+        """Take capital out: at most the free cash (margin stays with the open positions). Balance and
+        starting balance fall together. Returns what was actually taken."""
+        with self._lock:
+            state = self._load()
+            # Balance still carries the margin of open positions; only what is above it is free to leave.
+            free = self._equity(state) - self._margin_used(state)
+            take = max(0.0, min(float(amount), float(free)))
+            if take <= 0:
+                return 0.0
+            state["balance"] -= take
+            state["initial_balance"] -= take
+            self._snapshot_equity(state, force=True)
+            self._save(state)
+            logger.info("%s: withdrawal $%.2f (%s) → balance %.2f", self.label, take, note, state["balance"])
+            return take
+
     def reset_portfolio(self, starting_balance: float = 10000.0) -> dict:
         with self._lock:
             with self._con:

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Area, AreaChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Archive } from 'lucide-react'
+import { Archive, FlaskConical } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsdSigned } from '../utils/format'
 import { evenTicks } from '../utils/chart'
-import type { FailureScore, RetiredExperiment, ScalperEvidence, ScoreInputs } from '../types/retired'
+import { SortHeader, useSort } from './ui/Sortable'
+import type { FailureScore, RejectedResearch, RetiredExperiment, ScalperEvidence, ScoreInputs } from '../types/retired'
 
 const AXIS = { fill: '#6b7280', fontSize: 10 }
 const TIP = { background: '#111827', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }
@@ -42,6 +43,12 @@ function ScoreBar({ s }: { s: FailureScore }) {
 }
 
 function Ranking({ items, jump }: { items: RetiredExperiment[]; jump: (key: string) => void }) {
+  const t = useSort(items, {
+    rank: e => e.rank, experiment: e => e.title, score: e => e.score.score, grade: e => e.score.grade, result: e => e.score_inputs.result_r,
+  })
+  const th = (k: string, label: string, cls: string) => (
+    <th className={clsx('font-semibold pb-2', cls)}><SortHeader k={k} sort={t.sort} onSort={t.toggle} align={cls.includes('right') ? 'right' : 'left'}>{label}</SortHeader></th>
+  )
   return (
     <section className="card space-y-3">
       <div>
@@ -56,15 +63,15 @@ function Ranking({ items, jump }: { items: RetiredExperiment[]; jump: (key: stri
         <table className="w-full text-xs min-w-[44rem]">
           <thead>
             <tr className="text-[10px] uppercase tracking-wider text-gray-500">
-              <th className="text-left font-semibold pb-2 w-8">#</th>
-              <th className="text-left font-semibold pb-2">Experiment</th>
-              <th className="text-left font-semibold pb-2 w-[28%]">Score</th>
+              {th('rank', '#', 'text-left w-8')}
+              {th('experiment', 'Experiment', 'text-left')}
+              {th('score', 'Score', 'text-left w-[28%]')}
               <th className="text-right font-semibold pb-2 w-12" />
-              <th className="text-left font-semibold pb-2 pl-3">Based on</th>
+              {th('result', 'Based on', 'text-left pl-3')}
             </tr>
           </thead>
           <tbody>
-            {items.map(e => (
+            {t.rows.map(e => (
               <tr key={e.key} className="border-t border-gray-800/60 align-middle">
                 <td className="py-2 text-gray-500 tabular-nums">{e.rank}</td>
                 <td className="py-2 pr-3">
@@ -218,8 +225,44 @@ function Card({ e }: { e: RetiredExperiment }) {
   )
 }
 
+/** Studies the Lab's research shelf rejected: the question, what the data said, and what was decided. */
+function RejectedStudies({ items }: { items: RejectedResearch[] }) {
+  const t = useSort(items, { study: r => r.title, ran: r => r.ran_at, book: r => r.book })
+  if (!items.length) return null
+  return (
+    <section className="card space-y-3">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <h3 className="text-sm font-semibold text-white inline-flex items-center gap-2"><FlaskConical className="w-4 h-4 text-gray-400" /> Rejected research</h3>
+        <span className="text-[11px] text-gray-500">{items.length} studies the Lab ran and set aside — the finding is read from each one's results file; rerun the script to reproduce</span>
+        <span className="ml-auto inline-flex gap-3 text-[10px] uppercase tracking-wider text-gray-500">
+          sort <SortHeader k="study" sort={t.sort} onSort={t.toggle}>name</SortHeader>
+          <SortHeader k="ran" sort={t.sort} onSort={t.toggle}>date</SortHeader>
+          <SortHeader k="book" sort={t.sort} onSort={t.toggle}>book</SortHeader>
+        </span>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        {t.rows.map(r => (
+          <section key={r.key} className="rounded-lg bg-gray-800/40 px-3 py-2.5 space-y-1.5 text-xs">
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 rounded border border-gray-700 bg-gray-800 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-gray-400">rejected</span>
+              <div className="min-w-0">
+                <div className="font-semibold text-gray-100">{r.title}</div>
+                <div className="text-[10px] text-gray-500 font-mono">{r.script}{r.ran_at ? ` · ${new Date(r.ran_at * 1000).toLocaleDateString()}` : ''}{r.book ? ` · ${r.book}` : ''}</div>
+              </div>
+            </div>
+            <div className="text-gray-400"><span className="text-gray-500">Question — </span>{r.question}</div>
+            <div className="text-gray-300"><span className="text-gray-500">Found — </span>{r.finding}</div>
+            <div className="text-gray-300"><span className="text-gray-500">Done — </span>{r.decision}</div>
+          </section>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export function RetiredPage() {
   const [items, setItems] = useState<RetiredExperiment[] | null>(null)
+  const [research, setResearch] = useState<RejectedResearch[]>([])
   const [error, setError] = useState<string | null>(null)
   // The chosen type is remembered in the URL (#retired/Strategy) so a filtered view can be bookmarked.
   const [category, setCategoryState] = useState<string>(() => decodeURIComponent(window.location.hash.split('/')[1] ?? ''))
@@ -228,7 +271,7 @@ export function RetiredPage() {
     window.history.replaceState(null, '', c ? `#retired/${encodeURIComponent(c)}` : '#retired')
   }
   useEffect(() => {
-    api.lab.retired().then(d => setItems(d.retired)).catch(e => setError(e instanceof Error ? e.message : 'Could not load'))
+    api.lab.retired().then(d => { setItems(d.retired); setResearch(d.research ?? []) }).catch(e => setError(e instanceof Error ? e.message : 'Could not load'))
   }, [])
   if (error) return <div className="card text-sm text-red-400">{error}</div>
   if (!items) return <div className="card text-sm text-gray-500 animate-pulse">Loading the retired experiments…</div>
@@ -257,6 +300,7 @@ export function RetiredPage() {
         ))}
       </div>
       <Ranking items={shown} jump={key => document.getElementById(`retired-${key}`)?.scrollIntoView({ behavior: 'smooth' })} />
+      {!active && <RejectedStudies items={research} />}
       {shown.map(e => <Card key={e.key} e={e} />)}
     </div>
   )

@@ -4,7 +4,7 @@ import type { AutoOrder, AutoSummary, AutoTrade, ScanSnapshot, WatchlistEntry } 
 import type { PortfolioOverview, SystemKey, TargetReport, TradeAnalytics, TradeFilters, TradeRecord, TradesResponse, UnifiedOrder } from '../types/overview'
 import type { LiveActivity, LiveStatus, LiveSystem } from '../types/live'
 import type { LabSummary, SignalScores, StrategyLabResults, SwingReview } from '../types/lab'
-import type { RetiredExperiment } from '../types/retired'
+import type { RejectedResearch, RetiredExperiment } from '../types/retired'
 import type { DebriefSummary, TradeDebrief } from '../types/debrief'
 import type { Book, BooksResponse } from '../types/books'
 import type { MarketSummary } from '../types/markets'
@@ -107,7 +107,7 @@ export const api = {
   lab: {
     summary: (ledger = 'both') => get<LabSummary>(`/experiments?ledger=${ledger}`),
     reviewNow: () => post<SwingReview>('/experiments/claude-swing/review'),
-    retired: () => get<{ retired: RetiredExperiment[] }>('/experiments/retired'),
+    retired: () => get<{ retired: RetiredExperiment[]; research?: RejectedResearch[] }>('/experiments/retired'),
     strategyLab: () => get<StrategyLabResults>('/experiments/strategy-lab'),
     signalScores: () => get<SignalScores>('/experiments/signal-scores'),
   },

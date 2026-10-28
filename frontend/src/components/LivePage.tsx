@@ -192,27 +192,27 @@ function ActivityTables({ activity }: { activity: LiveActivity | null }) {
   type Ord = LiveActivity['orders'][number]
   type Aud = LiveActivity['audit'][number]
   const evCols: Column<Ev>[] = [
-    { key: 't', header: 'Time', render: e => <span className="text-gray-400 whitespace-nowrap">{when(e.ts)}</span> },
-    { key: 's', header: 'System', render: e => e.system },
-    { key: 'k', header: 'Event', render: e => <span className="font-semibold">{e.kind.replace(/_/g, ' ')}</span> },
+    { key: 't', header: 'Time', sortValue: e => e.ts, render: e => <span className="text-gray-400 whitespace-nowrap">{when(e.ts)}</span> },
+    { key: 's', header: 'System', sortValue: e => e.system, render: e => e.system },
+    { key: 'k', header: 'Event', sortValue: e => e.kind, render: e => <span className="font-semibold">{e.kind.replace(/_/g, ' ')}</span> },
     { key: 'd', header: 'Detail', render: e => <span className="text-gray-400 break-all">{JSON.stringify(e.data).slice(0, 160)}</span> },
   ]
   const ordCols: Column<Ord>[] = [
-    { key: 't', header: 'Updated', render: o => <span className="text-gray-400 whitespace-nowrap">{when(o.updated)}</span> },
-    { key: 's', header: 'System', render: o => o.system },
-    { key: 'sym', header: 'Symbol', render: o => <span className="font-mono">{o.symbol}</span> },
-    { key: 'p', header: 'Purpose', render: o => o.purpose },
-    { key: 'ty', header: 'Type', render: o => `${o.side} ${o.type}` },
-    { key: 'q', header: 'Qty', align: 'right', render: o => o.qty },
-    { key: 'px', header: 'Price', align: 'right', render: o => o.price ?? '—' },
-    { key: 'st', header: 'Status', render: o => o.status },
+    { key: 't', header: 'Updated', sortValue: o => o.updated, render: o => <span className="text-gray-400 whitespace-nowrap">{when(o.updated)}</span> },
+    { key: 's', header: 'System', sortValue: o => o.system, render: o => o.system },
+    { key: 'sym', header: 'Symbol', sortValue: o => o.symbol, render: o => <span className="font-mono">{o.symbol}</span> },
+    { key: 'p', header: 'Purpose', sortValue: o => o.purpose, render: o => o.purpose },
+    { key: 'ty', header: 'Type', sortValue: o => `${o.side} ${o.type}`, render: o => `${o.side} ${o.type}` },
+    { key: 'q', header: 'Qty', align: 'right', sortValue: o => Number(o.qty), render: o => o.qty },
+    { key: 'px', header: 'Price', align: 'right', sortValue: o => (o.price == null ? null : Number(o.price)), render: o => o.price ?? '—' },
+    { key: 'st', header: 'Status', sortValue: o => o.status, render: o => o.status },
   ]
   const audCols: Column<Aud>[] = [
-    { key: 't', header: 'Time', render: a => <span className="text-gray-400 whitespace-nowrap">{when(a.ts)}</span> },
-    { key: 's', header: 'System', render: a => a.system },
-    { key: 'r', header: 'Request', render: a => <span className="font-mono">{a.method} {a.path}</span> },
-    { key: 'c', header: 'Status', align: 'right', render: a => <span className={clsx((a.status ?? 500) >= 400 ? 'text-red-400' : 'text-emerald-400')}>{a.status ?? 'net err'}</span> },
-    { key: 'ms', header: 'ms', align: 'right', render: a => a.ms },
+    { key: 't', header: 'Time', sortValue: a => a.ts, render: a => <span className="text-gray-400 whitespace-nowrap">{when(a.ts)}</span> },
+    { key: 's', header: 'System', sortValue: a => a.system, render: a => a.system },
+    { key: 'r', header: 'Request', sortValue: a => `${a.method} ${a.path}`, render: a => <span className="font-mono">{a.method} {a.path}</span> },
+    { key: 'c', header: 'Status', align: 'right', sortValue: a => a.status ?? 999, render: a => <span className={clsx((a.status ?? 500) >= 400 ? 'text-red-400' : 'text-emerald-400')}>{a.status ?? 'net err'}</span> },
+    { key: 'ms', header: 'ms', align: 'right', sortValue: a => a.ms, render: a => a.ms },
     { key: 'b', header: 'Response', render: a => <span className="text-gray-500 break-all">{a.response.slice(0, 120)}</span> },
   ]
   return (

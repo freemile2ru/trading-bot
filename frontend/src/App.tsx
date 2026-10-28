@@ -33,7 +33,7 @@ type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'tra
 
 export default function App() {
   // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
-  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'portfolio', 'trades', 'history', 'markets', 'copy', 'lab', 'retired', 'live', 'books']
+  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'lab', 'retired', 'live', 'books', 'portfolio']
   const [tab, setTabState] = useState<Tab>(() => {
     const h = window.location.hash.slice(1).split('/')[0] as Tab
     return TABS.includes(h) ? h : 'all'
@@ -274,7 +274,6 @@ export default function App() {
             ['news', Newspaper, 'News'],
             ['calendar', CalendarClock, 'Calendar'],
             ['trade', CandlestickChart, 'Trade'],
-            ['portfolio', Briefcase, 'Portfolio'],
             ['trades', List, 'Trades'],
             ['history', History, 'History'],
             ['markets', Globe2, 'Markets'],
@@ -283,6 +282,7 @@ export default function App() {
             ['retired', Archive, 'Retired'],
             ['live', ShieldAlert, 'Live'],
             ['books', Layers, 'Books'],
+            ['portfolio', Briefcase, 'Portfolio'],
           ] as const).map(([t, Icon, label]) => (
             <button
               key={t}

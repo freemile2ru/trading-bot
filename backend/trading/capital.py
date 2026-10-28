@@ -1,21 +1,35 @@
-"""The $100-a-day programme (2026-10-28): capital follows evidence.
+"""Capital across the paper books: $50k in total, placed where the evidence is (2026-10-28).
 
-The books that predict direction (autotrader, Claude swing, fade-24, the trend books) stay at their $10k —
-they're still running as asked, but they've shown no edge, so they get no more. The books whose return comes
-from structure get the capital, because their income scales with notional and their risk is hedged:
+Every book starts from the same $10k seed (BASE). The plan below says what each should hold; apply_plan()
+moves the difference in either direction — a deposit when a book is below its plan, a withdrawal when it is
+above. Withdrawals from a PaperWallet book are limited to its free cash (the margin on open positions stays
+until they close), so a book that was cut while holding positions catches up over the following ticks.
 
-  carry_q   quarterly basis, locked at entry        → $40k   (3× notional; converges by delivery)
-  carry     BTC/ETH/gold funding                     → $30k   (3× notional)
-  weekly_rs weekly near-high / near-low basket       → $30k   (2× — the researched size)
-  events    listing / delisting pair shorts          → $25k   (10% legs, up to 10 pairs)
+Where the $50k goes, and why (last 30 days live + the research behind each book):
+  carry / carry_q   $8k each   funding and locked basis: hedged, small but positive, passed an untouched holdout
+  events            $8k        listing / delisting shorts: the strongest researched edge (t −3…−5), fires on announcements
+  futures_trend     $5.5k      +$10/day live over 7 days; sized by gross exposure, not spread thin over 20 names
+  stocks_trend      $5.5k      same rule, same live sign; "on notice" from the 20-year ETF replay
+  unlocks           $4k        cliff-unlock shorts, positive so far, two months from its own event study
+  vol_premium       $3k        weekly condors, early
+  claude_swing      $2.5k      the only book with a +2R win; negative expectancy overall
+  auto              $2k        no edge shown; stays small until it does
+  copy_trading      $1.5k      two copies so far
+  weekly_rs         $1k        was $30k: −$26/day over the week and its replay edge had faded — back to a measuring size
+  cascade / main    $500 each  cascade is measuring; main is the manual wallet
 
-A deposit is a ledger entry, never a reset: a PaperWallet book's balance and starting balance both rise (so its
-return % stays honest), a pair-ledger book's starting balance is raised through this module. Every deposit is
-recorded with a timestamp so the target tracker can take it out of the day's P&L.
+Leverage round (2026-10-29, asked for: "7–10×" on the $50k, target $200/day): carry and carry Q 8× notional, events and
+unlocks 35% a leg (~7× gross when full), condors 15% of equity at risk per structure, the directional books 3% of
+equity at the stop, copies 15% each with a 10× cap. The trend books (2.8× gross) and the weekly basket (2.5×) stop
+short of the ask: their 15% / 30% disaster stops cap a position's leverage at 3× (liquidation must sit beyond the
+stop), so the margin for more does not exist. Wins and losses both scale with it; nothing here changes expectancy.
+
+A move is a ledger entry, never a reset: a PaperWallet book's balance and starting balance change together (so
+its return % stays honest); a pair-ledger book's starting balance is adjusted through `added`. Every move is
+recorded with a timestamp so the target tracker takes it out of the day's P&L.
 
 Circuit breaker (trading/target.py): if the 7-day average across all books falls below −TARGET, the programme
-pauses — new sizing for the scaled books falls back to their base capital until someone resumes it. Nothing
-is closed; positions already on just stop being topped up.
+pauses — books above base size size new positions from base until someone resumes it. Withdrawals still run.
 """
 from __future__ import annotations
 
@@ -28,10 +42,18 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "100"))
-PLAN: dict[str, float] = {"carry_q": 40_000.0, "carry": 30_000.0, "weekly_rs": 30_000.0, "events": 25_000.0}
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "50000"))
+TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "200"))    # $200/day since 2026-10-29 (0.4% of the $50k a day)
+PLAN: dict[str, float] = {
+    "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
+    "futures_trend": 5_500.0, "stocks_trend": 5_500.0,
+    "unlocks": 4_000.0, "vol_premium": 3_000.0,
+    "claude_swing": 2_500.0, "auto": 2_000.0, "copy_trading": 1_500.0,
+    "weekly_rs": 1_000.0, "cascade": 500.0, "main": 500.0,
+}
+assert abs(sum(PLAN.values()) - 50_000) < 1, "the plan must add up to $50k"
 PAIR_BOOKS = ("carry", "carry_q", "events", "fade24", "hold72", "unlocks", "vol_premium")       # own-ledger books (no PaperWallet)
-PLAN_NOTE = "$100/day programme (2026-10-28)"
+PLAN_NOTE = "$50k across the books (2026-10-28)"
 
 
 def _k(*parts: str) -> str:
@@ -39,12 +61,12 @@ def _k(*parts: str) -> str:
 
 
 def added(book: str) -> float:
-    """Capital deposited into `book` on top of its base balance."""
+    """Capital moved into (+) or out of (−) `book` on top of its base balance."""
     return float(kv.get_sync(_k("added", book)) or 0.0)
 
 
 def initial(book: str, base: float) -> float:
-    """A pair-ledger book's starting balance: its constant plus what the programme added."""
+    """A pair-ledger book's starting balance: its constant plus what the programme moved."""
     return base + added(book)
 
 
@@ -52,32 +74,75 @@ def deposits() -> list[dict]:
     return kv.get_sync(_k("ledger")) or []
 
 
-def deposit(book: str, amount: float, note: str = PLAN_NOTE) -> dict:
-    """Add `amount` to a book. PaperWallet books take it on the wallet; pair-ledger books through `added`."""
+def _wallet(book: str):
+    """The PaperWallet behind a book, or None for a pair-ledger book."""
     from experiments import books
-    amount = float(amount)
-    if amount <= 0:
-        raise ValueError("deposit must be positive")
     if book in books.WALLETS:
-        after = books.WALLETS[book].deposit(amount, note)
+        return books.WALLETS[book]
+    from markets import engine as markets
+    if book in markets.WALLETS:
+        return markets.WALLETS[book]
+    if book in ("main", "auto"):
+        from live import swing as live_swing
+        return live_swing.paper(book)
+    return None
+
+
+def _move(book: str, amount: float, note: str) -> dict | None:
+    """Move `amount` (+ in, − out). Returns the ledger entry, or None when nothing could move."""
+    ts = time.time()                    # stamped before the move, so it is never later than the wallet's equity snapshot
+    w = _wallet(book)
+    if w is not None:
+        moved = amount if amount > 0 else -w.withdraw(-amount, note)
+        if amount > 0:
+            w.deposit(amount, note)
     elif book in PAIR_BOOKS:
-        after = initial(book, BASE) + amount
+        moved = amount
     else:
         raise ValueError(f"unknown book {book}")
-    kv.set_sync(_k("added", book), added(book) + amount)
-    entry = {"ts": time.time(), "book": book, "amount": amount, "note": note}
+    if abs(moved) < 0.01:
+        return None
+    kv.set_sync(_k("added", book), added(book) + moved)
+    entry = {"ts": ts, "book": book, "amount": round(moved, 2), "note": note}
     kv.set_sync(_k("ledger"), deposits() + [entry])
-    logger.info("Capital: +$%.0f into %s (%s) → %s", amount, book, note, after)
+    logger.info("Capital: %+.0f %s (%s) → %.0f", moved, book, note, BASE + added(book))
     return entry
 
 
-def apply_plan() -> list[dict]:
-    """Bring each planned book up to its programme balance (idempotent)."""
+def deposit(book: str, amount: float, note: str = PLAN_NOTE) -> dict | None:
+    if float(amount) <= 0:
+        raise ValueError("deposit must be positive")
+    return _move(book, float(amount), note)
+
+
+def withdraw(book: str, amount: float, note: str = PLAN_NOTE) -> dict | None:
+    """Take capital out. A PaperWallet gives up at most its free cash; the rest waits for positions to close."""
+    if float(amount) <= 0:
+        raise ValueError("withdrawal must be positive")
+    return _move(book, -float(amount), note)
+
+
+def shortfall(book: str) -> float:
+    """How far a book still is from its plan (+ owed to it, − still to take out); 0 when not planned."""
+    target = PLAN.get(book)
+    if target is None:
+        return 0.0
+    gap = target - (BASE + added(book))
+    return round(gap, 2) if abs(gap) >= 1 else 0.0
+
+
+def apply_plan(withdraw_only: bool = False) -> list[dict]:
+    """Bring every planned book to its plan (idempotent; run every tracker tick so withdrawals catch up)."""
     out = []
-    for book, target in PLAN.items():
-        have = BASE + added(book)
-        if target - have >= 1:
-            out.append(deposit(book, target - have))
+    for book in PLAN:
+        gap = shortfall(book)
+        try:
+            entry = deposit(book, gap) if gap > 0 and not withdraw_only else withdraw(book, -gap) if gap < 0 else None
+        except Exception as e:
+            logger.warning("Capital plan for %s failed: %s", book, e)
+            continue
+        if entry:
+            out.append(entry)
     return out
 
 
@@ -101,7 +166,8 @@ def resume() -> None:
 
 def sizing_equity(book: str, equity: float) -> float:
     """What a book should size new positions from: its equity, or — while paused — its equity without the
-    programme's capital, so exposure drifts back to base as positions roll."""
-    if paused() and added(book):
-        return max(equity - added(book), 0.0)
+    programme's extra capital, so exposure drifts back to base as positions roll. Books cut below base are unchanged."""
+    extra = added(book)
+    if paused() and extra > 0:
+        return max(equity - extra, 0.0)
     return equity

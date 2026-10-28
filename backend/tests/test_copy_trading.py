@@ -91,8 +91,8 @@ def test_mirror_enters_follows_and_exits(tmp_path, monkeypatch):
     out = asyncio.run(ct.mirror(NOW))
     assert [t["symbol"] for t in out["opened"]] == ["ETHUSDT"]
     t = w.get_portfolio()["open_trades"][0]
-    assert t["leader_position_id"] == "p1" and t["leverage"] == 5 and t["leader"] == "Leader One"
-    assert t["notional_usd"] == pytest.approx(500, rel=0.01)
+    assert t["leader_position_id"] == "p1" and t["leverage"] == min(10, ct.MAX_LEVERAGE) and t["leader"] == "Leader One"
+    assert t["notional_usd"] == pytest.approx(10_000 * ct.LEG_PCT / 100, rel=0.01)
     sk = ct.skipped()
     assert len(sk) == 1 and sk[0]["symbol"] == "SOLUSDT" and sk[0]["reason"].startswith("too late")
     # the same positions again: nothing new, nothing doubled

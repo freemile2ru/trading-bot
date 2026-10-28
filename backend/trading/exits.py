@@ -62,6 +62,9 @@ class Policy:
     trim_frac: float = 0.5
     window_exit_h: float | None = None    # in the last X hours before the max hold, look for the exit (see 6b)
     window_trail_r: float = 0.15          # …leaving once price slips this far (in R) from the best print of the window
+    run_if_r: float | None = None         # at the max hold, a trade at least this far in profit gets run_extend_h more
+    run_extend_h: float = 24.0            # …each time, up to run_cap_h in total; it then leaves on its stop or trail
+    run_cap_h: float = 168.0
 
 
 POLICIES: dict[str, Policy] = {
@@ -94,6 +97,12 @@ POLICIES: dict[str, Policy] = {
     # beats protect by >= +0.02R a trade with its 90% bootstrap range above 0.
     "protect_trim": Policy("protect_trim", be_at_r=1.0, trail_at_r=1.0, trail_r=0.5, fixed_tp2=False, stale=False,
                            max_hold_h=24, trim_at_r=-0.3, trim_frac=0.5),
+    # Shadow candidate (2026-10-28): 17 of the last 30 days' 32 wins were "expired" at the 24h bell averaging +0.07R,
+    # while losses ran to the full stop. As protect, but a trade at least +0.5R at the bell gets another day under
+    # the trail (up to a week) instead of leaving flat. Rule, set now: after 60 entries opened from 2026-10-28,
+    # adopt only if it beats protect by >= +0.05R a trade with its 90% bootstrap range above 0.
+    "protect_run": Policy("protect_run", be_at_r=1.0, trail_at_r=1.0, trail_r=0.5, fixed_tp2=False, stale=False,
+                          max_hold_h=24, run_if_r=0.5, run_extend_h=24, run_cap_h=168),
 }
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
 SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k != "manual")).split(",")
@@ -128,7 +137,7 @@ def cost_offset(entry: float) -> float:
 
 def stamp(trade: dict, policy_name: str | None = None, now: float | None = None) -> dict:
     """Attach the exit policy and everything bar-by-bar evaluation needs."""
-    now = now or time.time()
+    now = time.time() if now is None else now
     p = POLICIES.get(policy_name or DEFAULT_POLICY, POLICIES["protect"])
     # A "manual" trade is held until its owner closes it (you, Claude swing, a trend flip) — never by a
     # timeframe's clock. (Keyed on the timeframe, trend trades marked "1d" fell back to the 1h window
@@ -263,7 +272,15 @@ def apply_bar(
             and t.get("peak_r", 0.0) < t.get("stale_min_r", 0.5):
         return "stale", c
     if t.get("expires_at") and bar_end >= t["expires_at"]:
-        return "expired", c
+        r_now = (c - ref) * s / r_unit if r_unit else 0.0
+        if p.run_if_r is not None and r_now >= p.run_if_r \
+                and bar_end - t.get("opened_ts", bar_end) < p.run_cap_h * HOUR:
+            # In profit at the bell: another stretch under the trail rather than leaving flat.
+            t["expires_at"] = bar_end + p.run_extend_h * HOUR
+            t["window_best_r"] = None
+            t["extended"] = t.get("extended", 0) + 1
+        else:
+            return "expired", c
     # 6b. Nearing the max hold: ride the price while it improves, leave once it slips window_trail_r from the
     # best close seen inside the window (the bell closes whatever is left).
     if p.window_exit_h and t.get("expires_at") and r_unit and bar_end >= t["expires_at"] - p.window_exit_h * HOUR:

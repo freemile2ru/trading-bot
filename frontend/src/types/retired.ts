@@ -27,6 +27,12 @@ export interface ScoreInputs {
   lost_pct: number
 }
 
+/** A rejected study from the Lab's research shelf (same shape as the Lab shows it). */
+export interface RejectedResearch {
+  key: string; title: string; script: string; file: string | null; question: string; finding: string; decision: string
+  book: string | null; ran_at: number | null; status: 'promoted' | 'rejected' | 'mixed' | 'pending'
+}
+
 export interface RetiredExperiment {
   key: string
   rank: number

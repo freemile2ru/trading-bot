@@ -80,7 +80,8 @@ def daily_pnl(series: list[tuple[float, float]], deposits: list[dict]) -> dict[s
     for d in sorted(by_day):
         f_ts, first, l_ts, last = by_day[d]
         base_ts, base = prev if prev else (f_ts, first)
-        dep = sum(x["amount"] for x in deposits if base_ts <= x["ts"] <= l_ts)
+        # A move's ledger entry can land a few seconds after the equity snapshot it caused: allow that.
+        dep = sum(x["amount"] for x in deposits if base_ts <= x["ts"] <= l_ts + 5)
         pnl = last - base - dep
         if base > 0 and abs(pnl) > SUSPECT_DAY_FRAC * base:
             # A move of a third of the book in a day is a ledger artefact (a deposit the curve missed, a reset), not
@@ -170,12 +171,13 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
     today = _day(now)
     books, tot = [], {"today": 0.0, "avg7": 0.0, "avg30": 0.0, "expected": 0.0, "equity": 0.0, "added": 0.0}
     for name, m in pf["systems"].items():
-        if name == "all" or name.endswith("_live") or name in overview.RETIRED_SYSTEMS:
+        if name in ("all", "everything") or name.endswith("_live") or name in overview.RETIRED_SYSTEMS:   # aggregates, not books
             continue
         pnl = daily_pnl(overview._equity_series(name), [d for d in deps if d["book"] == name])
         exp, why = expected(name, m["equity"], now)
         row = {"book": name, "label": m["label"], "equity": m["equity"], "added": capital.added(name),
-               "planned": capital.PLAN.get(name), "today": pnl.get(today, 0.0), "avg7": _avg(pnl, 7, now),
+               "planned": capital.PLAN.get(name), "shortfall": capital.shortfall(name),
+               "today": pnl.get(today, 0.0), "avg7": _avg(pnl, 7, now),
                "avg30": _avg(pnl, 30, now), "days": len(pnl), "since": min(pnl) if pnl else None,
                "expected": exp, "expected_why": why, "open_positions": m["open_positions"]}
         books.append(row)
@@ -191,7 +193,8 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
             continue
         exp, why = expected(name, eq, now)
         books.append({"book": name, "label": overview.SYSTEMS.get(name, name), "equity": round(eq, 2), "added": capital.added(name),
-                      "planned": capital.PLAN[name], "today": 0.0, "avg7": 0.0, "avg30": 0.0, "days": 0, "since": None,
+                      "planned": capital.PLAN[name], "shortfall": capital.shortfall(name),
+                      "today": 0.0, "avg7": 0.0, "avg30": 0.0, "days": 0, "since": None,
                       "expected": exp, "expected_why": why, "open_positions": 0})
         tot["equity"] += eq
         tot["added"] += capital.added(name)
@@ -213,6 +216,14 @@ async def tick(now: float | None = None) -> dict:
     import asyncio
     now = now or time.time()
     await asyncio.to_thread(log_pair_equity, now)
+    try:
+        # Keep every book at its plan: deposits unless the breaker has paused them, withdrawals always
+        # (a cut book gives up its free cash now and the rest as positions close).
+        moved = await asyncio.to_thread(capital.apply_plan, bool(capital.paused()))
+        if moved:
+            logger.info("Capital plan applied: %s", [(m["book"], m["amount"]) for m in moved])
+    except Exception as e:
+        logger.warning("Capital plan not applied: %s", e)
     rep = await asyncio.to_thread(report, now, 0)
     avg7, days = rep["totals"]["avg7"], max((r["days"] for r in rep["books"]), default=0)
     if days >= 7 and avg7 < TRIP_AVG7 and not capital.paused():

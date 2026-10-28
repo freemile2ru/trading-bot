@@ -74,10 +74,11 @@ def test_open_mark_close(tmp_path, monkeypatch):
     unlocks._write("INSERT INTO unlocks (id, symbol, coin, unlock_ts, pct, usd, insider_share, cliff_share, deadline_ts, status) "
                    "VALUES ('a', 'ALLOUSDT', 'ALLO', ?, 17.39, 33e6, 0.94, 0.94, ?, 'pending')", (1_800_000_000, 1_800_000_000))
     p = asyncio.run(unlocks._open(unlocks.pending()[0], now))
-    assert p["status"] == "open" and p["notional"] == 1000.0 and p["coin_entry"] < 2.0 < p["btc_entry"] / 40_000
+    assert p["status"] == "open" and p["notional"] == 10_000 * unlocks.LEG_PCT / 100 and p["coin_entry"] < 2.0 < p["btc_entry"] / 40_000
     # the coin falls 10%, BTC flat → the pair is up ≈ 10%
     assert unlocks.spread_pct(p, 1.8, 80_000) == pytest.approx(10, abs=0.2)
     done = asyncio.run(unlocks.close(p, 1.8, 80_000, "unlock_reached", now + 9 * 86400))
-    assert 90 < done["net"] < 100 and unlocks.closed_positions()[0]["close_reason"] == "unlock_reached"
+    leg = 10_000 * unlocks.LEG_PCT / 100                     # ≈ +10% of the leg, less four taker fills
+    assert 0.09 * leg < done["net"] < 0.10 * leg and unlocks.closed_positions()[0]["close_reason"] == "unlock_reached"
     assert unlocks.balance() == pytest.approx(10_000 + done["net"])
     assert unlocks.rows()[0]["outcome"] == "win" and "17.4% of supply" in unlocks.rows()[0]["note"]

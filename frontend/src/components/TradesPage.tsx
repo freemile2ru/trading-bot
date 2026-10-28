@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Download, RefreshCw } from 'lucide-react'
+import { Download, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 import { api, historyQuery } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
@@ -217,27 +217,21 @@ export function TradesPage() {
     load()
   }
 
-  const sortHeader = (key: string, label: string) => (
-    <button onClick={() => sortBy(key)} className="inline-flex items-center gap-1 uppercase tracking-wider hover:text-gray-300">
-      {label}
-      {filters.sort === key && (filters.order === 'desc' ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />)}
-    </button>
-  )
-
+  // Every column sorts; the API does the sorting so paging stays consistent (sortKey = its field).
   const closedCols: Column<UnifiedTrade>[] = [
-    { key: 'closed', header: sortHeader('closed_ts', 'Closed'), render: t => <span className="text-gray-400 whitespace-nowrap">{fmtWhen(t.closed_ts)}</span> },
-    { key: 'sys', header: 'System', render: t => <SystemBadge system={t.system} /> },
-    { key: 'sym', header: sortHeader('symbol', 'Symbol'), render: t => <span className="font-mono font-semibold text-white" title={t.note || undefined}>{t.symbol.replace('USDT', '')}</span> },
-    { key: 'side', header: 'Side', render: t => <Side d={t.direction} /> },
-    { key: 'hold', header: sortHeader('hold_min', 'Held'), align: 'right', render: t => fmtHold(t.hold_min) },
-    { key: 'px', header: 'Entry → exit', align: 'right', render: t => <span className="text-gray-300">{fmtPrice(t.entry_price)} <span className="text-gray-600">→</span> {fmtPrice(t.exit_price)}</span> },
-    { key: 'size', header: sortHeader('notional', 'Notional'), align: 'right', render: t => <span>{fmtUsd(t.notional, 0)}{t.leverage && t.leverage > 1 ? <span className="text-gray-500"> · {t.leverage}x</span> : null}</span> },
-    { key: 'gross', header: sortHeader('gross_pnl', 'Gross'), align: 'right', title: 'Price move alone, before fees and funding', render: t => <Pnl v={t.gross_pnl} /> },
-    { key: 'cost', header: 'Costs', align: 'right', title: 'Fees + funding paid', render: t => <span className="text-gray-400">{fmtUsd((t.fees ?? 0) + (t.funding ?? 0))}</span> },
-    { key: 'net', header: sortHeader('net_pnl', 'Net'), align: 'right', render: t => <Pnl v={t.net_pnl} strong /> },
-    { key: 'r', header: sortHeader('r', 'R'), align: 'right', title: 'Net P&L ÷ risk taken at entry', render: t => <span className={clsx((t.r ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>{t.r == null ? '—' : `${t.r > 0 ? '+' : ''}${t.r.toFixed(2)}R`}</span> },
-    { key: 'why', header: 'Exit', render: t => <Reason r={t.exit_reason} /> },
-    { key: 'res', header: 'Result', render: t => <Result t={t} /> },
+    { key: 'closed', header: 'Closed', sortKey: 'closed_ts', render: t => <span className="text-gray-400 whitespace-nowrap">{fmtWhen(t.closed_ts)}</span> },
+    { key: 'sys', header: 'System', sortKey: 'system', render: t => <SystemBadge system={t.system} /> },
+    { key: 'sym', header: 'Symbol', sortKey: 'symbol', render: t => <span className="font-mono font-semibold text-white" title={t.note || undefined}>{t.symbol.replace('USDT', '')}</span> },
+    { key: 'side', header: 'Side', sortKey: 'direction', render: t => <Side d={t.direction} /> },
+    { key: 'hold', header: 'Held', sortKey: 'hold_min', align: 'right', render: t => fmtHold(t.hold_min) },
+    { key: 'px', header: 'Entry → exit', sortKey: 'entry_price', align: 'right', render: t => <span className="text-gray-300">{fmtPrice(t.entry_price)} <span className="text-gray-600">→</span> {fmtPrice(t.exit_price)}</span> },
+    { key: 'size', header: 'Notional', sortKey: 'notional', align: 'right', render: t => <span>{fmtUsd(t.notional, 0)}{t.leverage && t.leverage > 1 ? <span className="text-gray-500"> · {t.leverage}x</span> : null}</span> },
+    { key: 'gross', header: 'Gross', sortKey: 'gross_pnl', align: 'right', title: 'Price move alone, before fees and funding', render: t => <Pnl v={t.gross_pnl} /> },
+    { key: 'cost', header: 'Costs', sortKey: 'costs', align: 'right', title: 'Fees + funding paid', render: t => <span className="text-gray-400">{fmtUsd((t.fees ?? 0) + (t.funding ?? 0))}</span> },
+    { key: 'net', header: 'Net', sortKey: 'net_pnl', align: 'right', render: t => <Pnl v={t.net_pnl} strong /> },
+    { key: 'r', header: 'R', sortKey: 'r', align: 'right', title: 'Net P&L ÷ risk taken at entry', render: t => <span className={clsx((t.r ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>{t.r == null ? '—' : `${t.r > 0 ? '+' : ''}${t.r.toFixed(2)}R`}</span> },
+    { key: 'why', header: 'Exit', sortKey: 'exit_reason', render: t => <Reason r={t.exit_reason} /> },
+    { key: 'res', header: 'Result', sortKey: 'outcome', render: t => <Result t={t} /> },
   ]
 
   // Turning retired strategies off while one is selected would leave an empty page — go back to all.
@@ -322,6 +316,7 @@ export function TradesPage() {
           )}
         </div>
         {view === 'table' && <div className={clsx('transition-opacity', loading && 'opacity-40 pointer-events-none')}><DataTable columns={closedCols} rows={closed?.rows ?? []} rowKey={t => `${t.system}:${t.id}`} dense
+          sort={filters.sort ? { key: filters.sort, dir: filters.order === 'asc' ? 'asc' : 'desc' } : null} onSort={sortBy}
           onRowClick={t => setDrawer({ system: t.system, id: t.id })}
           empty={closed ? 'No trades match these filters.' : 'Loading…'}
           footer={closed && closed.pages > 1 && (
