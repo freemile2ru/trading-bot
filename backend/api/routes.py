@@ -370,7 +370,7 @@ async def trade_history(
 
 
 # Every system the Trades page can filter on — the trading books and the Lab's experiment books.
-SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|(stocks|futures)_(trend|rules|claude))$"
+SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|(stocks|futures)_(trend|rules|claude))$"
 
 
 @router.get("/trades/all")
@@ -475,6 +475,56 @@ async def experiments_summary(ledger: str = Query("both", pattern="^(both|paper|
     return await asyncio.to_thread(lab.summary, ledger)
 
 
+@router.post("/markets/{market}/trend/close-all")
+async def markets_trend_close_all(market: str, reason: str = Query("retired", max_length=40)):
+    """Close every open position of a market's trend book at the live price (used when the book is retired), then
+    let the capital plan take the freed cash."""
+    if market not in ("stocks", "futures"):
+        raise HTTPException(404, "unknown market")
+    from markets import engine as mk
+    from trading import capital
+    w = mk.WALLETS[f"{market}_trend"]
+    out = []
+    for t in w.get_portfolio()["open_trades"]:
+        price = await monitor.live_price(t["symbol"]) or t.get("current_price")
+        if not price:
+            continue
+        done = await asyncio.to_thread(w.close_trade_manually, t["id"], price, reason)
+        if done:
+            out.append({"symbol": t["symbol"], "pnl_usd": done["pnl_usd"]})
+    moved = await asyncio.to_thread(capital.apply_plan)
+    return {"closed": out, "net": round(sum(x["pnl_usd"] for x in out), 2), "moved": moved}
+
+
+@router.post("/experiments/weekly-rs/resize")
+async def weekly_rs_resize():
+    """Bring the weekly book's open legs to their target size now (the Monday rebalance also does this). Oversized
+    legs have the excess closed as its own row (reason "resize"); undersized legs are topped up."""
+    from experiments import weekly_rs
+    from trading import capital
+    out = await weekly_rs.resize()
+    capital.apply_plan(withdraw_only=True)          # hand the freed margin back to the plan at once
+    return {"resized": out}
+
+
+@router.post("/experiments/weekly-rs/restate")
+async def weekly_rs_restate(target: float = Query(..., gt=0, description="the leg size to restate to, in USD notional")):
+    """Restate the weekly book's closed record at the right leg size: legs closed at another size are scaled to
+    `target`, and the cut-off parts of resized legs (reason "resize") are erased — a book that had always held
+    the right size would never have had them."""
+    from experiments import books
+    from storage import signals
+    w = books.WALLETS["weekly_rs"]
+    closed = w.all_trades()["closed"]
+    cut = {t["id"] for t in closed if t.get("close_reason") == "resize"}
+    factors = {t["id"]: target / t["notional_usd"] for t in closed
+               if t["id"] not in cut and t.get("notional_usd") and abs(t["notional_usd"] / target - 1) > 0.25}
+    scaled = await asyncio.to_thread(w.rescale_closed_trades, factors, f"restated to ${target:,.0f} a leg")
+    erased = await asyncio.to_thread(w.erase_closed_trades, cut, "resize parts")
+    signals.delete_debriefs("weekly_rs", list(cut))
+    return {"scaled": scaled, "erased": erased}
+
+
 @router.post("/experiments/claude-swing/review")
 async def claude_swing_review_now():
     """Run a Claude swing review now (counts against its daily call budget)."""
@@ -518,7 +568,13 @@ async def copy_log(leader_id: str | None = None, since: float | None = None, lim
 async def copy_refresh():
     """Re-run the leader selection now (otherwise daily)."""
     from experiments import copy_trading
-    await copy_trading.select_leaders()
+    if copy_trading._state.get("selecting"):
+        raise HTTPException(409, "a leader selection is already running")
+    copy_trading._state["selecting"] = True
+    try:
+        await copy_trading.select_leaders_off_loop()
+    finally:
+        copy_trading._state["selecting"] = False
     return await asyncio.to_thread(copy_trading.status)
 
 
@@ -531,10 +587,29 @@ async def portfolio_target():
 
 @router.post("/portfolio/target/apply-plan")
 async def portfolio_target_apply():
-    """Bring the evidence books up to their programme balances (idempotent deposits)."""
+    """Bring every book to the plan in force (idempotent: deposits and withdrawals)."""
     from trading import capital, target
     done = await asyncio.to_thread(capital.apply_plan)
     return {"deposits": done, "report": await asyncio.to_thread(target.report, None, 0)}
+
+
+@router.get("/portfolio/target/suggest")
+async def portfolio_target_suggest():
+    """What the evidence would move under the allocator's written rule (trading/allocator.py) — advisory only."""
+    from trading import target
+    return await asyncio.to_thread(target.suggestion)
+
+
+@router.post("/portfolio/target/apply-suggestion")
+async def portfolio_target_apply_suggestion():
+    """Make the current suggestion the plan in force and move the money (same books, same total)."""
+    from trading import capital, target
+    sug = await asyncio.to_thread(target.suggestion)
+    if not sug["changed"]:
+        raise HTTPException(409, "the suggestion matches the plan already in force")
+    capital.set_plan(sug["suggested"], "allocator suggestion applied from the Portfolio tab")
+    done = await asyncio.to_thread(capital.apply_plan)
+    return {"plan": capital.plan(), "moved": done, "report": await asyncio.to_thread(target.report, None, 0)}
 
 
 @router.post("/portfolio/target/resume")
@@ -641,11 +716,13 @@ async def auto_pause(paused: bool = Query(...)):
 
 
 @router.delete("/auto/trade/{trade_id}")
-async def auto_close_trade(trade_id: str):
+async def auto_close_trade(trade_id: str, reason: str = Query("manual", pattern="^(manual|dedup)$")):
+    """Close an auto trade now. `reason` names why in the record: a hand close, or a de-duplication (the same signal
+    held in another book)."""
     from live import swing as live_swing
     if not live_swing.find_trade("auto", trade_id):
         raise HTTPException(status_code=404, detail=f"No open auto trade {trade_id}")
-    closed = await autotrader.close(trade_id)
+    closed = await autotrader.close(trade_id, reason)
     if not closed:      # it exists, so the close itself was refused (a live one: its exchange stop stays)
         raise HTTPException(status_code=502, detail="close failed — for live positions check the Live tab's activity log")
     return closed

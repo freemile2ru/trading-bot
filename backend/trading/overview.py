@@ -42,7 +42,7 @@ RETIRED_SYSTEMS = {"scalper": "order-flow scalper, retired 2026-09-29", "scalper
                    # Switched off after failing (or never trading) — see trading/book_switches.RETIRED for why.
                    "auto_rules": "autotrader rules twin, retired 2026-10-17", "signals_rules": "signals · rules only, retired 2026-10-21",
                    "signals_claude": "signals · Claude, retired 2026-10-25", "hold72": "hold vs BTC, retired 2026-10-24", "fade24": "fade the scanner, retired 2026-10-28",
-                   "stocks_rules": "stocks scanner rules, retired 2026-10-12", "futures_rules": "futures scanner rules, retired 2026-10-12",
+                   "stocks_trend": "stocks trend book, retired 2026-10-30", "stocks_rules": "stocks scanner rules, retired 2026-10-12", "futures_rules": "futures scanner rules, retired 2026-10-12",
                    "stocks_claude": "stocks Claude-confirmed, retired 2026-10-19", "futures_claude": "futures Claude-confirmed, retired 2026-10-19"}
 SORTABLE = {"closed_ts", "opened_ts", "net_pnl", "gross_pnl", "r", "hold_min", "symbol", "notional",
             "system", "direction", "exit_reason", "entry_price", "exit_price", "outcome", "costs", "leverage"}
@@ -66,6 +66,11 @@ def _r(x, n=2):
 
 # ── Normalised rows ────────────────────────────────────────────────────────────
 
+def _lane_of(t: dict) -> str:
+    from autotrader.lanes import lane_of
+    return lane_of(t)
+
+
 def _swing_row(t: dict, system: str) -> dict:
     opened, closed = _ts(t.get("opened_at")), _ts(t.get("closed_at"))
     fees, funding, net = t.get("fees_usd") or 0.0, t.get("funding_usd") or 0.0, t.get("pnl_usd") or 0.0
@@ -88,6 +93,8 @@ def _swing_row(t: dict, system: str) -> dict:
         "outcome": None if is_open else history.outcome(t),
         "timeframe": t.get("timeframe"),
         "note": t.get("claude_thesis") or t.get("oracle_reasoning") or "",
+        # The autotrader's lane (scanner / event short / unlock short / weekly basket) — which strategy placed it.
+        "lane": _lane_of(t) if system.startswith("auto") else None,
         "mfe_r": t.get("peak_r"),
         "quantity": t.get("quantity"), "liquidation": t.get("liquidation_price"), "tp_set": t.get("tp_set", True),
     }

@@ -97,6 +97,8 @@ def test_consensus_sizes_up(tmp_path, monkeypatch):
     from trading import book_switches, monitor
     from trading.paper_trader import PaperWallet
     monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    monkeypatch.setattr(ct, "VARIANTS", {"base": ct.VARIANTS["base"]})                 # the base rule alone: the real variant wallets must stay untouched
+    monkeypatch.setattr(ct, "ALL_BOOKS", {(m, "base"): ct.BOOKS_BY_MARKET[m] for m in ct.MARKETS})
     w = PaperWallet(str(tmp_path / "c.db"), label="copy_trading", initial_balance=10_000)
     monkeypatch.setitem(books.WALLETS, "copy_trading", w)
     monkeypatch.setattr(books, "ENABLED", True)
@@ -161,6 +163,8 @@ def test_dropped_leader_is_followed_out_not_force_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(books, "ENABLED", True)
     monkeypatch.setattr(book_switches, "enabled", lambda name: True)
     monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    monkeypatch.setattr(ct, "VARIANTS", {"base": ct.VARIANTS["base"]})                 # the base rule alone: the real variant wallets must stay untouched
+    monkeypatch.setattr(ct, "ALL_BOOKS", {(m, "base"): ct.BOOKS_BY_MARKET[m] for m in ct.MARKETS})
     kv.delete_sync(ct._k("seen", "X"), ct._k("skipped"), ct._k("leader", "X"))
     prof = {"median_hold_h": 3.0, "win_move_pct": 2.0, "loss_move_pct": 1.0}
     L = {"id": "X", "venue": "binance", "nickname": "x", "profile": prof}

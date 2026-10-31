@@ -91,6 +91,11 @@ class LiveWallet(PaperWallet):
         """Lock-free on purpose (see _held)."""
         return symbol in self._held
 
+    def _erase_adjust(self, state: dict, pnl: float) -> None:
+        """The balance mirrors the exchange, where the erased trades' P&L is real: take it out of the starting
+        balance instead, so the return since start no longer carries them."""
+        state["initial_balance"] = round(state["initial_balance"] + pnl, 2)
+
     def _sync_balance(self, state: dict) -> None:
         """Mirror the exchange wallet balance (realized P&L, fees and funding all included)."""
         try:
@@ -392,6 +397,11 @@ class LiveWallet(PaperWallet):
                 return {"error": f"Binance refused the new level: {e}"}
             self._save(state)
             return dict(t)
+
+    def split_close(self, trade_id: str, quantity: float, price: float, reason: str) -> Optional[dict]:
+        """A paper-only bookkeeping split: on the live ledger a partial close must go through adjust_trade (a real
+        reduce order), or the record would show a close the exchange never made."""
+        raise NotImplementedError("split_close is paper-only; use adjust_trade('reduce') on the live ledger")
 
     def adjust_trade(self, trade_id, action, price, quantity, reason, new_stop=None, kind=None) -> Optional[dict]:
         """Add or trim at market on the exchange, then book the real fill."""

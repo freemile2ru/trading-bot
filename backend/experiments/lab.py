@@ -19,6 +19,11 @@ from trading import capital, overview, trade_analytics
 
 MIN_TRADES = 40
 SIMULATIONS = 2000
+_COPY_VARIANT_DESC = {
+    "wide": "the same quality bar but 15 leaders a venue instead of 5 — more positions seen opening",
+    "fast": "5 leaders a venue chosen among those whose median hold is a day or less — they open more often",
+    "late": "the base leaders, with a position up to their whole median hold old still copied at half size when it has moved no more than a quarter of their typical win",
+}
 
 DESCRIPTIONS = {
     "auto_rules": "The autotrader's exact rules on the same scans, entering wherever the real autotrader asks Claude. "
@@ -26,10 +31,25 @@ DESCRIPTIONS = {
     "signals_rules": "Every scanner candidate the rules send to Claude, taken whatever Claude says, with rule-based levels.",
     "signals_claude": "Only the signals Claude fires, at Claude's direction and levels.",
     "claude_swing": "Claude reviewing the market every few hours and picking its own 1–7 day trades, or none.",
-    "cascade": "After a liquidation cascade (a 5-minute burst at the coin's 99th percentile), take the other side for 4 hours. "
-               "On the recorder's last 30 days: +34 bps a trade after costs, 61% winners — fading at once lost.",
+    "cascade": "An hour after a liquidation cascade (a 5-minute burst at the coin's 99th percentile), take the other side for 4 hours "
+               "with an 8% disaster stop. Rule since 2026-10-30: the first rule (fade at once, 3% stop) lost in both halves of the "
+               "recorder's replay; the hour's delay made +52 bps a trade there, but on a flat first half — a fresh forward test, "
+               "judged only on trades opened under this rule.",
     "weekly_rs": "Every Monday: long the 5 coins nearest their 7-day high, short the 5 furthest below, held a week — "
                  "the one input combination that survived costs on a year of data (research/signal_rebuild_lab.py).",
+    "copy_stocks": "The copy leaders' positions in Binance's stock perpetuals only, in their own wallet: same too-late rule and exits as the "
+                   "crypto copy book, plus the earnings blackout. Judged on its own 40 trades.",
+    "copy_futures": "The copy leaders' positions in Binance's commodity perpetuals only (gold, silver, oil, gas, metals), in their own wallet, "
+                    "same rules as the crypto copy book. Judged on its own 40 trades.",
+    **{f"copy_{m}_{v}": f"Copy trading on {ml}, variant '{v}' (since 2026-10-30): {d}. Same exits and stop as the base book; judged on its own 40 trades."
+       for m, ml in (("crypto", "crypto perps"), ("stocks", "stock perps"), ("futures", "commodity perps")) for v, d in _COPY_VARIANT_DESC.items()},
+    "auction": "The mentor's NQ auction-level system on QQQ, NVDA, TSLA and AMD perps, 5-minute bars, New York session: accept beyond a "
+               "session level, confirm, enter, stop under the acceptance bar, target the next level ≥ 50 bps away, grade ≥ 7 only, no trade "
+               "near a macro release or earnings. Replay (research/auction_lab.py): −0.13% a trade at our costs — a forward test the user asked "
+               "for, judged on its own 40 trades.",
+    "multi_factor": "Daily: 30-day cross-sectional momentum, 10-day trend and funding carry held together, each scaled by its own "
+                    "volatility. On 4 years the combination's test Sharpe was 1.25 (26% drawdown) but its 95% range touched zero — "
+                    "a $1k forward test, not a promoted book (research/multi_factor_lab.py).",
     "copy_trading": "Mirrors consistent lead traders from Binance's copy board and Hyperliquid's on-chain leaderboard (chosen daily "
                     "for drawdown, positive weeks, copier profit and tenure, not headline ROI). A trade is copied only if the leader's position is still young and hasn't "
                     "already run; skipped ones are tracked so the too-late rule can be judged. Exits when the leader exits.",
@@ -105,6 +125,9 @@ def summary(ledger: str = "both") -> dict:
     for name, label in books.LABELS.items():
         started = books.started_at(name)
         mine = by_system.get(name, [])
+        if name == "cascade":
+            from experiments import cascade
+            mine = [r for r in mine if (r.get("opened_ts") or 0) >= cascade.RULE_SINCE]      # the old rule's trades stay on record, not in the verdict
         closed = [r for r in mine if r["status"] == "closed"]
         experiments.append({
             "key": name, "label": label, "description": DESCRIPTIONS[name], "started_at": started,

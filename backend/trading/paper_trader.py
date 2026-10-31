@@ -886,6 +886,41 @@ class PaperWallet:
             self._save(state)
             return dict(trade)
 
+    def split_close(self, trade_id: str, quantity: float, price: float, reason: str) -> Optional[dict]:
+        """Close `quantity` of a position as its own closed row (its share of entry fees, funding and earlier partial
+        P&L, plus the exit's costs) and keep the rest open at the same entry — so a position cut to size leaves a
+        record of the cut part and a remainder whose P&L reflects only the size it now has. Returns the closed part."""
+        with self._lock:
+            state = self._load()
+            trade = next((t for t in state["open"] if t["id"] == trade_id), None)
+            if not trade or quantity <= 0:
+                return None
+            frac = min(quantity / trade["quantity"], 1.0) if trade["quantity"] else 1.0
+            if frac >= 0.999:
+                part = self._close_open(state, trade, price, reason)
+            else:
+                shared = ("fees_usd", "funding_usd", "realized_pnl_usd", "risk_usd", "reward_1_usd")
+                part = {**trade, "id": str(uuid.uuid4())[:8], "part_of": trade["id"], "quantity": round(trade["quantity"] * frac, 8),
+                        **{k: round(trade.get(k) or 0.0, 4) * frac for k in shared}}
+                part.pop("adjustments", None)
+                _set_leverage(part, trade["leverage"])
+                part = _close_trade(part, price, reason)
+                state["closed"].append(part)
+                state["balance"] = round(state["balance"] + part["pnl_usd"], 2)
+                trade["quantity"] = round(trade["quantity"] * (1 - frac), 8)
+                for k in shared:
+                    trade[k] = round((trade.get(k) or 0.0) * (1 - frac), 4)
+                _set_leverage(trade, trade["leverage"])
+                _refresh(trade, price)
+                trade["size_pct"] = round(trade["notional_usd"] / state["balance"] * 100, 2) if state["balance"] else 0
+                trade["risk_now_usd"] = self._risk_now(trade)
+                trade.setdefault("adjustments", []).append({
+                    "ts": time.time(), "action": "split", "kind": reason, "price": price, "quantity": part["quantity"],
+                    "reason": reason, "part_id": part["id"], "quantity_after": trade["quantity"]})
+            self._snapshot_equity(state, force=True)
+            self._save(state)
+            return dict(part)
+
     def move_stop(self, trade_id: str, new_stop: float, reason: str, kind: str = "stop_tighten") -> Optional[dict]:
         """Tighten a stop. Refuses to loosen it or to put it through the current price."""
         with self._lock:
@@ -1036,6 +1071,60 @@ class PaperWallet:
             self._save(state)
             logger.info("%s: withdrawal $%.2f (%s) → balance %.2f", self.label, take, note, state["balance"])
             return take
+
+    def _erase_adjust(self, state: dict, pnl: float) -> None:
+        """Undo erased trades' effect on the books: on paper the P&L simply never happened."""
+        state["balance"] = round(state["balance"] - pnl, 2)
+
+    def erase_closed_trades(self, ids: set[str], note: str = "erased") -> dict:
+        """Remove closed trades from the record and undo their P&L — for ledger artefacts only (positions that
+        duplicated another book's, a mis-sized trim), never for trades the book actually took. Their shadow
+        results go too. Returns how many were removed and the P&L reversed."""
+        with self._lock:
+            state = self._load()
+            gone = [t for t in state["closed"] if t["id"] in ids]
+            if not gone:
+                return {"removed": 0, "pnl": 0.0}
+            state["closed"] = [t for t in state["closed"] if t["id"] not in ids]
+            state["shadow_results"] = [r for r in state.get("shadow_results", []) if r.get("trade_id") not in ids]
+            pnl = round(sum(t.get("pnl_usd") or 0.0 for t in gone), 4)
+            self._erase_adjust(state, pnl)
+            with self._con:
+                self._con.executemany("DELETE FROM trades WHERE label=? AND id=?", [(self.label, t["id"]) for t in gone])
+                self._con.executemany("DELETE FROM shadow_results WHERE label=? AND trade_id=?", [(self.label, t["id"]) for t in gone])
+            self._snapshot_equity(state, force=True)
+            self._save(state)
+            logger.warning("%s: erased %d closed trades (%s), P&L %+.2f reversed", self.label, len(gone), note, pnl)
+            return {"removed": len(gone), "pnl": pnl, "ids": [t["id"] for t in gone]}
+
+    _SCALED = ("quantity", "initial_quantity", "notional_usd", "position_value_usd", "margin_usd", "fees_usd", "funding_usd",
+               "realized_pnl_usd", "pnl_usd", "risk_usd", "reward_1_usd", "risk_now_usd", "size_pct")
+
+    def rescale_closed_trades(self, factors: dict[str, float], note: str = "rescaled") -> dict:
+        """Restate closed trades as if they had been `factor` × their size (a position opened at the wrong size):
+        quantity, notional, margin, costs and P&L scale together; % moves are unchanged. The P&L difference is
+        taken out of the books the same way an erase is. Returns how many changed and the P&L shift."""
+        with self._lock:
+            state = self._load()
+            shift, done = 0.0, []
+            for t in state["closed"]:
+                f = factors.get(t["id"])
+                if f is None or f <= 0 or abs(f - 1) < 1e-9:
+                    continue
+                before = t.get("pnl_usd") or 0.0
+                for k in self._SCALED:
+                    if isinstance(t.get(k), (int, float)):
+                        t[k] = round(t[k] * f, 8 if "quantity" in k else 4 if k != "pnl_usd" else 2)
+                t.setdefault("rescaled", []).append({"ts": time.time(), "factor": round(f, 6), "pnl_before": before, "note": note})
+                shift += before - t["pnl_usd"]
+                done.append(t["id"])
+            if not done:
+                return {"rescaled": 0, "pnl_shift": 0.0}
+            self._erase_adjust(state, round(shift, 4))
+            self._snapshot_equity(state, force=True)
+            self._save(state, full=True)
+            logger.warning("%s: rescaled %d closed trades (%s), P&L %+.2f", self.label, len(done), note, -shift)
+            return {"rescaled": len(done), "pnl_shift": round(-shift, 2), "ids": done}
 
     def reset_portfolio(self, starting_balance: float = 10000.0) -> dict:
         with self._lock:

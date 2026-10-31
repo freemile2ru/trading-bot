@@ -3,22 +3,38 @@ import { Target, PauseCircle, PlayCircle } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
-import type { TargetReport } from '../types/overview'
+import type { PlanSuggestion, TargetReport } from '../types/overview'
+import { SYSTEM_LABEL, type SystemKey } from '../types/overview'
 
 const tone = (v: number | null | undefined) => v == null ? 'text-gray-500' : v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-gray-300'
 
 /** The $/day tracker: every paper book's P&L per day against the daily target, expected vs realised, breaker state. */
 export function TargetPanel() {
   const [r, setR] = useState<TargetReport | null>(null)
+  const [sug, setSug] = useState<PlanSuggestion | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  const [applied, setApplied] = useState<string | null>(null)
   useEffect(() => {
     let live = true
-    const load = () => api.portfolio.target().then(x => { if (live) setR(x) }).catch(() => { /* panel just waits */ })
+    const load = () => {
+      api.portfolio.target().then(x => { if (live) setR(x) }).catch(() => { /* panel just waits */ })
+      api.portfolio.targetSuggest().then(x => { if (live) setSug(x) }).catch(() => { /* optional */ })
+    }
     load()
     const id = setInterval(load, 60_000)
     return () => { live = false; clearInterval(id) }
   }, [])
+  const applySuggestion = async () => {
+    if (!sug || !confirm(`Move paper capital as suggested?\n\n${sug.moves.map(m => `${SYSTEM_LABEL[m.book as SystemKey] ?? m.book}: ${fmtUsd(m.from, 0)} → ${fmtUsd(m.to, 0)}`).join('\n')}`)) return
+    setBusy(true)
+    try {
+      const out = await api.portfolio.targetApplySuggestion()
+      setR(out.report); setSug(await api.portfolio.targetSuggest()); setApplied('Plan updated — the tracker moves the money over its next ticks.')
+    } catch (e) {
+      setApplied(e instanceof Error ? e.message : 'Could not apply')
+    } finally { setBusy(false) }
+  }
   if (!r) return null
 
   const t = r.totals
@@ -102,6 +118,41 @@ export function TargetPanel() {
               ))}
             </tbody>
           </table>
+          <div className="mt-3 rounded-lg border border-gray-800 bg-gray-800/30 px-3 py-2 space-y-1.5">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-xs font-semibold text-gray-200">What the evidence would move</span>
+              <span className="text-[10px] text-gray-500">advisory — nothing moves until you apply it</span>
+              {sug?.changed && (
+                <button onClick={applySuggestion} disabled={busy} className="ml-auto text-xs font-semibold text-blue-400 hover:text-blue-300 disabled:opacity-50">
+                  {busy ? 'Applying…' : 'Apply suggested plan'}
+                </button>
+              )}
+            </div>
+            {!sug ? <div className="text-[11px] text-gray-500">Loading…</div> : !sug.changed ? (
+              <div className="text-[11px] text-gray-500">No change suggested: no book with {14}+ days of history has a negative score while another has a positive one.</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0.5 text-[11px]">
+                {sug.moves.map(m => (
+                  <div key={m.book} className="flex items-baseline gap-2">
+                    <span className="text-gray-300 w-44 truncate">{SYSTEM_LABEL[m.book as SystemKey] ?? m.book}</span>
+                    <span className="font-mono text-gray-400">{fmtUsd(m.from, 0)} → {fmtUsd(m.to, 0)}</span>
+                    <span className={clsx('font-mono', tone(m.delta))}>{fmtUsdSigned(m.delta, 0)}</span>
+                    <span className="text-gray-600 truncate">{m.why}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {applied && <div className="text-[11px] text-emerald-300">{applied}</div>}
+            {r.plan_note && <div className="text-[10px] text-gray-600">Plan in force: {r.plan_note.note} ({new Date(r.plan_note.at * 1000).toLocaleDateString()})</div>}
+            {r.auto && (
+              <div className={clsx('rounded-lg border px-3 py-2 text-[11px]', r.auto.on ? 'border-emerald-900/60 bg-emerald-950/20 text-emerald-100/90' : 'border-gray-800 bg-gray-900/60 text-gray-400')}>
+                <b className="text-gray-100">Automatic allocation {r.auto.on ? 'on' : 'off'}</b> — {r.auto.on ? `runs once a day after ${String(r.auto.hour_utc).padStart(2, '0')}:00 UTC: ` : 'set CAPITAL_AUTO=true to run it: '}
+                {sug?.ladder_rule ?? 'a book whose 40-trade verdict shows an edge is promoted to 10% of the total; one that shows no edge is cut to the floor.'}
+                {r.auto.last && <div className="mt-1 text-gray-400">Last run {new Date(r.auto.last.at * 1000).toLocaleString()}: {r.auto.last.moves.length ? r.auto.last.moves.map(m => `${SYSTEM_LABEL[m.book as SystemKey] ?? m.book} ${m.delta > 0 ? '+' : ''}${fmtUsd(m.delta, 0)}`).join(' · ') : (r.auto.last.note ?? 'no change')}</div>}
+              </div>
+            )}
+            <div className="text-[10px] text-gray-600">{sug?.rule}</div>
+          </div>
           <div className="mt-2 text-[10px] text-gray-600">
             Per-day figures come from each book's equity curve with deposits and withdrawals taken out; days without data count as zero in the averages. "Expected" is what the evidence behind a book says it should earn at its current positions — blank where no edge has been shown. "Programme" is each book's share of the $50k; a withdrawal that cannot be made yet (cash tied up in open positions) shows as pending and completes as they close.
           </div>

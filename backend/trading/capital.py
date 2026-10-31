@@ -42,22 +42,49 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "50000"))
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "107500"))      # $50k across the books + $56.5k added to the copy books + $1k auction book (2026-10-31)
 TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "200"))    # $200/day since 2026-10-29 (0.4% of the $50k a day)
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
-    "futures_trend": 5_500.0, "stocks_trend": 5_500.0,
+    "futures_trend": 5_500.0,
     "unlocks": 4_000.0, "vol_premium": 3_000.0,
-    "claude_swing": 2_500.0, "auto": 2_000.0, "copy_trading": 1_500.0,
-    "weekly_rs": 1_000.0, "cascade": 500.0, "main": 500.0,
+    "claude_swing": 500.0, "auto": 1_000.0, "copy_trading": 20_000.0, "copy_stocks": 20_000.0, "copy_futures": 20_000.0,
+    "weekly_rs": 1_000.0, "multi_factor": 1_000.0, "cascade": 500.0, "main": 500.0, "auction": 1_000.0,
+    **{f"copy_{m}_{v}": round(5_500 / 9, 2) for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")},
 }
-assert abs(sum(PLAN.values()) - 50_000) < 1, "the plan must add up to $50k"
+# 2026-10-30: the stocks trend book failed its 40-trade verdict and was retired (its lifetime −$375 stays on its ledger,
+# off the plan). Its $5,500 went, as asked, entirely to the nine copy-trading variant books ($611.11 each).
+# 2026-10-29 (later): copy books for stock and commodity perps join at $1k each, taken from the autotrader's scanner
+# wallet (2k → 1k) and Claude swing (1.5k → 0.5k) — the two directional books with the weakest records.
+# 2026-10-29: the multi-factor basket joins at $1k, taken from Claude swing (the worst-scoring directional book, which the
+# allocator was already suggesting to cut).
+# 2026-10-31: the three copy books go to $20,000 each — the budget the user will put behind copy trading while it works
+# (the rules variants stay at measuring size). That is new money: the total rises from $50,000 to $106,500.
+assert abs(sum(PLAN.values()) - TOTAL) < 1, f"the plan must add up to ${TOTAL:,.0f}"
 PAIR_BOOKS = ("carry", "carry_q", "events", "fade24", "hold72", "unlocks", "vol_premium")       # own-ledger books (no PaperWallet)
 PLAN_NOTE = "$50k across the books (2026-10-28)"
 
 
 def _k(*parts: str) -> str:
     return kv.key("capital", *parts)
+
+
+def plan() -> dict[str, float]:
+    """The plan in force: PLAN, or the last suggestion the user applied (trading/allocator.py), which keeps the total."""
+    override = kv.get_sync(_k("plan"))
+    if override and abs(sum(override.values()) - sum(PLAN.values())) < 1 and set(override) == set(PLAN):
+        return {k: float(v) for k, v in override.items()}
+    return dict(PLAN)
+
+
+def set_plan(new: dict[str, float], note: str) -> dict[str, float]:
+    """Replace the plan in force (same books, same total). The tracker's next tick moves the money."""
+    if set(new) != set(PLAN) or abs(sum(new.values()) - sum(PLAN.values())) >= 1:
+        raise ValueError("a plan must cover the same books and keep the same total")
+    kv.set_sync(_k("plan"), {k: round(float(v), 2) for k, v in new.items()})
+    kv.set_sync(_k("plan_note"), {"at": time.time(), "note": note})
+    logger.info("Capital plan replaced (%s): %s", note, new)
+    return plan()
 
 
 def added(book: str) -> float:
@@ -124,7 +151,7 @@ def withdraw(book: str, amount: float, note: str = PLAN_NOTE) -> dict | None:
 
 def shortfall(book: str) -> float:
     """How far a book still is from its plan (+ owed to it, − still to take out); 0 when not planned."""
-    target = PLAN.get(book)
+    target = plan().get(book)
     if target is None:
         return 0.0
     gap = target - (BASE + added(book))
@@ -134,7 +161,7 @@ def shortfall(book: str) -> float:
 def apply_plan(withdraw_only: bool = False) -> list[dict]:
     """Bring every planned book to its plan (idempotent; run every tracker tick so withdrawals catch up)."""
     out = []
-    for book in PLAN:
+    for book in plan():
         gap = shortfall(book)
         try:
             entry = deposit(book, gap) if gap > 0 and not withdraw_only else withdraw(book, -gap) if gap < 0 else None
@@ -170,4 +197,10 @@ def sizing_equity(book: str, equity: float) -> float:
     extra = added(book)
     if paused() and extra > 0:
         return max(equity - extra, 0.0)
+    # Capital the plan has cut but that is still tied up as margin (withdrawals only take free cash) is on its way
+    # out: size as if it were already gone, or a cut book keeps opening positions for its old balance (2026-10-29:
+    # the weekly book's $1,000 legs on a $1,000 plan).
+    gap = shortfall(book) if extra else 0.0          # only once the programme has started moving this book's capital
+    if gap < 0:
+        return max(equity + gap, 0.0)
     return equity

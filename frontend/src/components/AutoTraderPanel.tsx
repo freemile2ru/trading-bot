@@ -190,6 +190,7 @@ function OpenTrade({ trade, now, onClose }: { trade: AutoTrade; now: number; onC
         )}>
           {trade.direction}
         </span>
+        <LaneTag t={trade as unknown as Record<string, unknown>} />
         {trade.leverage != null && (
           <span className="text-[10px] font-semibold text-gray-300" title={`Isolated margin $${trade.margin_usd?.toFixed(2)}`}>
             {trade.leverage}x
@@ -303,6 +304,21 @@ const STATUS_STYLE: Record<AutoStatus, { label: string; cls: string }> = {
   cooldown: { label: 'cooldown', cls: 'text-gray-400 bg-gray-800' },
   busy_elsewhere: { label: 'held by other system', cls: 'text-amber-300 bg-amber-900/30' },
   watching: { label: 'no bias', cls: 'text-gray-500 bg-gray-800/60' },
+}
+
+const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket' }
+const LANE_CLS: Record<string, string> = {
+  ta: 'bg-sky-900/40 text-sky-300', events: 'bg-orange-900/40 text-orange-300', unlocks: 'bg-red-900/40 text-red-300', weekly: 'bg-teal-900/40 text-teal-300',
+}
+/** Which lane placed the trade — so every position says which strategy it belongs to. */
+function LaneTag({ t }: { t: { lane?: string; event_id?: string; lane_mult?: number; lane_why?: string } & Record<string, unknown> }) {
+  const lane = t.lane ?? (t.event_id ? 'events' : 'ta')
+  return (
+    <span className={clsx('text-[9px] font-semibold px-1 py-0.5 rounded uppercase tracking-wide', LANE_CLS[lane] ?? 'bg-gray-800 text-gray-400')}
+      title={`Lane: ${LANE_LABEL[lane] ?? lane}${t.lane_mult != null ? ` · sized ${t.lane_mult}× — ${t.lane_why ?? ''}` : ''}`}>
+      {LANE_LABEL[lane] ?? lane}
+    </span>
+  )
 }
 
 const EXIT_STYLE: Record<string, { label: string; icon: typeof CheckCircle2 }> = {
@@ -432,6 +448,30 @@ export function AutoTraderPanel({
             <span className={auto.events.net_usd >= 0 ? 'text-emerald-400' : 'text-red-400'}>{auto.events.net_usd >= 0 ? '+' : ''}${auto.events.net_usd.toFixed(2)}</span></>}
         </div>
       )}
+      {auto.lanes && (
+        <section className="rounded-lg border border-gray-800 bg-gray-800/30 px-2.5 py-2 space-y-1.5" title={auto.lanes.rule}>
+          <div className="flex items-baseline gap-2 text-[11px]">
+            <span className="font-semibold text-gray-200">Lanes</span>
+            <span className="text-gray-500">regime now <span className="text-gray-300">{auto.lanes.regime_label ?? auto.lanes.regime}</span> · sized by each lane's last {auto.lanes.cell_n} trades here</span>
+          </div>
+          {auto.lanes.lanes.map(l => (
+            <div key={l.lane} className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem] items-center gap-2 text-[11px]">
+              <div className="min-w-0">
+                <div className="text-gray-200 truncate">{l.label}{l.open > 0 && <span className="ml-1 text-gray-500">· {l.open} open</span>}</div>
+                <div className="text-[10px] text-gray-500 truncate" title={l.why}>{l.why}</div>
+              </div>
+              <span className={clsx('text-right font-semibold tabular-nums', l.enabled === false ? 'text-gray-600' : l.mult >= 1 ? 'text-emerald-300' : 'text-amber-300')}
+                title={l.enabled === false ? 'This lane is not mirrored here: its book holds the only position for each signal' : undefined}>
+                {l.enabled === false ? 'off' : `${l.mult}×`}
+              </span>
+              <span className="text-right text-gray-400 tabular-nums" title={`${l.all.n} trades in all · ${l.regime_cell.n} in this regime`}>
+                {l.all.n ? `${l.all.avg_r != null && l.all.avg_r > 0 ? '+' : ''}${l.all.avg_r}R · ${l.all.n}` : 'no trades'}
+              </span>
+            </div>
+          ))}
+          <div className="text-[10px] text-gray-600">{auto.lanes.rule} Lanes marked off are traded only in their own book, so no signal is ever held twice.</div>
+        </section>
+      )}
       {auto.dry && (
         <div className={auto.dry.active ? 'text-xs text-amber-300' : 'text-xs text-gray-500'}>
           {auto.dry.active
@@ -543,6 +583,7 @@ export function AutoTraderPanel({
                 >
                   <span className="font-semibold text-white w-12">{t.symbol.replace('USDT', '')}</span>
                   <span className="text-gray-500 w-10">{t.direction}</span>
+                  <LaneTag t={t as unknown as Record<string, unknown>} />
                   <span className="flex items-center gap-1 text-gray-400">
                     <Icon className="w-3 h-3" /> {exit.label}
                   </span>

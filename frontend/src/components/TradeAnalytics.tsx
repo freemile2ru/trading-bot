@@ -11,6 +11,10 @@ import { SYSTEM_LABEL, type GroupStat, type SystemKey, type TradeAnalytics } fro
 // Categorical slots (dark steps of the validated reference palette), fixed per system so a
 // system keeps its colour whatever the filter — never assigned by rank.
 export const SYSTEM_COLOR: Record<SystemKey, string> = {
+  // Copy-trading variants share the copy books' hue (secondary encoding tells them apart on the Copy tab).
+  auction: '#c98500',
+  copy_crypto_wide: '#2fb3c9', copy_crypto_fast: '#2fb3c9', copy_crypto_late: '#2fb3c9', copy_stocks_wide: '#2fb3c9', copy_stocks_fast: '#2fb3c9', copy_stocks_late: '#2fb3c9',
+  copy_futures_wide: '#2fb3c9', copy_futures_fast: '#2fb3c9', copy_futures_late: '#2fb3c9',
   main: '#3987e5', auto: '#d95926', scalper: '#199e70', impulse: '#c98500',
   main_live: '#d55181', auto_live: '#9085e9', scalper_live: '#008300',
   // Experiments: slot 8 for Claude swing; the paired books reuse their partner's hue and are told
@@ -23,6 +27,8 @@ export const SYSTEM_COLOR: Record<SystemKey, string> = {
   unlocks: '#d94f4f',
   vol_premium: '#7c7fe0',
   copy_trading: '#2fb3c9',
+  multi_factor: '#8fbf3a',
+  copy_stocks: '#2fb3c9', copy_futures: '#2fb3c9',
   weekly_rs: '#2bb3a3',
   cascade: '#d65a8c',
   carry_q: '#c9a227',
@@ -32,7 +38,7 @@ export const SYSTEM_COLOR: Record<SystemKey, string> = {
   stocks_trend: '#3987e5', stocks_rules: '#3987e5', stocks_claude: '#3987e5',
   futures_trend: '#c98500', futures_rules: '#c98500', futures_claude: '#c98500',
 }
-export const SYSTEM_DASH: Partial<Record<SystemKey, string>> = { auto_rules: '6 3', signals_claude: '2 2', signals_rules: '6 3', hold72: '8 2 2 2', carry: '1 3',
+export const SYSTEM_DASH: Partial<Record<SystemKey, string>> = { copy_stocks: '6 3', copy_futures: '2 2', auto_rules: '6 3', signals_claude: '2 2', signals_rules: '6 3', hold72: '8 2 2 2', carry: '1 3',
   stocks_trend: '10 4', stocks_rules: '6 3', stocks_claude: '2 2', futures_trend: '10 4', futures_rules: '6 3', futures_claude: '2 2' }
 // Win/loss follow the rest of the app (Portfolio, tables).
 const WIN = '#10b981'

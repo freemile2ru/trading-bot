@@ -70,6 +70,8 @@ def test_mirror_enters_follows_and_exits(tmp_path, monkeypatch):
     monkeypatch.setattr(books, "ENABLED", True)
     monkeypatch.setattr(book_switches, "enabled", lambda name: True)
     monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    monkeypatch.setattr(ct, "VARIANTS", {"base": ct.VARIANTS["base"]})                 # the base rule alone here; variants have their own test
+    monkeypatch.setattr(ct, "ALL_BOOKS", {(m, "base"): ct.BOOKS_BY_MARKET[m] for m in ct.MARKETS})
     for k in ("leaders", "skipped", "seen"):
         kv.delete_sync(ct._k(k) if k != "seen" else ct._k("seen", "L1"))
     kv.set_sync(ct._k("leaders"), {"at": NOW, "leaders": [{"id": "L1", "nickname": "x", "nickname_en": "Leader One",

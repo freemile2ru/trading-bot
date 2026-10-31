@@ -2,12 +2,15 @@
 
 export type PaperSystem = 'main' | 'auto' | 'scalper' | 'impulse'
 export type MarketSystem = `${'stocks' | 'futures'}_${'trend' | 'rules' | 'claude'}`
-export type ExperimentSystem = 'auto_rules' | 'signals_claude' | 'signals_rules' | 'claude_swing' | 'hold72' | 'fade24' | 'events' | 'weekly_rs' | 'cascade' | 'carry' | 'carry_q' | 'unlocks' | 'vol_premium' | 'copy_trading' | MarketSystem
+export type ExperimentSystem = 'auto_rules' | 'signals_claude' | 'signals_rules' | 'claude_swing' | 'hold72' | 'fade24' | 'events' | 'weekly_rs' | 'cascade' | 'carry' | 'carry_q' | 'unlocks' | 'vol_premium' | 'copy_trading' | 'copy_stocks' | 'copy_futures' | 'multi_factor' | 'auction' | CopyVariantSystem | MarketSystem
+export type CopyVariantSystem = `copy_${'crypto' | 'stocks' | 'futures'}_${'wide' | 'fast' | 'late'}`
 export type SystemKey = PaperSystem | ExperimentSystem | 'main_live' | 'auto_live' | 'scalper_live'
 
 export interface UnifiedTrade {
   id: string
   system: SystemKey
+  /** Autotrader only: which lane placed it (ta, events, unlocks, weekly). */
+  lane?: string | null
   symbol: string
   direction: 'long' | 'short'
   status: 'open' | 'closed'
@@ -164,7 +167,7 @@ export const SYSTEM_LABEL: Record<SystemKey, string> = {
   main: 'Main wallet', auto: 'Autotrader', scalper: 'Scalper', impulse: 'Impulse scalper',
   main_live: 'Main · LIVE', auto_live: 'Autotrader · LIVE', scalper_live: 'Scalper · LIVE',
   auto_rules: 'Autotrader · no Claude', signals_claude: 'Signals · Claude', signals_rules: 'Signals · rules only',
-  claude_swing: 'Claude swing', hold72: 'Hold vs BTC (24h)', fade24: 'Fade the scanner (24h vs BTC)', events: 'Event shorts (listings & delistings)', weekly_rs: 'Weekly near-high (long/short)', cascade: 'Cascade fade (4h)', carry_q: 'Carry Q · quarterly basis', carry: 'Carry · BTC, ETH & gold', unlocks: 'Unlock shorts (cliff unlocks vs BTC)', vol_premium: 'Vol premium (weekly BTC/ETH condors)', copy_trading: 'Copy trading (Binance & Hyperliquid leaders)',
+  claude_swing: 'Claude swing', hold72: 'Hold vs BTC (24h)', fade24: 'Fade the scanner (24h vs BTC)', events: 'Event shorts (listings & delistings)', weekly_rs: 'Weekly near-high (long/short)', cascade: 'Cascade fade (+1h, 4h)', carry_q: 'Carry Q · quarterly basis', carry: 'Carry · BTC, ETH & gold', unlocks: 'Unlock shorts (cliff unlocks vs BTC)', vol_premium: 'Vol premium (weekly BTC/ETH condors)', copy_trading: 'Copy trading (Binance & Hyperliquid leaders)', multi_factor: 'Multi-factor basket (momentum + trend + funding)', auction: 'Auction levels (mentor’s NQ system)', copy_stocks: 'Copy trading · stock perps', copy_futures: 'Copy trading · commodity perps', copy_crypto_wide: 'Copy · crypto · more leaders', copy_crypto_fast: 'Copy · crypto · faster traders', copy_crypto_late: 'Copy · crypto · late entries, half size', copy_stocks_wide: 'Copy · stock perps · more leaders', copy_stocks_fast: 'Copy · stock perps · faster traders', copy_stocks_late: 'Copy · stock perps · late entries, half size', copy_futures_wide: 'Copy · commodity perps · more leaders', copy_futures_fast: 'Copy · commodity perps · faster traders', copy_futures_late: 'Copy · commodity perps · late entries, half size',
   stocks_trend: 'Stocks · Trend', stocks_rules: 'Stocks · Scanner rules', stocks_claude: 'Stocks · Claude-confirmed',
   futures_trend: 'Futures · Trend', futures_rules: 'Futures · Scanner rules', futures_claude: 'Futures · Claude-confirmed',
 }
@@ -243,9 +246,23 @@ export interface TargetBook {
   expected: number | null; expected_why: string; open_positions: number
 }
 export interface TargetReport {
+  auto?: { on: boolean; hour_utc: number; last: { at: number; moves: { book: string; from: number; to: number; delta: number; why: string }[]; applied?: [string, number][]; note?: string; verdicts?: Record<string, string> } | null }
   target: number; now: number; books: TargetBook[]
   totals: { today: number; avg7: number; avg30: number; expected: number; equity: number; added: number }
   gap7: number; gap_expected: number; paused: { at: number; reason: string } | null; trip_avg7: number
-  plan: Record<string, number>; deposits: { ts: number; book: string; amount: number; note: string }[]
+  plan: Record<string, number>; plan_note?: { at: number; note: string } | null
+  deposits: { ts: number; book: string; amount: number; note: string }[]
   measuring_since: string | null
+}
+
+/** What the allocator's rule would move (GET /api/portfolio/target/suggest) — advisory until applied. */
+export interface PlanSuggestion {
+  rule: string
+  ladder_rule?: string
+  current: Record<string, number>
+  suggested: Record<string, number>
+  moves: { book: string; from: number; to: number; delta: number; why: string }[]
+  scores: Record<string, number | null>
+  verdicts?: Record<string, string>
+  changed: boolean
 }

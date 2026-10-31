@@ -60,8 +60,8 @@ async def check(wallet) -> list[dict]:
     from trading import monitor
     events = []
     for t in wallet.get_portfolio()["open_trades"]:
-        if t.get("event_id"):
-            continue                                    # an event short: the event book decides, not the scanner
+        if t.get("event_id") or t.get("unlock_id") or t.get("weekly_id") or t.get("lane") not in (None, "ta"):
+            continue                                    # a mirrored book position: that book decides, not the scanner
         try:
             note = await asyncio.to_thread(fade_note, t)
         except Exception as e:

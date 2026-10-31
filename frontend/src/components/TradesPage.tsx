@@ -12,6 +12,8 @@ import { useIncludeRetired } from '../hooks/useIncludeRetired'
 import { TradeCharts, TradeResearch } from './TradeAnalytics'
 
 const SYSTEM_TONE: Record<SystemKey, string> = {
+  auction: 'bg-amber-900/30 text-amber-200 border-amber-800/60',
+  copy_crypto_wide: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_crypto_fast: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_crypto_late: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_stocks_wide: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_stocks_fast: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_stocks_late: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_futures_wide: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_futures_fast: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted', copy_futures_late: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dotted',
   main: 'bg-blue-900/40 text-blue-300 border-blue-800/60',
   auto: 'bg-violet-900/40 text-violet-300 border-violet-800/60',
   scalper: 'bg-amber-900/30 text-amber-300 border-amber-800/60',
@@ -34,6 +36,9 @@ const SYSTEM_TONE: Record<SystemKey, string> = {
   unlocks: 'bg-red-950/60 text-red-300 border-red-800 border-dashed',
   vol_premium: 'bg-indigo-950/60 text-indigo-300 border-indigo-800 border-dashed',
   copy_trading: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dashed',
+  multi_factor: 'bg-lime-950/60 text-lime-300 border-lime-800 border-dashed',
+  copy_stocks: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dashed',
+  copy_futures: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dashed',
   carry: 'bg-gray-800 text-gray-300 border-gray-600 border-dashed',
   stocks_trend: 'bg-gray-800 text-gray-300 border-gray-600 border-dashed',
   stocks_rules: 'bg-gray-800 text-gray-300 border-gray-600 border-dashed',
@@ -66,10 +71,13 @@ function fmtWhen(ts: number | null): string {
   return new Date(ts * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-function SystemBadge({ system }: { system: SystemKey }) {
+const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket' }
+
+function SystemBadge({ system, lane }: { system: SystemKey; lane?: string | null }) {
   return (
-    <span className={clsx('px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap', SYSTEM_TONE[system])}>
-      {SYSTEM_LABEL[system]}
+    <span className={clsx('px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap', SYSTEM_TONE[system])}
+      title={lane ? `Lane: ${LANE_LABEL[lane] ?? lane}` : undefined}>
+      {SYSTEM_LABEL[system]}{lane && <span className="font-normal opacity-80"> · {LANE_LABEL[lane] ?? lane}</span>}
     </span>
   )
 }
@@ -220,7 +228,7 @@ export function TradesPage() {
   // Every column sorts; the API does the sorting so paging stays consistent (sortKey = its field).
   const closedCols: Column<UnifiedTrade>[] = [
     { key: 'closed', header: 'Closed', sortKey: 'closed_ts', render: t => <span className="text-gray-400 whitespace-nowrap">{fmtWhen(t.closed_ts)}</span> },
-    { key: 'sys', header: 'System', sortKey: 'system', render: t => <SystemBadge system={t.system} /> },
+    { key: 'sys', header: 'System', sortKey: 'system', render: t => <SystemBadge system={t.system} lane={t.lane} /> },
     { key: 'sym', header: 'Symbol', sortKey: 'symbol', render: t => <span className="font-mono font-semibold text-white" title={t.note || undefined}>{t.symbol.replace('USDT', '')}</span> },
     { key: 'side', header: 'Side', sortKey: 'direction', render: t => <Side d={t.direction} /> },
     { key: 'hold', header: 'Held', sortKey: 'hold_min', align: 'right', render: t => fmtHold(t.hold_min) },

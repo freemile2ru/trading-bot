@@ -1,7 +1,7 @@
 import type { OracleResponse, Portfolio, PaperTrade, Candle, OracleResult, SignalPackage } from '../types/oracle'
 import type { ExitComparison, HistoryFilters, HistoryInsights, HistoryResponse } from '../types/history'
 import type { AutoOrder, AutoSummary, AutoTrade, ScanSnapshot, WatchlistEntry } from '../types/signals'
-import type { PortfolioOverview, SystemKey, TargetReport, TradeAnalytics, TradeFilters, TradeRecord, TradesResponse, UnifiedOrder } from '../types/overview'
+import type { PlanSuggestion, PortfolioOverview, SystemKey, TargetReport, TradeAnalytics, TradeFilters, TradeRecord, TradesResponse, UnifiedOrder } from '../types/overview'
 import type { LiveActivity, LiveStatus, LiveSystem } from '../types/live'
 import type { LabSummary, SignalScores, StrategyLabResults, SwingReview } from '../types/lab'
 import type { RejectedResearch, RetiredExperiment } from '../types/retired'
@@ -156,6 +156,8 @@ export const api = {
     target: () => get<TargetReport>('/portfolio/target'),
     targetResume: () => post<TargetReport>('/portfolio/target/resume'),
     targetApplyPlan: () => post<{ deposits: unknown[]; report: TargetReport }>('/portfolio/target/apply-plan'),
+    targetSuggest: () => get<PlanSuggestion>('/portfolio/target/suggest'),
+    targetApplySuggestion: () => post<{ plan: Record<string, number>; moved: unknown[]; report: TargetReport }>('/portfolio/target/apply-suggestion'),
   },
   paper: {
     portfolio: () => get<Portfolio>('/paper/portfolio'),
@@ -188,7 +190,7 @@ export const api = {
     clear: (family: string) => post<GuardsStatus>(`/guards/${family}/clear`),
   },
   markets: {
-    get: (market: 'stocks' | 'futures') => get<MarketSummary>(`/markets/${market}`),
+    get: (market: 'crypto' | 'stocks' | 'futures') => get<MarketSummary>(`/markets/${market}`),
     sweep: (market: 'stocks' | 'futures') => post<MarketSummary>(`/markets/${market}/sweep`),
   },
   books: {

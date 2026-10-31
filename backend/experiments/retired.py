@@ -18,6 +18,34 @@ from scalper import config as SC
 
 RETIRED: list[dict] = [
     {
+        "key": "stocks_trend",
+        "score_inputs": {"result_r": -0.23, "result_note": "−0.23R a trade over its 40 closed trades (90% range −0.37 … −0.10)",
+                         "t": 2.8, "t_note": "t ≈ −2.8", "n": 40, "n_note": "closed trades (paper)", "lost_pct": 3.7},
+        "title": "Stocks trend (6-month trend following on stock perps)",
+        "category": "Strategy",
+        "active": "2026-10-12 → 2026-10-30",
+        "retired": "2026-10-30",
+        "hypothesis": "Time-series momentum on equities: be long a stock perp while its underlying's 126-trading-day return is "
+                      "positive, flat otherwise — the classic trend rule, sized to ~1% daily volatility a name with a 15% disaster stop.",
+        "method": "Paper book on Binance's stock perpetuals, rebalanced daily after the US close from Yahoo history; closed on a "
+                  "flip (with a 5% band), the stop, or a week-and-25% profit take. Judged on the usual 40-trade verdict.",
+        "numbers": [
+            ("Live trades", "40 closed, 42% won", "−0.23R a trade, −$202 net"),
+            ("Exits", "20 expired (+$45), 10 flips (−$92), 8 stops (−$177), 2 profit takes (+$22)", "the losing exits outweighed every winner"),
+            ("Verdict", "90% range −0.37 … −0.10R", "entirely below zero — the pre-set retirement bar"),
+            ("Stall-exit lab (2026-10-28)", "6-month rule ≈ 0 on 20 years of sector ETFs", "CAGR 0.5%, Sharpe 0.1: the rule had little to give"),
+        ],
+        "why": [
+            "Equity trend following works, when it works, over years and across many markets; on 18 names over 18 days of "
+            "a choppy tape it bought every bounce and was flipped or stopped out of most of them. The research never showed "
+            "an edge at this horizon — the 2026-10-28 ETF replay put the rule near zero — so the forward test confirmed the prior.",
+        ],
+        "kept": "The futures trend book (5 trades, positive so far) runs on, on notice. The stock perps stay in the copy-stocks book.",
+        "removed": "Nothing deleted — markets/engine.py still runs the stocks market's scans; the trend book is switched off for good, "
+                   "its 14 open positions were closed at retirement and its $5,500 parked in the main wallet.",
+        "evidence": "trading/book_switches.RETIRED_BOOKS, research/stall_exit_lab.py (2026-10-28)",
+    },
+    {
         "key": "impulse_scalper",
         "title": "Impulse scalper",
         "category": "Strategy",

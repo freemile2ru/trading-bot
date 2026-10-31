@@ -67,6 +67,38 @@ async def scores() -> dict[str, float]:
     return out
 
 
+RESIZE_TOLERANCE = 0.25        # a kept leg more than 25% off its target size is brought back to it
+
+
+async def resize(equity: float | None = None, reason: str = "resize") -> list[dict]:
+    """Bring legs the book keeps to NOTIONAL_PCT of its sizing equity. A leg that is too big has the excess closed
+    as its own row (`reason`); one too small is topped up at market. Legs opened when the book held more (or less)
+    capital would otherwise keep their old size until the coin drops out of the basket."""
+    from experiments import books
+    from trading import capital
+    w = books.WALLETS[BOOK]
+    p = w.get_portfolio()
+    equity = capital.sizing_equity(BOOK, p["total_equity"]) if equity is None else equity
+    target = equity * NOTIONAL_PCT / 100
+    out = []
+    if target <= 0:
+        return out
+    for t in p["open_trades"]:
+        price = await monitor.live_price(t["symbol"]) or t["current_price"]
+        size = t["quantity"] * price
+        if abs(size - target) <= RESIZE_TOLERANCE * target:
+            continue
+        if size > target:
+            part = w.split_close(t["id"], t["quantity"] * (1 - target / size), price, reason)
+            if part:
+                out.append({"symbol": t["symbol"], "from": round(size, 2), "to": round(target, 2), "pnl_usd": part["pnl_usd"]})
+        elif w.adjust_trade(t["id"], "add", price, (target - size) / price, reason, kind=reason):
+            out.append({"symbol": t["symbol"], "from": round(size, 2), "to": round(target, 2), "pnl_usd": 0.0})
+    if out:
+        logger.info("Weekly RS resized %d legs to $%.0f: %s", len(out), target, out)
+    return out
+
+
 async def rebalance(force: bool = False, now: datetime | None = None) -> dict | None:
     """Monday's rebalance. Returns what changed, or None when it's not due."""
     from experiments import books
@@ -91,6 +123,7 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
                 closed.append(sym)
     from trading import capital
     equity = capital.sizing_equity(BOOK, w.get_portfolio()["total_equity"])
+    resized = await resize(equity)
     for sym, d in want.items():
         if sym in held and held[sym]["direction"] == d:
             continue
@@ -105,6 +138,6 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
                                 "score_from_7d_high": round(sc[sym], 4)})
         if not t.get("error"):
             opened.append(f"{d} {sym}")
-    kv.set_sync(_week_key(now), {"at": time.time(), "closed": closed, "opened": opened}, 14 * 86400)
+    kv.set_sync(_week_key(now), {"at": time.time(), "closed": closed, "opened": opened, "resized": resized}, 14 * 86400)
     logger.info("Weekly RS rebalanced: closed %s · opened %s", closed or "nothing", opened or "nothing")
     return {"closed": closed, "opened": opened, "scores": {s: round(v, 4) for s, v in sc.items()}}

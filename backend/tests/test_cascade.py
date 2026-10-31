@@ -42,21 +42,45 @@ def _burst(db, now, side, notional):
     con.commit(); con.close()
 
 
-def test_a_long_flush_is_bought_for_four_hours_once(cas):
+def test_a_long_flush_is_bought_an_hour_later_for_four_hours_once(cas):
     db, w = cas
     now = time.time()
+    cascade.kv.delete_sync(cascade.PENDING_KEY)
     assert asyncio.run(cascade.tick(now - 300)) == []             # the previous, quiet bucket: nothing
     _burst(db, now, "SELL", 500_000.0)                            # longs liquidated → price flushed down
-    opened = asyncio.run(cascade.tick(now))
-    assert [(t["symbol"], t["direction"]) for t in opened] == [("SOLUSDT", "long")]
+    assert asyncio.run(cascade.tick(now)) == []                   # noted, not traded: the cascade is still running
+    q = cascade.pending()
+    assert [(x["symbol"], x["direction"]) for x in q] == [("SOLUSDT", "long")]
+    fire = q[0]["fire_at"]
+    assert fire == pytest.approx((int(now) // 300 - 1) * 300 + 300 + cascade.ENTRY_DELAY_MIN * 60)
+    assert asyncio.run(cascade.tick(fire - 60)) == [] and w.get_portfolio()["open_trades"] == []
+    opened = asyncio.run(cascade.tick(fire + 30))
+    assert [(t["symbol"], t["direction"], t["rule"]) for t in opened] == [("SOLUSDT", "long", "v2")]
     t = w.get_portfolio()["open_trades"][0]
-    assert t["expires_at"] == pytest.approx(now + cascade.HOLD_HOURS * 3600) and t["stop_loss"] == pytest.approx(97.0)
+    assert t["expires_at"] == pytest.approx(fire + 30 + cascade.HOLD_HOURS * 3600) and t["stop_loss"] == pytest.approx(92.0)
+    assert cascade.pending() == []
     assert asyncio.run(cascade.tick(now + 60)) == []              # same bucket: not twice
+    assert cascade.pending() == []
 
 
-def test_a_short_squeeze_is_sold_and_a_dead_stream_does_nothing(cas):
+def test_a_short_squeeze_is_sold_and_a_dead_stream_queues_nothing(cas):
     db, w = cas
     now = time.time()
+    cascade.kv.delete_sync(cascade.PENDING_KEY)
     _burst(db, now, "BUY", 500_000.0)
-    assert [t["direction"] for t in asyncio.run(cascade.tick(now))] == ["short"]
+    assert asyncio.run(cascade.tick(now)) == [] and cascade.pending()[0]["direction"] == "short"
+    assert [t["direction"] for t in asyncio.run(cascade.tick(cascade.pending()[0]["fire_at"]))] == ["short"]
+    cascade.kv.delete_sync(cascade.PENDING_KEY)
     assert asyncio.run(cascade.tick(now + 2 * 3600)) == []        # newest liquidation is 2h old: stream stale
+    assert cascade.pending() == []
+
+
+def test_a_fade_missed_by_more_than_ten_minutes_is_dropped(cas):
+    db, w = cas
+    now = time.time()
+    cascade.kv.delete_sync(cascade.PENDING_KEY)
+    _burst(db, now, "SELL", 500_000.0)
+    asyncio.run(cascade.tick(now))
+    fire = cascade.pending()[0]["fire_at"]
+    assert asyncio.run(cascade.tick(fire + 900)) == []            # the server was down at the time: no late entry
+    assert cascade.pending() == [] and w.get_portfolio()["open_trades"] == []

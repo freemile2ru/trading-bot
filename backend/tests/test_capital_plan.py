@@ -19,8 +19,9 @@ def test_withdraw_takes_at_most_free_cash(tmp_path):
     assert w.withdraw(10, "test") == 0.0
 
 
-def test_plan_adds_up_to_fifty_thousand():
-    assert round(sum(capital.PLAN.values())) == 50_000
+def test_plan_adds_up_to_the_total():
+    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 107_500
+    assert all(capital.PLAN[b] == 20_000 for b in ("copy_trading", "copy_stocks", "copy_futures"))
 
 
 def test_apply_plan_moves_pair_books_both_ways(monkeypatch):

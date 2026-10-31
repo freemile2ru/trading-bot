@@ -17,7 +17,7 @@ def client():
 def test_every_book_is_listed_and_starts_on(client):
     d = client.get("/api/books").json()
     names = [b["name"] for b in d["books"]]
-    assert names == ["main", "auto", "claude_swing", "carry", "stocks_trend", "futures_trend", "weekly_rs", "carry_q", "cascade", "events", "copy_trading", "unlocks", "vol_premium"]
+    assert names == ["main", "auto", "claude_swing", "carry", "futures_trend", "weekly_rs", "copy_stocks", "copy_futures", *[f"copy_{m}_{v}" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")], "auction", "multi_factor", "carry_q", "cascade", "events", "copy_trading", "unlocks", "vol_premium"]
     main = d["books"][0]
     assert main["enabled"] and main["mode"] == "paper" and main["unavailable"] is None
     retired = [r["name"] for r in d["retired"]]

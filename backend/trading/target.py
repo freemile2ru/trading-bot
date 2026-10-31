@@ -14,6 +14,7 @@ every 15 minutes into the same table the paper wallets use, so the Portfolio pag
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ TRIP_AVG7 = -TARGET                       # 7-day average below this pauses the 
 SUSPECT_DAY_FRAC = 0.30                   # a day moving more than this fraction of the book is an artefact, not a result
 EVIDENCE = {                              # expected return per unit, from the labs
     "weekly_rs": 0.0136 / 7,              # +1.36% a week on equity (research/signal_rebuild_lab.py)
+    "multi_factor": 5.79 / 1e4,           # +5.79 bps a day on equity, risk-parity combination, test half (research/multi_factor_lab.py)
     "events": 0.20 / 30,                  # ≈ −20% per listing vs BTC over 30 days, net of funding (event_study_lab)
     "unlocks": 0.09 / 14,                 # Keyrock: median −9% in the two weeks before a cliff unlock
     "vol_premium": 0.018 / 30,            # vrp_lab: ≈ +1.8% of notional per 30 days for the 1σ/2σ condor
@@ -36,6 +38,10 @@ EVIDENCE = {                              # expected return per unit, from the l
 }
 PAIR_LEDGERS = ("carry", "carry_q", "events", "fade24", "unlocks", "vol_premium")
 _cache: dict = {"at": 0.0, "report": None}
+# The profit machine (2026-10-31): once a day the allocator's plan — score drift plus the verdict ladder — becomes the
+# plan in force and the money moves. CAPITAL_AUTO=false leaves it advisory (the Portfolio panel's button).
+AUTO = os.getenv("CAPITAL_AUTO", "true").lower() != "false"
+AUTO_HOUR_UTC = int(os.getenv("CAPITAL_AUTO_HOUR_UTC", "1"))    # after the day's books have settled, before the US session
 
 
 def _day(ts: float) -> str:
@@ -125,6 +131,8 @@ def expected(book: str, equity: float, now: float) -> tuple[float | None, str]:
             return round(per_day, 2), f"locked basis on ${sum(p['notional'] or 0 for p in pos):,.0f}"
         if book == "weekly_rs":
             return round(EVIDENCE["weekly_rs"] * equity, 2), "+1.36%/week on equity (lab)"
+        if book == "multi_factor":
+            return round(EVIDENCE["multi_factor"] * equity, 2), "+5.8 bps/day on equity (lab, risk parity, test half)"
         if book == "events":
             from experiments import events
             pos = events.open_positions()
@@ -176,7 +184,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
         pnl = daily_pnl(overview._equity_series(name), [d for d in deps if d["book"] == name])
         exp, why = expected(name, m["equity"], now)
         row = {"book": name, "label": m["label"], "equity": m["equity"], "added": capital.added(name),
-               "planned": capital.PLAN.get(name), "shortfall": capital.shortfall(name),
+               "planned": capital.plan().get(name), "shortfall": capital.shortfall(name),
                "today": pnl.get(today, 0.0), "avg7": _avg(pnl, 7, now),
                "avg30": _avg(pnl, 30, now), "days": len(pnl), "since": min(pnl) if pnl else None,
                "expected": exp, "expected_why": why, "open_positions": m["open_positions"]}
@@ -185,7 +193,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
             tot[k] += row[k]
         tot["expected"] += exp or 0.0
     # Planned books that haven't traded yet aren't in the overview; they still belong on the board.
-    for name in capital.PLAN:
+    for name in capital.plan():
         if any(r["book"] == name for r in books):
             continue
         eq = _ledger_equity(name)
@@ -193,7 +201,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
             continue
         exp, why = expected(name, eq, now)
         books.append({"book": name, "label": overview.SYSTEMS.get(name, name), "equity": round(eq, 2), "added": capital.added(name),
-                      "planned": capital.PLAN[name], "shortfall": capital.shortfall(name),
+                      "planned": capital.plan()[name], "shortfall": capital.shortfall(name),
                       "today": 0.0, "avg7": 0.0, "avg30": 0.0, "days": 0, "since": None,
                       "expected": exp, "expected_why": why, "open_positions": 0})
         tot["equity"] += eq
@@ -203,7 +211,8 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
     tot = {k: round(v, 2) for k, v in tot.items()}
     out = {"target": TARGET, "now": now, "books": books, "totals": tot,
            "gap7": round(TARGET - tot["avg7"], 2), "gap_expected": round(TARGET - tot["expected"], 2),
-           "paused": capital.paused(), "trip_avg7": TRIP_AVG7, "plan": capital.PLAN, "deposits": deps[-20:],
+           "paused": capital.paused(), "trip_avg7": TRIP_AVG7, "plan": capital.plan(), "plan_note": kv.get_sync(capital._k("plan_note")), "deposits": deps[-20:],
+           "auto": {"on": AUTO, "hour_utc": AUTO_HOUR_UTC, "last": kv.get_sync(kv.key("capital", "auto", "last"))},
            "measuring_since": min((r["since"] for r in books if r["since"]), default=None)}
     _cache.update(at=now, report=out)
     return out
@@ -225,6 +234,13 @@ async def tick(now: float | None = None) -> dict:
     except Exception as e:
         logger.warning("Capital plan not applied: %s", e)
     rep = await asyncio.to_thread(report, now, 0)
+    try:
+        auto = await asyncio.to_thread(auto_allocate, now, rep)
+        if auto:
+            rep = await asyncio.to_thread(report, now, 0)
+            rep["auto_last"] = auto
+    except Exception as e:
+        logger.warning("Automatic allocation skipped: %s", e)
     avg7, days = rep["totals"]["avg7"], max((r["days"] for r in rep["books"]), default=0)
     if days >= 7 and avg7 < TRIP_AVG7 and not capital.paused():
         reason = f"7-day average {avg7:+.0f}/day is below {TRIP_AVG7:+.0f} — programme capital paused for new sizing"
@@ -234,3 +250,44 @@ async def tick(now: float | None = None) -> dict:
         rep["paused"] = capital.paused()
     kv.set_sync(kv.key("target", "last"), {"at": now, "avg7": avg7, "today": rep["totals"]["today"]}, 7 * 86400)
     return rep
+
+
+def book_verdicts() -> dict[str, dict]:
+    """Every book's own 40-trade verdict from the unified trade record (the allocator's ladder input)."""
+    from trading import allocator, overview
+    rows, _ = overview.all_rows()
+    by: dict[str, list[dict]] = {}
+    for r in rows:
+        by.setdefault(r["system"], []).append(r)
+    return allocator.verdicts(by)
+
+
+def suggestion(rep: dict | None = None) -> dict:
+    """The allocator's full suggestion (score drift + verdict ladder) for the tracker's current rows."""
+    from trading import allocator
+    rep = rep or report(None, 0)
+    return allocator.plan_for(rep["books"], book_verdicts())
+
+
+def auto_allocate(now: float, rep: dict | None = None) -> dict | None:
+    """Once a day at AUTO_HOUR_UTC: make the suggestion the plan in force and move the money. Returns what moved."""
+    if not AUTO or capital.paused():
+        return None
+    day = datetime.fromtimestamp(now, timezone.utc)
+    if day.hour < AUTO_HOUR_UTC:
+        return None
+    key = kv.key("capital", "auto", day.strftime("%Y-%m-%d"))
+    if kv.get_sync(key):
+        return None
+    kv.set_sync(key, {"at": now}, 3 * 86400)
+    sug = suggestion(rep)
+    if not sug["changed"]:
+        kv.set_sync(kv.key("capital", "auto", "last"), {"at": now, "moves": [], "note": "no change: nothing eligible moved"}, 30 * 86400)
+        return None
+    capital.set_plan(sug["suggested"], f"automatic allocation {day:%Y-%m-%d}: " + "; ".join(f"{m['book']} {m['delta']:+.0f}" for m in sug["moves"]))
+    moved = capital.apply_plan()
+    out = {"at": now, "moves": sug["moves"], "applied": [(m["book"], m["amount"]) for m in moved],
+           "verdicts": {b: v for b, v in sug.get("verdicts", {}).items() if v in ("edge", "no_edge")}}
+    kv.set_sync(kv.key("capital", "auto", "last"), out, 30 * 86400)
+    logger.info("Automatic allocation: %s", [(m["book"], m["delta"]) for m in sug["moves"]])
+    return out

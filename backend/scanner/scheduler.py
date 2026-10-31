@@ -449,6 +449,9 @@ def start() -> None:
     from data import positioning
     # Binance positioning ratios (top-trader long/short, taker flow): recorded hourly for a later lab, nothing trades on them.
     _tasks.append(asyncio.create_task(_loop("positioning", 3600, positioning.tick, initial_delay=240), name="positioning"))
+    from data import funding_venues
+    # Binance vs Hyperliquid funding on the same coins, hourly, for the cross-venue funding lab; nothing trades on it.
+    _tasks.append(asyncio.create_task(_loop("funding_venues", 3600, funding_venues.tick, initial_delay=150), name="funding-venues"))
     from trading import target
     # Pair-book equity log + the $/day tracker and its circuit breaker.
     _tasks.append(asyncio.create_task(_loop("target", 900, target.tick, initial_delay=90), name="target"))

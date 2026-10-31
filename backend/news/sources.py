@@ -59,7 +59,11 @@ SOURCES: list[Source] = [
     Source("Federal Reserve", "rss", "https://www.federalreserve.gov/feeds/press_all.xml", 900, "macro"),
     # One entry stands for a search per coin in the scanned universe (collector expands it).
     Source("Google News", "google", "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en", 900),
+    # Upbit's trade notices (listings, delistings, market warnings): the Korean listing pump-and-fade is the next
+    # exchange-event study; collected now so the lab has a record to run on (research shelf: exchange_events).
+    Source("Upbit notices", "upbit", "https://api-manager.upbit.com/api/v1/announcements?os=web&page=1&per_page=20&category=trade", 600),
 ]
+UPBIT_ARTICLE = "https://upbit.com/service_center/notice?id={id}"
 
 BINANCE_URL = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 BINANCE_ARTICLE = "https://www.binance.com/en/support/announcement/detail/{code}"
@@ -169,8 +173,40 @@ def parse_binance(data: dict, source: str) -> list[dict]:
     return out
 
 
+def _notice_lists(obj) -> list[list[dict]]:
+    """Every list of dicts carrying a 'title' anywhere in a JSON reply — the shape has changed before."""
+    found = []
+    if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj) and any("title" in x for x in obj):
+        found.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            found += _notice_lists(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            found += _notice_lists(v)
+    return found
+
+
+def parse_upbit(data, source: str) -> list[dict]:
+    out = []
+    for lst in _notice_lists(data):
+        for n in lst:
+            title = clean(n.get("title"), 300)
+            if not title:
+                continue
+            when = n.get("first_listed_at") or n.get("listed_at") or n.get("created_at") or n.get("updated_at")
+            nid = n.get("id")
+            out.append({"title": title, "url": UPBIT_ARTICLE.format(id=nid) if nid is not None else None, "summary": "",
+                        "published": parse_date(str(when)) if when else None, "source": source})
+    return out
+
+
 async def fetch(client: httpx.AsyncClient, src: Source, url: str | None = None) -> list[dict]:
     """One poll of one source (for Google, one coin's search URL)."""
+    if src.kind == "upbit":
+        r = await client.get(src.url, headers={"User-Agent": BROWSER_AGENT, "Accept": "application/json"})
+        r.raise_for_status()
+        return parse_upbit(r.json(), src.name)
     if src.kind == "binance":
         # Binance's edge refuses agents that don't look like a browser (403); its public site JSON is the same data.
         r = await client.get(BINANCE_URL, params={"type": 1, "pageNo": 1, "pageSize": 20, "catalogId": src.url},

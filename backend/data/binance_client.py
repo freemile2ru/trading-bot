@@ -167,8 +167,24 @@ async def fetch_funding_history(symbol: str, start_ms: int) -> list[dict]:
         t = int(rows[-1]["fundingTime"]) + 1
 
 
+async def fetch_perpetual_info() -> dict[str, str]:
+    """Every trading USDT-margined perpetual, crypto and TradFi alike, with Binance's own asset class: symbol →
+    "crypto" (underlyingType COIN), "stocks" (EQUITY, KR_EQUITY, HK_EQUITY…) or "futures" (COMMODITY). Index, FX and
+    other TradFi types count as futures. The copy books route each leader position by this."""
+    from data.http import get_json
+
+    info = await get_json(f"{FAPI}/exchangeInfo", timeout=20.0)
+    out = {}
+    for s in info.get("symbols", []):
+        if s.get("contractType") not in ("PERPETUAL", "TRADIFI_PERPETUAL") or s.get("quoteAsset") != "USDT" or s.get("status") != "TRADING":
+            continue
+        ut = (s.get("underlyingType") or "COIN").upper()
+        out[s["symbol"]] = "crypto" if ut == "COIN" else "stocks" if "EQUITY" in ut else "futures"
+    return out
+
+
 async def fetch_perpetual_symbols() -> list[str]:
-    """Every trading USDT-margined perpetual."""
+    """Every trading USDT-margined crypto perpetual (the scanner's universe; TradFi perps are not coins)."""
     from data.http import get_json
 
     info = await get_json(f"{FAPI}/exchangeInfo", timeout=20.0)

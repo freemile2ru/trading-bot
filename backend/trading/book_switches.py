@@ -57,16 +57,47 @@ BOOKS = [
                     "(roughly market-neutral). On a year of data: +1.36% a week after costs, both halves positive — "
                     "but luck reached +1.02%, so it's a forward test.",
      "off_means": "No more rebalances; open positions keep their 30% disaster stops until closed."},
+    {"name": "copy_stocks", "label": "Copy trading · stock perps", "kind": "experiment",
+     "description": "The same lead traders as the crypto copy book, but only their positions in Binance's stock perpetuals (TSLA, NVDA, "
+                    "SK Hynix, Meta…), copied under the same too-late rule and exits, into their own wallet. Skips names inside an earnings blackout.",
+     "off_means": "No new copies of stock positions; open ones follow their leader out as usual."},
+    {"name": "copy_futures", "label": "Copy trading · commodity perps", "kind": "experiment",
+     "description": "The same lead traders' positions in Binance's commodity perpetuals (gold, silver, platinum, copper, oil, gas), "
+                    "copied under the same too-late rule and exits, into their own wallet.",
+     "off_means": "No new copies of commodity positions; open ones follow their leader out as usual."},
+    # Copy-trading variants (2026-10-30): three other readings of the same leaders' board, one wallet per market each,
+    # judged separately — see experiments/copy_trading.VARIANTS.
+    *[{"name": f"copy_{m}_{v}", "label": f"Copy · {ml} · {vl}", "kind": "experiment",
+       "description": f"The {ml} copy book under the '{vl}' rule: " + desc,
+       "off_means": "No new copies under this rule; open ones follow their leader out as usual."}
+      for m, ml in (("crypto", "crypto"), ("stocks", "stock perps"), ("futures", "commodity perps"))
+      for v, vl, desc in (("wide", "more leaders", "the same bar but 15 leaders a venue instead of 5, so more positions are seen opening."),
+                          ("fast", "faster traders", "5 leaders a venue chosen among those whose median hold is a day or less, so they open more often."),
+                          ("late", "late entries, half size", "the base leaders, but a position up to their whole median hold old is still copied at half size "
+                                                              "when it has moved no more than a quarter of their typical win."))],
+    {"name": "auction", "label": "Auction levels (mentor's NQ system, stock & index perps)", "kind": "experiment",
+     "description": "A mentor's 5-minute NQ system, ported (trading/auction_levels.py): accept beyond a session level (prior day, overnight, "
+                    "last week, opening range, initial balance), confirm on the next close, enter at the next open, stop under the acceptance "
+                    "bar, target the next level — graded by the 15m/30m bias, momentum, volume and ATR. Runs the 'target50+grade7' variant "
+                    "(target ≥ 50 bps away, grade ≥ 7) with calendar gates (no trade near a macro release or inside an earnings window) on "
+                    "QQQ, NVDA, TSLA and AMD perps. The replay was NEGATIVE at our costs (−0.13% a trade); this is a measuring-size forward test.",
+     "off_means": "No new setups; open ones run to their target, stop, a close back through the level or the session's end."},
+    {"name": "multi_factor", "label": "Multi-factor basket (momentum + trend + funding)", "kind": "experiment",
+     "description": "Daily: 30-day cross-sectional momentum, 10-day trend and funding carry held together, each scaled by its own "
+                    "volatility (risk parity). On 4 years of 40 perps the combination's test Sharpe was 1.25 with a 26% drawdown — "
+                    "but its 95% range touched zero, so it runs as a $1k forward test, not a promoted book.",
+     "off_means": "No more rebalances; open positions keep their 30% disaster stops until closed."},
     {"name": "carry_q", "label": "Carry Q · quarterly basis", "kind": "experiment",
      "description": "Cash-and-carry against the quarterly future instead of the perpetual: owns BTC and ETH, shorts the "
                     "current-quarter contract, rolls a week before delivery. The return is locked at entry (the basis) "
                     "instead of floating with funding — and right now the quarterly pays more than funding is expected to.",
      "off_means": "Both legs are unwound (no natural exit) and nothing is reopened."},
-    {"name": "cascade", "label": "Cascade fade (4h)", "kind": "experiment",
-     "description": "After a liquidation cascade on one of the recorder's 12 coins (a 5-minute burst at its 99th percentile "
-                    "over 30 days), takes the other side for 4 hours. On the last 30 days: +34 bps a trade after costs, 61% "
-                    "winners, both halves positive — but fading immediately lost. Thin evidence, hence a paper test.",
-     "off_means": "No new fades; open ones run to their 4 hours or the 3% stop."},
+    {"name": "cascade", "label": "Cascade fade (+1h, 4h)", "kind": "experiment",
+     "description": "An hour after a liquidation cascade on one of the recorder's 12 coins (a 5-minute burst at its 99th percentile "
+                    "over 30 days), takes the other side for 4 hours with an 8% disaster stop. Since 2026-10-30 — the first rule "
+                    "(fade at once, 3% stop) lost in both halves of the recorder's replay; the delayed entry made +52 bps a trade "
+                    "there on a flat first half, so this is a fresh forward test under the 40-trade verdict.",
+     "off_means": "No new fades (queued ones are dropped); open ones run to their 4 hours or the 8% stop."},
     {"name": "events", "label": "Event shorts (listings & delistings)", "kind": "experiment",
      "description": "Shorts the coin Binance announces — a spot listing (where its perp already trades), a new perp's "
                     "first week, or a delisting — hedged with BTC, for 30 days (a delisting until its delist date). On ~200 "
@@ -104,6 +135,9 @@ BOOKS = [
 ]
 # Books switched off for good: kept out of the switch list (and always off), their records kept.
 RETIRED_BOOKS = {
+    "stocks_trend": "Retired 2026-10-30 — failed its pre-set 40-trade verdict: −0.23R a trade (90% range −0.37…−0.10), 42% won, "
+                    "−$202 net; stops and trend flips (−$269) cost more than every winner made. Its 14 open positions were closed "
+                    "and its capital parked in the main wallet.",
     "fade24": "Retired 2026-10-28 — it was a control (does betting AGAINST the scanner work?) and the answer is no: "
               "−0.01R a trade on its first 10, −30 bps a pair on the year's replay. With the signal-rebuild lab showing the "
               "scanner's conviction carries no information either way, there is nothing left for it to test.",
@@ -146,7 +180,7 @@ def enabled(name: str) -> bool:
 
 def unavailable(name: str) -> str | None:
     """Why a book can't be switched at all (turned off in .env), or None."""
-    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "copy_trading"):
+    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:
             return "EXPERIMENTS_ENABLED=false in .env"

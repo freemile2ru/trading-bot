@@ -106,11 +106,137 @@ def _edge_scan(d: dict) -> str:
             f"(luck rate {d.get('luck_rate_pct')}%) — nothing beyond chance.")
 
 
+def _weekly_exits(d: dict) -> str:
+    b = d.get("baseline") or {}
+    best = (d.get("variants") or [{}])[0]
+    take = next((v for v in d.get("variants") or [] if v.get("take") == 0.15 and v.get("stop") is None and v.get("sizing") == "equal"), {})
+    s10 = next((v for v in d.get("variants") or [] if v.get("stop") == 0.10 and v.get("take") is None and v.get("sizing") == "equal"), {})
+    return (f"Baseline (30% stop, no take-profit): {b.get('net_week_pct')}%/week, legs win {b.get('leg_win_rate_pct')}% at avg +{b.get('avg_win_leg_pct')}% vs "
+            f"{b.get('avg_loss_leg_pct')}% (payoff {b.get('payoff')}), stops hit {b.get('stops_hit_pct')}% of legs. A 15% take-profit collapses it to "
+            f"{take.get('net_week_pct')}%/week — the return IS the winning legs running. A 10% stop lifts the payoff to {s10.get('payoff')} and the worst week to "
+            f"{s10.get('worst_week_pct')}% but nets {s10.get('net_week_pct')}%/week with the halves split ({s10.get('first_half')} / {s10.get('second_half')}). "
+            f"Best overall: no stop at all ({best.get('net_week_pct')}%/week). " + _weekly_trails(d) + f" — {d.get('verdict')}")
+
+
+def _weekly_trails(d: dict) -> str:
+    tr = d.get("trails") or []
+    if not tr:
+        return ""
+    best, b = tr[0], d.get("baseline") or {}
+    worse = sum(1 for v in tr if (v.get("net_week_pct") or 0) < (b.get("net_week_pct") or 0))
+    a, dist = best["trail"]
+    return (f"Trailing stops ({len(tr)} variants, 30% stop kept): {worse} of {len(tr)} earn less than the baseline; the best, a "
+            f"{int(dist * 100)}% trail {'from entry' if not a else f'armed at +{int(a * 100)}%'}, nets {best.get('net_week_pct')}%/week "
+            f"({best.get('first_half')} / {best.get('second_half')} by half) — trailing cuts the winners the basket lives on")
+
+
+def _auction(d: dict) -> str:
+    q = (d.get("symbols") or {}).get("QQQUSDT") or {}
+    g = q.get("geometry") or {}
+    bc = q.get("by_cost") or {}
+    def at(c):
+        b = (bc.get(c) or {}).get("high_grade") or {}
+        return f"{b.get('avg_net_pct')}% a trade, {b.get('win_pct')}% won"
+    others = ", ".join(f"{s.replace('USDT', '')} {((r.get('high_grade') or {}).get('all') or {}).get('avg_net_pct')}%"
+                       for s, r in (d.get("symbols") or {}).items() if s != "QQQUSDT" and r.get("trades"))
+    return (f"On QQQ (the Nasdaq proxy the study was written for): {q.get('trades')} trades since {q.get('from')}, {g.get('trades_per_day')} a day; the median "
+            f"target sits {g.get('median_target_bps')} bps from entry with {g.get('median_risk_bps')} bps of risk — NQ-sized geometry. Grade ≥6 trades: "
+            f"gross {at('0.0')}; at CME micro-futures costs (0.5 bp a side) {at('0.5')}; at 2 bps {at('2.0')}; at Binance perp costs (8 bps) {at('8.0')}. "
+            f"Other perps at Binance costs: {others}. {d.get('verdict')}")
+
+
+def _cascade(d: dict) -> str:
+    live, ch = d.get("live") or {}, d.get("chosen") or {}
+    return (f"The live rule (fade the minute after the burst, 3% stop) replayed on the recorder's minute bars: {live.get('avg_bps')} bps a trade, "
+            f"{live.get('win_pct')}% winners, halves {live.get('first_half')} / {live.get('second_half')} bps, the stop closed {live.get('stops_hit_pct')}% "
+            f"of legs — the cascade keeps running for about an hour (every 1h and 2h hold lost 32–50 bps). Entering 60 minutes later with no stop: "
+            f"{ch.get('avg_bps')} bps a trade, {ch.get('win_pct')}% winners, t {ch.get('t')}, halves {ch.get('first_half')} / {ch.get('second_half')} bps "
+            f"({ch.get('events')} events); an 8% disaster stop costs 1 bps of that. Three days carry the gain. {d.get('verdict')}")
+
+
+def _multi_factor(d: dict) -> str:
+    fam = "; ".join(f"{k} Sharpe {v['test'].get('sharpe')}" for k, v in (d.get("families") or {}).items())
+    best = max((d.get("combinations") or []), key=lambda c: c["test"].get("sharpe") or -99, default=None)
+    chosen = next((c for c in d.get("combinations") or [] if c["label"] == d.get("chosen")), None)
+    return (f"Single families on the test half: {fam}. Train correlations ≈ 0 (−0.2…+0.1). Train-chosen combination "
+            f"'{d.get('chosen')}': test Sharpe {chosen['test'].get('sharpe') if chosen else None}, 95% range "
+            f"{chosen['test'].get('mean_daily_ci_bps') if chosen else None} bps/day; best on test was '{best['label'] if best else None}' "
+            f"(Sharpe {best['test'].get('sharpe') if best else None}, max DD {best['test'].get('max_drawdown_pct') if best else None}%) — {d.get('status')}")
+
+
+def _top_traders(d: dict) -> str:
+    c = d.get("cohorts") or {}
+    w, l = c.get("winners") or {}, c.get("losers") or {}
+    if not w.get("episodes"):
+        return "no cohort data"
+    return (f"Winners ({w['episodes']} round trips, {len(w.get('wallets', []))} wallets): median hold {w.get('median_hold_h')}h, "
+            f"{w.get('win_rate_pct')}% won, avg {w.get('avg_move_pct')}% a trade, {w.get('long_share_pct')}% long, "
+            f"{w.get('continuation_share_pct')}% entered with the prior 24h move, exits left {w.get('avg_signed_after_exit_24h_pct')}% on the table. "
+            f"Losers ({l.get('episodes')}): median hold {l.get('median_hold_h')}h, {l.get('win_rate_pct')}% won, avg {l.get('avg_move_pct')}%, "
+            f"{l.get('continuation_share_pct')}% continuation.")
+
+
 def _tradfi(d: dict) -> str:
     return "see results file — gold's perp funding (+12.7%/yr over 320 days) was the one usable finding; became the carry book's gold leg"
 
 
 RESEARCH: list[dict] = [
+    # ── 2026-10-31 ──
+    {"key": "auction_levels", "title": "Auction-level acceptance (a mentor's NQ thinkScript), ported and replayed", "script": "research/auction_lab.py",
+     "file": "auction_results.json",
+     "question": "The mentor's 5-minute NQ system — accept beyond PDH/ONH/ORB/IB-type levels, confirm on the next close, trade to the next level with "
+                 "the stop under the acceptance bar, graded by HTF bias, momentum, volume and ATR — does it earn money on our stock and index perps?",
+     "finding": _auction,
+     "decision": "rejected — ported in full (trading/auction_levels.py) and replayed on 7 months of 5-minute bars: before any costs the system is "
+                 "breakeven (QQQ −0.006%, NVDA +0.011%, TSLA +0.013% a trade, 44% won); its targets and stops sit ~12 bps from entry on QQQ, so "
+                 "Binance's 8 bps a side turns every trade into −0.17%. No paper book; the port stays for the user's own experiments and for an "
+                 "NQ-futures feed, where costs are ~0.5 bp and the geometry was designed. Variants built around the weaknesses (minimum target "
+                 "distance, grade ≥ 7, continuation only, reward ≥ 1.5× risk) were all still negative at Binance costs; the least bad, target ≥ 50 bps "
+                 "and grade ≥ 7, lost 0.13% a trade. The user asked for a forward test anyway: the 'auction' book runs that variant at $1,000 with "
+                 "calendar gates, judged on its own 40 trades", "book": "auction"},
+    # ── 2026-10-30 ──
+    {"key": "copy_venues", "title": "Copy trading: which other platforms expose their leaders' positions?", "script": "data/lighter_client.py",
+     "question": "Beyond Binance's copy board and Hyperliquid, which venues let us read a top trader's live positions without a key, so the copy "
+                 "books see more positions opening?",
+     "finding": "Probed 2026-10-30 from this machine. Readable: Lighter (zkLighter) — a 100k-account P&L leaderboard with 24h/7d/30d windows, any "
+                "account's positions with average entry and liquidation, its full trade stream (one market id returns every market) and a daily P&L "
+                "series; 246 perp markets including US stocks (AAPL, AMD, MU, QQQ, SAMSUNG) and commodities (XAG, XAU, WTI, NATGAS, copper). GMX "
+                "— its public GraphQL (gmx.squids.live) ranks accounts by P&L per period and lists open positions with entry and leverage. Not "
+                "readable: OKX blanks a lead trader's current instrument, entry and size (only closed history is visible); Bitget's copy-trading "
+                "endpoints are all private; Bybit's and Gate's leader pages sit behind Akamai bot protection; Aster needs a key for another "
+                "trader's positions; dYdX's indexer gives positions by address but has no leaderboard; Paradex needs a JWT; Drift's data hosts "
+                "did not answer. Follow-up the same day: Hyperliquid's own builder market (HIP-3 'xyz') lists stock, commodity, index "
+                "and FX perps (xyz:TSLA, xyz:GOLD, xyz:SILVER, xyz:CL…) and three of its top-25 accounts hold them — positions sit in a separate "
+                "clearinghouse state (dex='xyz') that the client had not been reading; and Binance's own exchange info classifies every perp "
+                "(underlyingType EQUITY / COMMODITY / COIN), which now routes each copy to its market instead of a hand-kept list.",
+     "decision": "promoted — Lighter is a third venue in the copy books from 2026-10-30 (same bar as Hyperliquid: $50k–$20M equity, month ROI "
+                 "5–300%, turnover 2–300× a month, then the profile and curve tests on its trades); GMX is the next candidate", "book": "copy_trading"},
+    {"key": "cascade_replay", "title": "Cascade fade: the live rule replayed, with and without its stop", "script": "research/cascade_lab.py",
+     "file": "cascade_results.json",
+     "question": "The cascade book is 36% winners live, most closed by its 3% stop — is the stop, the hold, the threshold or the entry timing wrong?",
+     "finding": _cascade,
+     "decision": "rule changed (2026-10-30) — the immediate entry with a 3% stop lost in both halves, so it is off; the book now enters an hour after "
+                 "the burst with an 8% disaster stop, as a fresh forward test judged only on trades opened under the new rule (its replay result "
+                 "rests on three days and a flat first half, so it is not treated as proven)", "book": "cascade"},
+    # ── 2026-10-29 ──
+    {"key": "weekly_exits", "title": "Weekly basket: stops, take-profits and volatility sizing", "script": "research/weekly_exits_lab.py",
+     "file": "weekly_exits_results.json",
+     "question": "Do the 30% disaster stop and the absence of a take-profit make the weekly basket 'huge losses, small wins', and would tighter "
+                 "stops, take-profits, trailing stops or volatility-scaled legs fix it?",
+     "finding": _weekly_exits,
+     "decision": "rejected (kept the baseline) — under the written rule no variant beat the 30%-stop baseline on both halves and the worst week; "
+                 "take-profits destroy the edge, a 10% stop trades return for a smoother worst week, and trailing stops (added the same day, "
+                 "16 arm × distance settings) all earned less than holding to Monday. The live book is unchanged", "book": "weekly_rs"},
+    {"key": "multi_factor", "title": "Multi-factor portfolio: momentum + trend + funding carry together", "script": "research/multi_factor_lab.py",
+     "file": "multi_factor_results.json",
+     "question": "Do the three systematic families that quant desks run — held together, risk-weighted, vol-targeted — clear the holdout where each alone did not?",
+     "finding": _multi_factor,
+     "decision": "mixed — the combination diversifies (test Sharpe up to 1.25 with a smaller drawdown than any family alone) but the train-chosen "
+                 "version's 95% range still includes zero, so it was not promoted; like Hold-72 it runs as a $1k forward test "
+                 "(the multi_factor book, risk parity, no vol targeting) judged by the 40-trade verdict", "book": "multi_factor"},
+    {"key": "top_traders", "title": "What the top Hyperliquid wallets actually do", "script": "research/top_traders_lab.py", "file": "top_traders_results.json",
+     "question": "From their fills: do the most profitable wallets trade continuation or reversal, how long do they hold, and how does that differ from the losing cohort?",
+     "finding": _top_traders, "decision": "descriptive — read alongside the copy-trading book's leader bar", "book": "copy_trading"},
     # ── 2026-10-28 ──
     {"key": "stall_exit", "title": "Stall exit for the trend books", "script": "research/stall_exit_lab.py", "file": "stall_exit_results.json",
      "question": "Does closing a trend position that stops making new highs (no new closing high for N weeks) beat holding until the trend flips?",
@@ -164,6 +290,12 @@ RESEARCH: list[dict] = [
     {"key": "positioning", "title": "Top-trader positioning ratios", "script": "(to write)", "file": None,
      "question": "Do Binance's top-account long/short and taker-flow ratios predict anything over hours to days?",
      "finding": "waits for ~60 days of the hourly log (data/positioning.db)", "decision": "pending", "book": None},
+    {"key": "funding_venues", "title": "Cross-venue funding arbitrage (Binance vs Hyperliquid)", "script": "(to write)", "file": None,
+     "question": "Does the funding gap between the two venues on the same coin clear a delta-neutral round trip, and how long does it last?",
+     "finding": "waits for ~4 weeks of the hourly log (data/funding_venues.db, started 2026-10-29)", "decision": "pending", "book": "carry"},
+    {"key": "exchange_events", "title": "Upbit listing & delisting events", "script": "(to write)", "file": None,
+     "question": "Do Upbit's trade notices move the named coin against BTC the way Binance's do (the Korean listing pump-and-fade)?",
+     "finding": "waits for Upbit notices in news.db (source added 2026-10-29) plus the archive to replay", "decision": "pending", "book": "events"},
 ]
 
 

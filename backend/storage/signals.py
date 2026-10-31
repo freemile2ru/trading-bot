@@ -266,5 +266,17 @@ def debrief(system: str, trade_id: str) -> dict | None:
     return _debrief_row(rows[0]) if rows else None
 
 
+def delete_debriefs(system: str, trade_ids: list[str]) -> int:
+    """Drop the debriefs of erased trades, so nothing is learned from positions that are no longer on the record."""
+    if not trade_ids:
+        return 0
+    with _lock:
+        con = _db()
+        n = con.execute(f"DELETE FROM trade_debriefs WHERE system=? AND trade_id IN ({','.join('?' * len(trade_ids))})",
+                        (system, *trade_ids)).rowcount
+        con.commit()
+    return n
+
+
 def debriefs_pending_claude(limit: int = 500) -> list[dict]:
     return [_debrief_row(r) for r in _rows("SELECT * FROM trade_debriefs WHERE claude IS NULL ORDER BY closed_ts DESC LIMIT ?", (limit,))]

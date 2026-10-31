@@ -10,8 +10,13 @@ Two sources, one engine:
   hyperliquid  on-chain wallets (data/hyperliquid_client.py): leaderboard windows, live positions, fills — a record
                that can't be curated. Positions carry no open time, so a position is "new" when it first appears
                between two polls; what a wallet already held when tracking began is never copied.
-  (OKX's official copy-trading API was tested and rejected: a leader's current positions come back with the
-  instrument, entry and size blanked, so there is nothing to mirror.)
+  lighter       on-chain accounts on Lighter's order-book DEX (data/lighter_client.py): a 100k-account P&L leaderboard
+               (30-day P&L, ROI, volume, account value), live positions with entries, every trade, a daily P&L series.
+               Its markets span crypto, US stock perps and commodities, so one leader can feed all three copy books.
+  (Tested and rejected, 2026-10-30: OKX blanks a lead trader's current instrument, entry and size; Bitget's copy-trading
+  endpoints are all private; Bybit's and Gate's leader pages sit behind Akamai bot protection; Aster needs a key for
+  another trader's positions; dYdX exposes positions by address but has no leaderboard; Paradex needs a JWT; GMX's
+  public GraphQL (gmx.squids.live) does expose ranked accounts and open positions and is the next candidate.)
 
 Choosing leaders (daily, LEADERS_N per venue):
   binance   ≥ MIN_COPIERS copiers, ≥ MIN_AUM, copiers in profit, ≥ MIN_DAYS running, drawdown ≤ MAX_MDD, win rate ≥
@@ -31,6 +36,16 @@ Mirroring (every POLL_S):
   size      LEG_PCT of equity notional, the leader's leverage capped at MAX_LEVERAGE, a DISASTER_PCT price stop
   exit      the leader closes (or has closed ≥ half), MAX_HOLD_X × their median hold (at least a day, at most a week),
             or the stop. A leader who drops off the daily selection is still followed out of the copies we hold
+
+Variants (2026-10-30): after two days with nothing copied — every position the leaders held pre-dated tracking or
+was past a quarter of their hold — three alternatives run beside the base rule in every market, each in its own
+wallet so the verdicts stay separate (VARIANTS):
+  wide   the same bar, WIDE_N leaders a venue instead of LEADERS_N: more positions to see open
+  fast   LEADERS_N leaders a venue chosen among those whose median hold is ≤ FAST_HOLD_H: they open more often
+  late   the base leaders, but a position up to their whole median hold old is still copied at LATE_SIZE_X size
+         when the move so far is small (≤ LATE_SMALL_FRAC of their median win)
+The daily selection keeps a pool of every leader that passed (up to WIDE_N a venue, plus fast ones found further
+down the board); each variant reads its own list from that pool.
 """
 from __future__ import annotations
 
@@ -46,7 +61,7 @@ logger = logging.getLogger("experiments.copy_trading")
 
 BOOK = "copy_trading"
 LABEL = "Copy trading (Binance & Hyperliquid leaders)"
-VENUES = ("binance", "hyperliquid")
+VENUES = ("binance", "hyperliquid", "lighter")
 LEADERS_N = int(os.getenv("COPY_LEADERS_N", "5"))                 # per venue
 REFRESH_LEADERS_S = 24 * 3600
 POLL_S = int(os.getenv("COPY_POLL_S", "90"))
@@ -56,7 +71,10 @@ MIN_HOLD_H, MAX_WIN = 1.0, 95.0
 HL_EQUITY = (50_000.0, 20_000_000.0)
 HL_MONTH_ROI = (0.05, 3.0)
 HL_TURNOVER = (2.0, 300.0)
-LEG_PCT = float(os.getenv("COPY_LEG_PCT", "15"))                  # 15% a copy since 2026-10-29 (was 5)
+LT_TURNOVER = (2.0, 60.0)                # Lighter: above ~60× a month the board is market makers filling thousands of times a day
+LEG_PCT = float(os.getenv("COPY_LEG_PCT", "25"))                  # 25% of equity a copy since 2026-10-31 (15 from 10-29, 5 before): at the
+                                                                   # 8% stop a losing copy costs 2% of the book; the record so far is +0.39% of
+                                                                   # notional a copy, so $5k legs on a $20k book are ~$20 a copy
 MAX_LEVERAGE = int(os.getenv("COPY_MAX_LEVERAGE", "10"))          # 10× cap since 2026-10-29 (was 5)
 MAX_OPEN = int(os.getenv("COPY_MAX_OPEN", "12"))
 LATE_AGE_FRAC, LATE_MOVE_FRAC, ADVERSE_FRAC = 0.25, 0.5, 1.0
@@ -64,10 +82,21 @@ CONSENSUS_X = float(os.getenv("COPY_CONSENSUS_X", "1.5"))
 DISASTER_PCT = float(os.getenv("COPY_DISASTER_PCT", "8"))
 MAX_HOLD_X, MAX_HOLD_H = 3.0, 7 * 24
 MIN_HOLD_CAP_H = 24.0                    # a copy of a fast leader still gets a day: their hold is a median, not a limit
-SKIP_KEEP = 200
+SKIP_KEEP = 300
+WIDE_N = int(os.getenv("COPY_WIDE_N", "15"))                      # leaders a venue for the "wide" variant
+FAST_HOLD_H = float(os.getenv("COPY_FAST_HOLD_H", "24"))          # "fast" variant: leaders whose median hold is at most this
+LATE_AGE_FRAC_LATE, LATE_SMALL_FRAC, LATE_SIZE_X = 1.0, 0.25, 0.5  # "late" variant: up to a whole hold old, move ≤ ¼ of their win, half size
+MAX_CANDIDATES = {"binance": 45, "hyperliquid": 80, "lighter": 60}   # how far down each board the selection reads
+VARIANTS: dict[str, dict] = {
+    "base": {"label": "Base rule", "note": f"{LEADERS_N} leaders a venue; copy within ¼ of their hold and before half their typical win."},
+    "wide": {"label": "More leaders", "note": f"The same bar, {WIDE_N} leaders a venue — more positions to catch opening."},
+    "fast": {"label": "Faster traders", "note": f"{LEADERS_N} leaders a venue chosen among those holding ≤ {FAST_HOLD_H:g}h — they open more often."},
+    "late": {"label": "Late entries, half size", "note": f"Base leaders; a position up to their whole hold old is still copied at {LATE_SIZE_X:g}× size when it has moved ≤ {LATE_SMALL_FRAC:g} of their typical win."},
+}
+MARKETS = ("crypto", "stocks", "futures")
 
 _state = {"last_poll": 0.0}
-_perp_cache: dict = {"at": 0.0, "symbols": set()}
+_perp_cache: dict = {"at": 0.0, "symbols": set(), "market": {}}     # Binance's perps (crypto and TradFi) and each one's asset class
 
 # ── The record (data/copy_trading.db): what every leader held at every poll, the price then, and what we did ──
 # Kept so the too-late rule, the leaders' own edge and alternative copy rules can be studied later on real history.
@@ -141,10 +170,12 @@ def _k(*parts: str) -> str:
 
 
 async def _perps(now: float) -> set[str]:
+    """Binance's USDT perps, crypto and TradFi (stock, commodity) alike — what a leader's position can be mirrored into."""
     if now - _perp_cache["at"] > 3600 or not _perp_cache["symbols"]:
-        from data.binance_client import fetch_perpetual_symbols
+        from data.binance_client import fetch_perpetual_info
         try:
-            _perp_cache.update(at=now, symbols=set(await fetch_perpetual_symbols()))
+            info = await fetch_perpetual_info()
+            _perp_cache.update(at=now, symbols=set(info), market=info)
         except Exception as e:
             logger.debug("perp list unavailable: %s", e)
     return _perp_cache["symbols"]
@@ -152,12 +183,43 @@ async def _perps(now: float) -> set[str]:
 
 # ── Leaders ────────────────────────────────────────────────────────────────────
 
-def leaders() -> list[dict]:
-    return (kv.get_sync(_k("leaders")) or {}).get("leaders") or []
+def pool() -> list[dict]:
+    """Every leader the last selection passed, best score first, with their profiles."""
+    d = kv.get_sync(_k("leaders")) or {}
+    return d.get("pool") or d.get("leaders") or []
+
+
+def leaders(variant: str = "base") -> list[dict]:
+    """The leaders a variant follows, read from the pool: base/late = the top LEADERS_N a venue, wide = the top WIDE_N,
+    fast = the top LEADERS_N among those holding ≤ FAST_HOLD_H."""
+    out = []
+    for venue in VENUES:
+        Ls = [L for L in pool() if (L.get("venue") or "binance") == venue]
+        if variant == "fast":
+            Ls = [L for L in Ls if (L.get("profile") or {}).get("median_hold_h") and L["profile"]["median_hold_h"] <= FAST_HOLD_H]
+        out += Ls[:WIDE_N if variant == "wide" else LEADERS_N]
+    return out
+
+
+def variants_of(leader_id: str, follows: dict[str, set[str]] | None = None) -> list[str]:
+    """Which rules follow a leader; pass `follows` (variant → ids) when asking for many leaders at once."""
+    follows = follows if follows is not None else {v: {L["id"] for L in leaders(v)} for v in VARIANTS}
+    return [v for v in VARIANTS if leader_id in follows[v]]
 
 
 def leaders_refreshed_at() -> float | None:
     return (kv.get_sync(_k("leaders")) or {}).get("at")
+
+
+def markets_traded(symbols: list[str | None]) -> dict[str, int]:
+    """How many of a leader's positions (history + open) fall in each of our markets — the Copy tab shows a leader
+    under a market only when they actually trade it."""
+    out: dict[str, int] = {}
+    for sym in symbols:
+        if sym:
+            m = market_of(sym)
+            out[m] = out.get(m, 0) + 1
+    return out
 
 
 def profile_from_history(rows: list[dict]) -> dict:
@@ -217,6 +279,22 @@ def hl_passes(row: dict) -> str | None:
     return None
 
 
+def lighter_passes(row: dict) -> str | None:
+    """Why a Lighter leaderboard row fails the cheap bar (the Hyperliquid one: size, month ROI, turnover), or None."""
+    eq = row["account_value"]
+    if not (HL_EQUITY[0] <= eq <= HL_EQUITY[1]):
+        return f"equity ${eq:,.0f}"
+    m = row["roi"] / 100
+    if not (HL_MONTH_ROI[0] <= m <= HL_MONTH_ROI[1]):
+        return f"month ROI {m * 100:.0f}%"
+    if row["pnl"] <= 0:
+        return "month P&L negative"
+    turn = row["volume"] / eq if eq else 0
+    if not (LT_TURNOVER[0] <= turn <= LT_TURNOVER[1]):
+        return f"turnover {turn:.0f}× a month"
+    return None
+
+
 def profile_passes(prof: dict) -> str | None:
     """Shapes we can't or shouldn't copy: too few closed trades, scalps faster than our poll, or the never-loses
     pattern (every trade a winner, no recorded loss) that marks a grid/martingale that holds losers until it blows up."""
@@ -251,7 +329,9 @@ async def _select_binance(now: float) -> list[dict]:
         scored.append({**{k: v for k, v in r.items() if k != "curve"}, "curve": thin, "stats": stats, "score": score(stats), "venue": "binance"})
     scored.sort(key=lambda x: -x["score"])
     chosen = []
-    for r in scored[:LEADERS_N * 3]:
+    for r in scored[:MAX_CANDIDATES["binance"]]:
+        if _pool_full(chosen):
+            break
         try:
             det = await cc.detail(r["id"])
             if (now - det["start_ts"]) / 86400 < MIN_DAYS or det["status"] != "ACTIVE":
@@ -264,10 +344,22 @@ async def _select_binance(now: float) -> list[dict]:
         if profile_passes(prof):
             continue
         chosen.append({**r, "nickname_en": det.get("nickname_en"), "days_running": round((now - det["start_ts"]) / 86400),
-                       "leverage_tier": det.get("leverage_tier"), "badge": det.get("badge"), "profile": prof})
-        if len(chosen) >= LEADERS_N:
-            break
+                       "leverage_tier": det.get("leverage_tier"), "badge": det.get("badge"), "profile": prof,
+                       "markets": markets_traded([h.get("symbol") for h in hist])})
     return chosen
+
+
+MARKET_LEADERS_MIN = 2                   # keep reading a board until at least this many passers trade stock perps, and commodity perps
+LT_BOARD_DEPTH = 500                     # Lighter accounts read from the 30-day P&L board (its biggest-position asset says who trades what)
+
+
+def _pool_full(chosen: list[dict]) -> bool:
+    """Enough for every variant and every market: WIDE_N passers, of which LEADERS_N are fast and MARKET_LEADERS_MIN trade
+    stocks and commodities — or the board is read to its cap."""
+    fast = sum(1 for L in chosen if (L.get("profile") or {}).get("median_hold_h") and L["profile"]["median_hold_h"] <= FAST_HOLD_H)
+    stocks = sum(1 for L in chosen if (L.get("markets") or {}).get("stocks"))
+    futures = sum(1 for L in chosen if (L.get("markets") or {}).get("futures"))
+    return len(chosen) >= WIDE_N and fast >= LEADERS_N and stocks >= MARKET_LEADERS_MIN and futures >= MARKET_LEADERS_MIN
 
 
 async def _select_hyperliquid(now: float) -> list[dict]:
@@ -282,7 +374,9 @@ async def _select_hyperliquid(now: float) -> list[dict]:
     cands = [r for r in board if hl_passes(r) is None]
     cands.sort(key=lambda r: -(r["month"]["roi"] * min(r["all"]["roi"], 3.0)))
     chosen = []
-    for i, r in enumerate(cands[:LEADERS_N * 8]):
+    for i, r in enumerate(cands[:MAX_CANDIDATES["hyperliquid"]]):
+        if _pool_full(chosen):
+            break
         if i:
             await asyncio.sleep(0.6)                      # the public info API rate-limits bursts
         try:
@@ -290,9 +384,11 @@ async def _select_hyperliquid(now: float) -> list[dict]:
         except Exception as e:
             logger.debug("Hyperliquid fills for %s unavailable: %s", r["address"], e)
             continue
-        prof = profile_from_history(hl.episodes(f))
+        eps = hl.episodes(f)
+        prof = profile_from_history(eps)
         if profile_passes(prof):
             continue
+        perps = await _perps(now)
         curve = hl.pnl_curve(f, r["equity"])
         stats = cc.curve_stats(curve, active_only=True)
         if curve_passes(stats) or (stats.get("active_weeks") or 0) < 4:
@@ -302,9 +398,68 @@ async def _select_hyperliquid(now: float) -> list[dict]:
                        "win_rate": prof["win_rate"], "copiers": 0, "aum": r["equity"], "copier_pnl": r["month"]["pnl"],
                        "sharpe": stats.get("sharpe"), "curve": curve[:: max(1, len(curve) // 45)], "stats": stats, "score": score(stats),
                        "days_running": None, "leverage_tier": None, "badge": "on-chain", "profile": prof,
+                       "markets": markets_traded([hl.binance_symbol(e["coin"], perps) for e in eps]),
                        "turnover": round(r["month"]["volume"] / r["equity"], 1) if r["equity"] else None})
-        if len(chosen) >= LEADERS_N:
+    chosen.sort(key=lambda x: -x["score"])
+    return chosen
+
+
+async def _select_lighter(now: float) -> list[dict]:
+    from data import copy_trading_client as cc
+    from data import lighter_client as lt
+    import asyncio
+    try:
+        board = {}
+        for off in range(0, LT_BOARD_DEPTH, 100):           # deep enough to reach the accounts whose biggest position is a stock or a commodity
+            for r in await lt.leaderboard("30d", "pnl", 100, off):
+                board.setdefault(r["address"], r)
+            await asyncio.sleep(0.2)
+        for r in await lt.leaderboard("30d", "roi", 100):
+            board.setdefault(r["address"], r)
+    except Exception as e:
+        logger.warning("Lighter leaderboard unavailable: %s", e)
+        return []
+    perps = await _perps(now)
+    cands = [r for r in board.values() if r.get("address") and lighter_passes(r) is None]
+
+    def _non_crypto(r: dict) -> bool:
+        sym = lt.binance_symbol(r.get("biggest_asset") or "", perps)
+        return bool(sym) and market_of(sym) != "crypto"
+    # Accounts concentrated in stock or commodity perps go first — the stock and commodity copy books need them most —
+    # then everyone else by the month's return; the profile and curve do the rest.
+    cands.sort(key=lambda r: (not _non_crypto(r), -r["roi"]))
+    chosen = []
+    for i, r in enumerate(cands[:MAX_CANDIDATES["lighter"]]):
+        if _pool_full(chosen):
             break
+        if i:
+            await asyncio.sleep(0.3)
+        try:
+            idx = await lt.account_index(r["address"])
+            if idx is None:
+                continue
+            rows = await lt.trades(idx, int((now - 60 * 86400) * 1000))
+            series = await lt.pnl_series(idx, 60)
+        except Exception as e:
+            logger.debug("Lighter account %s unavailable: %s", r["address"], e)
+            continue
+        eps = lt.episodes(rows, idx)
+        prof = profile_from_history(eps)
+        if profile_passes(prof):
+            continue
+        perps = await _perps(now)
+        curve = lt.roi_curve(series, r["account_value"])
+        stats = cc.curve_stats(curve, active_only=True)
+        if curve_passes(stats) or (stats.get("active_weeks") or 0) < 4:
+            continue
+        chosen.append({"id": f"lighter:{idx}", "venue": "lighter", "index": idx, "address": r["address"],
+                       "nickname": f"{r['address'][:6]}…{r['address'][-4:]}", "nickname_en": None,
+                       "roi": round(r["roi"], 2), "mdd": stats.get("mdd_pct") or 0.0, "win_rate": prof["win_rate"], "copiers": 0,
+                       "aum": r["account_value"], "copier_pnl": r["pnl"], "sharpe": stats.get("sharpe"),
+                       "curve": curve[:: max(1, len(curve) // 45)], "stats": stats, "score": score(stats), "days_running": None,
+                       "leverage_tier": None, "badge": "on-chain", "profile": prof,
+                       "markets": markets_traded([lt.binance_symbol(e["coin"], perps) for e in eps]),
+                       "turnover": round(r["volume"] / r["account_value"], 1) if r["account_value"] else None})
     chosen.sort(key=lambda x: -x["score"])
     return chosen
 
@@ -319,49 +474,78 @@ def remembered(leader_id: str) -> dict | None:
 
 def leaders_to_poll() -> list[dict]:
     """The current selection plus any past leader whose copies we still hold — they get followed out."""
-    Ls = leaders()
-    have = {L["id"] for L in Ls}
-    for t in _wallet().get_portfolio()["open_trades"]:
-        lid = t.get("leader_id")
-        if lid and lid not in have:
-            L = remembered(lid)
-            if L:
-                Ls.append({**L, "retired": True})
-                have.add(lid)
+    Ls, have = [], set()
+    for v in VARIANTS:
+        for L in leaders(v):
+            if L["id"] not in have:
+                Ls.append(L)
+                have.add(L["id"])
+    for w in _all_wallets().values():
+        for t in w.get_portfolio()["open_trades"]:
+            lid = t.get("leader_id")
+            if lid and lid not in have:
+                L = remembered(lid)
+                if L:
+                    Ls.append({**L, "retired": True})
+                    have.add(lid)
     return Ls
+
+
+async def select_leaders_off_loop(now: float | None = None) -> list[dict]:
+    """Run the daily selection on its own event loop in a worker thread. The selection streams tens of megabytes
+    (Hyperliquid's leaderboard) and rebuilds thousands of fills per candidate; on the server's loop that starved every
+    request for minutes (2026-10-31). Off the loop it can take as long as it likes."""
+    import asyncio
+    return await asyncio.to_thread(lambda: asyncio.run(select_leaders(now)))
 
 
 async def select_leaders(now: float | None = None) -> list[dict]:
     now = now or time.time()
-    chosen = await _select_binance(now) + await _select_hyperliquid(now)
+    chosen = await _select_binance(now) + await _select_hyperliquid(now) + await _select_lighter(now)
+    chosen.sort(key=lambda x: -x["score"])
     for L in chosen:
         remember(L)
-    kv.set_sync(_k("leaders"), {"at": now, "leaders": chosen}, 7 * 86400)
+    kv.set_sync(_k("leaders"), {"at": now, "pool": chosen, "leaders": [L for L in chosen if L["id"] in {x["id"] for x in _top(chosen)}]}, 7 * 86400)
     try:
         log_leaders(now, chosen)
     except Exception as e:
         logger.debug("copy leader log failed: %s", e)
-    logger.info("Copy trading: %d leaders chosen — %s", len(chosen),
+    logger.info("Copy trading: %d leaders in the pool (%s base) — %s", len(chosen), len(_top(chosen)),
                 ", ".join(f"{c.get('nickname_en') or c['nickname']} [{c['venue']}, {c['score']}]" for c in chosen))
-    return chosen
+    return leaders()
+
+
+def _top(chosen: list[dict]) -> list[dict]:
+    out = []
+    for venue in VENUES:
+        out += [L for L in chosen if L.get("venue") == venue][:LEADERS_N]
+    return out
 
 
 # ── Judging an entry ───────────────────────────────────────────────────────────
 
 def evaluate(pos: dict, profile: dict, mark: float, now: float) -> tuple[bool, str, float, float]:
-    """(enter?, reason, price move since the leader's entry in their favour %, age h)."""
+    """(enter?, reason, price move since the leader's entry in their favour %, age h) — the base rule."""
+    ok, why, moved, age_h, _ = judge(pos, profile, mark, now, "base")
+    return ok, why, moved, age_h
+
+
+def judge(pos: dict, profile: dict, mark: float, now: float, variant: str = "base") -> tuple[bool, str, float, float, float]:
+    """(enter?, reason, move since the leader's entry in their favour %, age h, size multiplier) under a variant's rule."""
     side = 1 if pos["side"] == "long" else -1
     moved = (mark / pos["entry"] - 1) * side * 100 if pos.get("entry") else 0.0
     age_h = (now - pos["opened_ts"]) / 3600
     hold = profile.get("median_hold_h") or 24.0
     win_move, loss_move = profile.get("win_move_pct") or 1.0, profile.get("loss_move_pct") or 1.0
-    if age_h > LATE_AGE_FRAC * hold:
-        return False, f"too late: {age_h:.1f}h old, leader's median hold {hold:.0f}h", moved, age_h
-    if moved >= LATE_MOVE_FRAC * win_move:
-        return False, f"too late: already {moved:+.2f}% in their favour (their median win {win_move:.2f}%)", moved, age_h
     if moved <= -ADVERSE_FRAC * loss_move:
-        return False, f"already failing: {moved:+.2f}% against them (their median loss {loss_move:.2f}%)", moved, age_h
-    return True, f"entered {moved:+.2f}% from the leader's price, {age_h:.1f}h after them", moved, age_h
+        return False, f"already failing: {moved:+.2f}% against them (their median loss {loss_move:.2f}%)", moved, age_h, 0.0
+    if age_h > LATE_AGE_FRAC * hold:
+        if variant == "late" and age_h <= LATE_AGE_FRAC_LATE * hold and moved <= LATE_SMALL_FRAC * win_move:
+            return True, f"late entry at {LATE_SIZE_X:g}× size: {age_h:.1f}h old (hold {hold:.0f}h), only {moved:+.2f}% moved", moved, age_h, LATE_SIZE_X
+        return False, f"too late: {age_h:.1f}h old, leader's median hold {hold:.0f}h", moved, age_h, 0.0
+    if moved >= LATE_MOVE_FRAC * win_move:
+        return False, f"too late: already {moved:+.2f}% in their favour (their median win {win_move:.2f}%)", moved, age_h, 0.0
+    return True, f"entered {moved:+.2f}% from the leader's price, {age_h:.1f}h after them", moved, age_h, 1.0
 
 
 # ── Positions per venue, in one shape ─────────────────────────────────────────
@@ -373,16 +557,24 @@ async def _binance_rows(L: dict) -> list[dict]:
 
 
 async def _hyperliquid_rows(L: dict, now: float) -> list[dict]:
-    """Live positions, with open times from when each first appeared; vanished ones come back once as closed."""
     from data import hyperliquid_client as hl
+    return await _onchain_rows(L, now, await hl.positions(L["id"]), hl.binance_symbol, _k("hl", L["id"]))
+
+
+async def _lighter_rows(L: dict, now: float) -> list[dict]:
+    from data import lighter_client as lt
+    return await _onchain_rows(L, now, await lt.positions(int(L["index"])), lt.binance_symbol, _k("lt", L["id"]))
+
+
+async def _onchain_rows(L: dict, now: float, live: list[dict], to_binance, key: str) -> list[dict]:
+    """Live positions of an on-chain account (Hyperliquid, Lighter), with open times from when each first appeared;
+    vanished ones come back once as closed."""
     perps = await _perps(now)
-    live = await hl.positions(L["id"])
-    key = _k("hl", L["id"])
     tracked: dict = kv.get_sync(key) or {}
     first_time = not tracked
     out, seen_now = [], {}
     for p in live:
-        sym = hl.binance_symbol(p["coin"], perps)
+        sym = to_binance(p["coin"], perps)
         if not sym:
             continue
         prev = tracked.get(p["coin"])
@@ -407,14 +599,54 @@ async def _hyperliquid_rows(L: dict, now: float) -> list[dict]:
 
 
 async def leader_rows(L: dict, now: float) -> list[dict]:
-    return await (_hyperliquid_rows(L, now) if L.get("venue") == "hyperliquid" else _binance_rows(L))
+    venue = L.get("venue")
+    if venue == "hyperliquid":
+        return await _hyperliquid_rows(L, now)
+    if venue == "lighter":
+        return await _lighter_rows(L, now)
+    return await _binance_rows(L)
 
 
 # ── Mirroring ──────────────────────────────────────────────────────────────────
 
-def _wallet():
+# Copies are routed by market (2026-10-29): the leaders' crypto positions go to the crypto book, their stock perps
+# (TSLA, SK Hynix, Meta…) to copy_stocks and their commodity perps (gold, silver, oil…) to copy_futures — same
+# leaders, same too-late rule and exits, separate capital and verdicts.
+BOOKS_BY_MARKET = {"crypto": BOOK, "stocks": "copy_stocks", "futures": "copy_futures"}
+
+
+def book_name(market: str, variant: str = "base") -> str:
+    return BOOKS_BY_MARKET[market] if variant == "base" else f"copy_{market}_{variant}"
+
+
+ALL_BOOKS = {(m, v): book_name(m, v) for m in MARKETS for v in VARIANTS}
+
+
+def market_of(symbol: str) -> str:
+    """Which copy book a symbol belongs to: Binance's own asset class when the perp list has been fetched, else the
+    Markets tab's lists (TSLA, SK Hynix, gold, oil…)."""
+    m = _perp_cache["market"].get(symbol)
+    if m:
+        return m
+    from markets import engine as markets
+    for m in ("stocks", "futures"):
+        if symbol in markets.MARKETS[m]["symbols"]:
+            return m
+    return "crypto"
+
+
+def _wallet(market: str = "crypto", variant: str = "base"):
     from experiments import books
-    return books.WALLETS[BOOK]
+    return books.WALLETS[book_name(market, variant)]
+
+
+def _wallets() -> dict[str, object]:
+    """The base book of each market."""
+    return {m: _wallet(m) for m in BOOKS_BY_MARKET}
+
+
+def _all_wallets() -> dict[tuple[str, str], object]:
+    return {(m, v): _wallet(m, v) for m, v in ALL_BOOKS}
 
 
 def _seen(leader_id: str) -> set[str]:
@@ -433,6 +665,35 @@ def _record_skip(entry: dict) -> None:
     kv.set_sync(_k("skipped"), (skipped() + [entry])[-SKIP_KEEP:], 60 * 86400)
 
 
+ROUTE_N, ROUTE_MIN = 20, 10                  # a book's record: its last ROUTE_N closed copies in that market; at least ROUTE_MIN to count
+ROUTE_ORDER = ("base", "fast", "wide", "late")   # with no record to go on, the plainer rule takes the trade
+
+
+def record_r(w, n: int = ROUTE_N) -> tuple[int, float | None]:
+    """(copies counted, average net R of the book's last `n` closed copies) — R on the disaster stop's distance."""
+    closed = w.all_trades()["closed"][-n:]
+    rs = [t["pnl_usd"] / t["risk_usd"] for t in closed if t.get("risk_usd")]
+    return len(rs), (round(sum(rs) / len(rs), 3) if rs else None)
+
+
+def route(market: str, candidates: list[str], wallets: dict | None = None) -> tuple[str, str]:
+    """Which one book takes a position several rules would copy: the candidate with the best recent record in this
+    market (≥ ROUTE_MIN copies), else the first in ROUTE_ORDER. Returns (variant, why)."""
+    if len(candidates) == 1:
+        return candidates[0], "only rule that takes it"
+    wallets = wallets or _all_wallets()
+    scored = []
+    for v in candidates:
+        n, avg = record_r(wallets[(market, v)])
+        if n >= ROUTE_MIN and avg is not None:
+            scored.append((avg, n, v))
+    if scored:
+        avg, n, v = max(scored)
+        return v, f"best record here: {avg:+.2f}R over {n} copies"
+    v = next((o for o in ROUTE_ORDER if o in candidates), candidates[0])
+    return v, "no book has a record yet — the plainer rule takes it"
+
+
 def consensus(rows_by_leader: dict[str, list[dict]]) -> dict[tuple[str, str], int]:
     """How many leaders hold each (symbol, side) right now."""
     out: dict[tuple[str, str], set] = {}
@@ -446,9 +707,11 @@ def consensus(rows_by_leader: dict[str, list[dict]]) -> dict[tuple[str, str], in
 async def mirror(now: float | None = None) -> dict:
     from experiments import books
     now = now or time.time()
-    w = _wallet()
     opened, closed = [], []
-    ours = {t.get("leader_position_id"): t for t in w.get_portfolio()["open_trades"] if t.get("leader_position_id")}
+    wallets = _all_wallets()
+    ours = {(t.get("leader_position_id"), t.get("variant") or "base"): (ww, t) for ww in wallets.values()
+            for t in ww.get_portfolio()["open_trades"] if t.get("leader_position_id")}
+    follows = {v: {L["id"] for L in leaders(v)} for v in VARIANTS}
     all_rows: dict[str, dict] = {}
     rows_by_leader: dict[str, list[dict]] = {}
     Ls = leaders_to_poll()
@@ -470,41 +733,69 @@ async def mirror(now: float | None = None) -> dict:
         seen = _seen(L["id"])
         name = L.get("nickname_en") or L["nickname"]
         for r in rows:
-            if r["closed_ts"] is not None or r["remaining"] <= 0 or r["position_id"] in seen or r["position_id"] in ours:
+            if r["closed_ts"] is not None or r["remaining"] <= 0 or r["position_id"] in seen:
                 continue
             seen.add(r["position_id"])
-            if r.get("untracked") or L.get("retired") or not (books.ENABLED and book_switches.enabled(BOOK)):
-                continue                                     # held before we were watching, an ex-leader, or the book is off
-            mark = await monitor.live_price(r["symbol"])
-            if not mark:
-                _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"],
-                              "reason": "no price feed", "mark": None, "position_id": r["position_id"]})
-                continue
-            ok, why, moved, age_h = evaluate(r, L.get("profile") or {}, mark, now)
+            if r.get("untracked") or L.get("retired") or not books.ENABLED:
+                continue                                     # held before we were watching, or an ex-leader
+            market = market_of(r["symbol"])
+            why_block = None
+            if market == "stocks":
+                from ops import calendar
+                why_block = calendar.earnings_block(r["symbol"])
+            mark = None if why_block else await monitor.live_price(r["symbol"])
             n_agree = agree.get((r["symbol"], r["side"]), 1)
-            if not ok or len(w.get_portfolio()["open_trades"]) >= MAX_OPEN:
-                _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"],
-                              "reason": why if not ok else "book full", "mark": mark, "position_id": r["position_id"],
-                              "leader_entry": r["entry"], "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+            # One position, one book (2026-10-31): every rule that would take it is a candidate; the best-scoring candidate
+            # takes it and the others record why they didn't. No trade is held in two books at once.
+            candidates: list[tuple[str, tuple]] = []
+            for variant in VARIANTS:
+                book = book_name(market, variant)
+                w = wallets[(market, variant)]
+                if L["id"] not in follows[variant] or any(k[0] == r["position_id"] for k in ours) or not book_switches.enabled(book):
+                    continue
+                skip = dict(ts=now, leader=name, venue=L.get("venue"), symbol=r["symbol"], side=r["side"], position_id=r["position_id"], variant=variant)
+                if why_block:
+                    _record_skip({**skip, "reason": why_block, "mark": None})
+                    continue
+                if not mark:
+                    _record_skip({**skip, "reason": "no price feed", "mark": None})
+                    continue
+                ok, why, moved, age_h, size_x = judge(r, L.get("profile") or {}, mark, now, variant)
+                if not ok or len(w.get_portfolio()["open_trades"]) >= MAX_OPEN:
+                    _record_skip({**skip, "reason": why if not ok else "book full", "mark": mark, "leader_entry": r["entry"],
+                                  "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+                    continue
+                candidates.append((variant, (why, moved, age_h, size_x)))
+            if not candidates:
                 continue
-            s = 1 if r["side"] == "long" else -1
-            equity = w.get_portfolio()["total_equity"]
-            size_x = CONSENSUS_X if n_agree >= 2 else 1.0
-            t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * DISASTER_PCT / 100),
-                             take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=equity * LEG_PCT / 100 * size_x,
-                             timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
-                             extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
-                                    "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
-                                    "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
-                                    "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "entry_note": why})
-            if t.get("error"):
-                logger.info("Copy %s %s refused: %s", r["side"], r["symbol"], t["error"])
-            else:
-                opened.append(t)
-                logger.info("Copied %s [%s]: %s %s @ %.6g (%d leader(s) agree) — %s", name, L.get("venue"), r["side"], r["symbol"], mark, n_agree, why)
+            variant, routed_why = route(market, [v for v, _ in candidates], wallets)
+            why, moved, age_h, size_x = dict(candidates)[variant]
+            for other, _ in candidates:
+                if other != variant:
+                    _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                                  "variant": other, "reason": f"routed to the {VARIANTS[variant]['label']} book ({routed_why})", "mark": mark, "routed": True})
+            book = book_name(market, variant)
+            w = wallets[(market, variant)]
+            if True:
+                s = 1 if r["side"] == "long" else -1
+                equity = w.get_portfolio()["total_equity"]
+                size_x *= CONSENSUS_X if n_agree >= 2 else 1.0
+                t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * DISASTER_PCT / 100),
+                                 take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=equity * LEG_PCT / 100 * size_x,
+                                 timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
+                                 extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
+                                        "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
+                                        "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
+                                        "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
+                                        "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "entry_note": why})
+                if t.get("error"):
+                    logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])
+                else:
+                    opened.append(t)
+                    logger.info("Copied %s [%s] into %s: %s %s @ %.6g (%d leader(s) agree) — %s", name, L.get("venue"), book, r["side"], r["symbol"], mark, n_agree, why)
         _mark_seen(L["id"], seen)
     # exits: the leader closed or halved, or we've held too long
-    for pid, t in ours.items():
+    for (pid, _variant), (w, t) in ours.items():
         r = all_rows.get(pid)
         L = next((x for x in Ls if x["id"] == t.get("leader_id")), None)
         hold = (L or {}).get("profile", {}).get("median_hold_h") or 24.0
@@ -515,25 +806,26 @@ async def mirror(now: float | None = None) -> dict:
         elif L["id"] not in rows_by_leader:
             reason = None                                       # feed down this poll — hold
         elif r is None:
-            # Fell off their list. Once could be paging or a hiccup; twice in a row is a close.
-            miss = kv.get_sync(_k("missing", pid)) or 0
+            # Fell off their list. Once could be paging or a hiccup; twice in a row is a close. Counted per copy, so
+            # several variants holding the same leader position don't advance one another's count within a poll.
+            miss = kv.get_sync(_k("missing", pid, _variant)) or 0
             if miss >= 1:
                 reason = "leader_closed"
             else:
-                kv.set_sync(_k("missing", pid), miss + 1, 3600)
+                kv.set_sync(_k("missing", pid, _variant), miss + 1, 3600)
         elif r["closed_ts"] or r["remaining"] < 0.5:
             reason = "leader_closed" if r["closed_ts"] or r["remaining"] == 0 else "leader_reduced"
         elif age_h > min(max(MAX_HOLD_X * hold, MIN_HOLD_CAP_H), MAX_HOLD_H):
             reason = "max_hold"
         if r is not None:
-            kv.delete_sync(_k("missing", pid))
+            kv.delete_sync(_k("missing", pid, _variant))
         if reason:
             px = await monitor.live_price(t["symbol"]) or t.get("current_price")
             if px and w.close_trade_manually(t["id"], px, reason):
                 closed.append({**t, "close_reason": reason})
     # what each leader holds right now, and what we did about it — for the Copy tab
-    ours_now = {t.get("leader_position_id") for t in w.get_portfolio()["open_trades"] if t.get("leader_position_id")}
-    sk_by_pid = {e["position_id"]: e for e in skipped() if e.get("position_id")}
+    ours_now = {t.get("leader_position_id") for ww in wallets.values() for t in ww.get_portfolio()["open_trades"] if t.get("leader_position_id")}
+    sk_by_pid = {e["position_id"]: e for e in skipped() if e.get("position_id") and (e.get("variant") or "base") == "base"}
     snapshot = {}
     for L in Ls:
         live_rows = []
@@ -550,7 +842,7 @@ async def mirror(now: float | None = None) -> dict:
                 state = "skipped: " + sk_by_pid[r["position_id"]]["reason"]
             else:
                 state = "seen"
-            live_rows.append({"position_id": r["position_id"], "symbol": r["symbol"], "side": r["side"], "entry": r["entry"], "leverage": r.get("leverage"),
+            live_rows.append({"position_id": r["position_id"], "symbol": r["symbol"], "market": market_of(r["symbol"]), "side": r["side"], "entry": r["entry"], "leverage": r.get("leverage"),
                               "opened_ts": r["opened_ts"] or None, "remaining": round(r["remaining"], 2), "mark": mark,
                               "moved_pct": round((mark / r["entry"] - 1) * side * 100, 3) if mark and r.get("entry") else None, "state": state})
         snapshot[L["id"]] = live_rows
@@ -595,12 +887,12 @@ async def tick(now: float | None = None) -> dict:
 
         async def _run():
             try:
-                await select_leaders(now)
+                await select_leaders_off_loop(now)
             except Exception as e:
                 logger.warning("Leader selection failed: %s", e)
             finally:
                 _state["selecting"] = False
-        asyncio.create_task(_run())                   # minutes of HTTP — never on the mirror's clock
+        asyncio.create_task(_run())                   # minutes of HTTP and parsing — in a worker thread, never on the mirror's loop
     if now - _state["last_poll"] < POLL_S:
         return {}
     _state["last_poll"] = now
@@ -609,34 +901,50 @@ async def tick(now: float | None = None) -> dict:
 
 # ── Reporting ──────────────────────────────────────────────────────────────────
 
-def status() -> dict:
-    w = _wallet()
+def _book_summary(w, market: str, variant: str = "base") -> dict:
     p = w.get_portfolio(closed_limit=40)
-    open_ = p["open_trades"]
     closed_all = w.all_trades()["closed"]
     wins = [t for t in closed_all if (t.get("pnl_usd") or 0) > 0]
+    week = [t for t in closed_all if _ts(t.get("closed_at")) > time.time() - 7 * 86400]
+    return {"market": market, "variant": variant, "book": book_name(market, variant), "label": VARIANTS[variant]["label"], "note": VARIANTS[variant]["note"],
+            "enabled": book_switches.enabled(book_name(market, variant)), "equity": p["total_equity"], "initial": p["initial_balance"],
+            "per_day_7d": round(sum(t.get("pnl_usd") or 0 for t in week) / 7, 2), "trades_7d": len(week),
+            "open": len(p["open_trades"]), "closed": len(closed_all),
+            "win_rate": round(100 * len(wins) / len(closed_all), 1) if closed_all else None,
+            "net_pnl": round(sum(t.get("pnl_usd") or 0 for t in closed_all), 2),
+            "recent": [{"symbol": t["symbol"], "direction": t["direction"], "leader": t.get("leader"), "venue": t.get("venue"), "pnl_usd": t.get("pnl_usd"),
+                        "roe_pct": t.get("roe_pct"), "close_reason": t.get("close_reason"), "opened_at": t.get("opened_at"),
+                        "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in p["closed_trades"]]}
+
+
+def status() -> dict:
+    wallets = _wallets()
+    all_w = _all_wallets()
+    books_ = {m: _book_summary(ww, m) for m, ww in wallets.items()}
+    variants = {m: {v: _book_summary(all_w[(m, v)], m, v) for v in VARIANTS} for m in MARKETS}
+    open_ = [t for ww in all_w.values() for t in ww.get_portfolio()["open_trades"]]
     sk = skipped()
-    judged = [e for e in sk if e.get("outcome_pct") is not None]
+    judged = [e for e in sk if e.get("outcome_pct") is not None and (e.get("variant") or "base") == "base"]
     snap = kv.get_sync(_k("positions")) or {}
     by_leader = snap.get("by_leader") or {}
+    follows = {v: {L["id"] for L in leaders(v)} for v in VARIANTS}
     return {"leaders": [{**{k: L.get(k) for k in ("id", "venue", "nickname", "nickname_en", "roi", "mdd", "win_rate", "copiers", "aum", "copier_pnl",
-                                                    "score", "days_running", "leverage_tier", "badge", "profile", "stats", "curve", "turnover", "retired")},
-                         "positions": by_leader.get(L["id"], [])} for L in leaders_to_poll()],
+                                                    "score", "days_running", "leverage_tier", "badge", "profile", "stats", "curve", "turnover", "retired", "markets")},
+                         "variants": variants_of(L["id"], follows), "positions": by_leader.get(L["id"], [])} for L in leaders_to_poll()],
+            "variants": variants, "variant_info": {v: {"label": d["label"], "note": d["note"]} for v, d in VARIANTS.items()},
+            "pool": len(pool()),
             "positions_at": snap.get("at"),
             "why_not": _why_not(by_leader, open_),
             "log": log_status(),
             "leaders_refreshed_at": leaders_refreshed_at(),
             "consensus": kv.get_sync(_k("consensus")) or [],
-            "book": {"equity": p["total_equity"], "initial": p["initial_balance"], "open": len(open_), "closed": len(closed_all),
-                     "win_rate": round(100 * len(wins) / len(closed_all), 1) if closed_all else None,
-                     "net_pnl": round(sum(t.get("pnl_usd") or 0 for t in closed_all), 2),
-                     "recent": [{"symbol": t["symbol"], "direction": t["direction"], "leader": t.get("leader"), "venue": t.get("venue"), "pnl_usd": t.get("pnl_usd"),
-                                 "roe_pct": t.get("roe_pct"), "close_reason": t.get("close_reason"), "opened_at": t.get("opened_at"),
-                                 "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in p["closed_trades"]]},
-            "open": [{"symbol": t["symbol"], "direction": t["direction"], "leader": t.get("leader"), "venue": t.get("venue"), "entry": t["entry_price"],
+            "book": {k: v for k, v in books_["crypto"].items() if k not in ("market", "book")},      # the crypto book (as before)
+            "books": books_,                                                                          # every market's book
+            "open": [{"symbol": t["symbol"], "direction": t["direction"], "market": t.get("market") or market_of(t["symbol"]), "variant": t.get("variant") or "base",
+                      "leader": t.get("leader"), "venue": t.get("venue"), "entry": t["entry_price"], "size_x": t.get("size_x"),
                       "leader_entry": t.get("leader_entry"), "moved_pct_at_entry": t.get("moved_pct_at_entry"), "age_h_at_entry": t.get("age_h_at_entry"),
                       "consensus": t.get("consensus"), "pnl_usd": t.get("pnl_usd"), "opened_at": t.get("opened_at")} for t in open_],
-            "skipped": sk[-25:][::-1],
+            "skipped": [{**e, "market": market_of(e["symbol"]), "variant": e.get("variant") or "base"} for e in sk[-120:][::-1]],
             "skip_rule": {"judged": len(judged), "avg_outcome_pct": round(sum(e["outcome_pct"] for e in judged) / len(judged), 3) if judged else None,
                           "would_have_won_pct": round(100 * sum(e["outcome_pct"] > 0 for e in judged) / len(judged), 1) if judged else None},
             "config": config()}
@@ -691,7 +999,7 @@ def _why_not(by_leader: dict, open_: list[dict]) -> dict:
 
 
 def config() -> dict:
-    return {"leaders_n": LEADERS_N, "venues": list(VENUES), "leg_pct": LEG_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
+    return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
             "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_x": MAX_HOLD_X, "consensus_x": CONSENSUS_X,
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,
                     "hl_equity": list(HL_EQUITY), "hl_month_roi": list(HL_MONTH_ROI), "hl_turnover": list(HL_TURNOVER)}}

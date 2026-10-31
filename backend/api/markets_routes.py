@@ -11,8 +11,14 @@ router = APIRouter(prefix="/markets", tags=["markets"])
 
 @router.get("/{market}")
 async def market(market: str):
+    if market == "crypto":
+        from autotrader import engine
+        from markets import crypto
+        from storage import state as kv
+        states = await kv.hgetall(engine._state_key())
+        return await asyncio.to_thread(crypto.summary, {s.get("symbol", k): s for k, s in states.items() if isinstance(s, dict)})
     if market not in markets.MARKETS:
-        raise HTTPException(404, f"unknown market {market} (stocks or futures)")
+        raise HTTPException(404, f"unknown market {market} (crypto, stocks or futures)")
     return await asyncio.to_thread(markets.summary, market)
 
 

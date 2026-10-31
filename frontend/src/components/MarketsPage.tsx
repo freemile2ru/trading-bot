@@ -3,24 +3,22 @@ import { Globe2, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
-import type { BooksResponse } from '../types/books'
 import type { MarketBook, MarketKey, MarketSummary } from '../types/markets'
-import { BookCard } from './BooksPage'
 import { SortHeader, useSort } from './ui/Sortable'
 
 const MARKETS: [MarketKey, string, string][] = [
-  ['crypto', 'Crypto', 'The crypto books: autotrader, signal experiments, Claude swing, carry, Hold-72'],
+  ['crypto', 'Crypto', 'The scanner’s coins — Binance crypto perpetuals — and the paper books that trade them'],
   ['stocks', 'Stocks', '20 US stocks & ETFs plus SK Hynix, Samsung and Tencent — Binance stock perpetuals'],
   ['futures', 'Futures', 'Gold, silver, platinum, palladium, copper, WTI, Brent, natural gas — Binance commodity perpetuals'],
 ]
-const CRYPTO_BOOKS = new Set(['main', 'auto', 'auto_rules', 'signals_claude', 'signals_rules', 'claude_swing', 'carry', 'hold72', 'fade24', 'weekly_rs', 'events', 'cascade', 'carry_q'])
 const KIND_NOTE: Record<MarketBook['kind'], string> = {
   trend: 'Daily after the US close: long while the 6-month trend is up, flat otherwise; equal volatility, 15% disaster stop.',
   rules: 'Our scanner + autotrader entry rules on the perps’ own candles, no Claude; the live "protect" exit.',
   claude: 'Switched off 2026-10-19: in 10 days and ~220 Claude calls it never traded — Claude’s confidence here topped out at 52–57% against a 65% bar.',
+  book: '',
 }
 const KEY = 'oracle.market'
-const memo: Partial<Record<'stocks' | 'futures', MarketSummary>> & { crypto?: BooksResponse } = {}
+const memo: Partial<Record<MarketKey, MarketSummary>> = {}
 
 const ago = (ts: number | null | undefined) => {
   if (!ts) return 'not yet'
@@ -45,7 +43,7 @@ function MarketBookCard({ b }: { b: MarketBook }) {
       <div className="flex items-start gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-white">{b.label}</h3>
-          <p className="text-[11px] text-gray-500">{KIND_NOTE[b.kind]}</p>
+          <p className="text-[11px] text-gray-500">{b.note || KIND_NOTE[b.kind]}</p>
         </div>
         <span className={clsx('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded', b.enabled ? 'bg-emerald-900/50 text-emerald-300' : 'bg-gray-800 text-gray-400')}
           title="Switch it on the Books tab">{b.enabled ? 'ON' : 'OFF'}</span>
@@ -154,8 +152,7 @@ function ScanTable({ s }: { s: MarketSummary }) {
 
 export function MarketsPage() {
   const [market, setMarketState] = useState<MarketKey>(readMarket)
-  const [data, setData] = useState<MarketSummary | null>(market !== 'crypto' ? memo[market] ?? null : null)
-  const [crypto, setCrypto] = useState<BooksResponse | null>(memo.crypto ?? null)
+  const [data, setData] = useState<MarketSummary | null>(memo[market] ?? null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const req = useRef(0)
@@ -168,19 +165,14 @@ export function MarketsPage() {
   const load = useCallback(async () => {
     const token = ++req.current
     try {
-      if (market === 'crypto') {
-        const b = await api.books.list()
-        if (token === req.current) { memo.crypto = b; setCrypto(b); setError(null) }
-      } else {
-        const d = await api.markets.get(market)
-        if (token === req.current) { memo[market] = d; setData(d); setError(null) }
-      }
+      const d = await api.markets.get(market)
+      if (token === req.current) { memo[market] = d; setData(d); setError(null) }
     } catch (e) {
       if (token === req.current) setError(e instanceof Error ? e.message : 'Could not load the market')
     }
   }, [market])
   useEffect(() => {
-    if (market !== 'crypto') setData(memo[market] ?? null)
+    setData(memo[market] ?? null)
     load()
     const id = setInterval(load, 30_000)
     return () => clearInterval(id)
@@ -207,45 +199,34 @@ export function MarketsPage() {
           </select>
         </label>
         <span className="text-[11px] text-gray-500">{info[2]}</span>
-        {market !== 'crypto' && data && (
+        {data && (
           <>
             <span className="text-xs text-gray-400 ml-auto">Last scan {ago(data.last_sweep)} · Claude {data.claude_calls_today}/{data.claude_daily} today
               {data.last_trend ? ` · trend rebalanced ${data.last_trend}` : ''}</span>
-            <button onClick={scanNow} disabled={busy}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 disabled:opacity-50">
-              <RefreshCw className={clsx('w-3.5 h-3.5', busy && 'animate-spin')} /> {busy ? 'Scanning…' : 'Scan now'}
-            </button>
+            {market !== 'crypto' && (
+              <button onClick={scanNow} disabled={busy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 disabled:opacity-50">
+                <RefreshCw className={clsx('w-3.5 h-3.5', busy && 'animate-spin')} /> {busy ? 'Scanning…' : 'Scan now'}
+              </button>
+            )}
           </>
         )}
       </section>
       {error && <p className="text-xs text-red-400">{error}</p>}
 
-      {market === 'crypto' ? (
-        !crypto ? <div className="card h-40 animate-pulse" /> : (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {crypto.books.filter(b => CRYPTO_BOOKS.has(b.name)).map(b => (
-              <BookCard key={b.name} b={b} busy={busy} onToggle={async on => {
-                setBusy(true)
-                try { await api.books.set(b.name, on); await load() }
-                catch (e) { setError(e instanceof Error ? e.message : 'Switch failed') }
-                finally { setBusy(false) }
-              }} />
-            ))}
-          </div>
-        )
-      ) : !data ? <div className="card h-40 animate-pulse" /> : (
+      {!data ? <div className="card h-40 animate-pulse" /> : (
         <>
           <p className="text-[11px] text-gray-500">
-            Paper experiments on Binance's {data.label.toLowerCase()} perpetuals. Research going in: textbook strategies and our own scanner showed
-            no edge on stocks after costs; trend following made money on these markets over 2020–26 but no more than holding them.
-            These books test it forward. Switch them on and off on the Books tab.
+            {market === 'crypto'
+              ? 'The scanner sweeps the coin universe every few minutes; the autotrader and the side books trade from those scans. Each card is one crypto book (the pair-ledger books — carry, events, unlocks, vol premium — have their own panels on the Lab tab). Switch books on and off on the Books tab.'
+              : `Paper experiments on Binance's ${data.label.toLowerCase()} perpetuals. Research going in: textbook strategies and our own scanner showed no edge on stocks after costs; trend following made money on these markets over 2020–26 but no more than holding them. These books test it forward. Switch them on and off on the Books tab.`}
           </p>
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
-            {data.books.filter(b => b.kind === 'trend' || b.enabled || b.open.length > 0).map(b => <MarketBookCard key={b.name} b={b} />)}
+            {data.books.filter(b => b.kind === 'trend' || b.kind === 'book' || b.enabled || b.open.length > 0).map(b => <MarketBookCard key={b.name} b={b} />)}
           </div>
-          <PicksCard s={data} />
+          {data.picks_per_day > 0 && <PicksCard s={data} />}
           <section className="card space-y-2">
-            <h3 className="text-sm font-semibold text-white">Latest scan</h3>
+            <h3 className="text-sm font-semibold text-white">Latest scan{market === 'crypto' ? ' — what the autotrader’s rules say about each coin' : ''}</h3>
             <ScanTable s={data} />
           </section>
         </>

@@ -143,6 +143,10 @@ export interface WatchlistChange {
 // ── Autotrader (autonomous experiment, separate wallet) ─────────────────────────
 
 export interface AutoTrade extends PaperTrade {
+  /** Which lane placed it: ta (scanner + Claude), events, unlocks, weekly — see autotrader/lanes.py. */
+  lane?: string
+  lane_mult?: number
+  lane_why?: string
   expires_at?: number
   entry_score?: number
   entry_reasons?: string[]
@@ -213,6 +217,8 @@ export interface AutoSymbolState {
   updated_at: number
 }
 
+export interface LaneCell { n: number; avg_r: number | null; net_r: number }
+
 export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_trades'> {
   open_trades: AutoTrade[]
   closed_trades: AutoTrade[]
@@ -260,6 +266,12 @@ export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_tra
   daily_min?: { enabled: boolean; hours: number; risk_x: number; closed: number; wins: number; avg_r: number | null; net_usd: number; open: number }
   /** Dry-market widening: after `hours` idle the scanner covers `universe` coins and every one is a candidate. */
   dry?: { active: boolean; idle_h: number; hours: number; universe: number | null }
+  /** Lanes: the scanner path beside mirrors of the evidence books, each sized by its record in the current regime. */
+  lanes?: {
+    regime: string; regime_label: string | null; rule: string; cell_n: number; min_n: number; measure_x: number
+    lanes: { lane: string; label: string; mult: number; why: string; open: number; enabled?: boolean
+             all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell> }[]
+  }
   updated_at: number
 }
 

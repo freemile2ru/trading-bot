@@ -25,7 +25,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from autotrader import strategy
+from autotrader import lanes, strategy
 # Imported as `kv`: several functions here keep a local dict called `state`.
 from storage import state as kv
 from oracle.claude_oracle import synthesize_trade
@@ -98,10 +98,20 @@ _dry_cache: dict = {"at": 0.0, "idle_h": 0.0}
 # delistings fell 15–22% vs BTC over a week on ~200 announcements since 2023 — and the autotrader mirrors each of
 # its positions on its own ledger (the live one when live): the coin short plus a BTC long hedge, closed when the
 # book closes. They skip Claude, the direction gate and the entry-timing rules: the edge is the event, not the chart.
-EVENTS_IN_AUTO = os.getenv("AUTOTRADER_EVENTS", "true").lower() != "false"
+# Mirrors are OFF by default since 2026-10-29: each signal is traded in exactly one book (the event, unlock and weekly
+# books hold their own positions), so a stop is never paid twice. Set AUTOTRADER_EVENTS/UNLOCKS/WEEKLY=true to mirror.
+EVENTS_IN_AUTO = os.getenv("AUTOTRADER_EVENTS", "false").lower() == "true"
 EVENT_LEG_PCT = float(os.getenv("AUTOTRADER_EVENT_LEG_PCT", "5"))      # % of equity a leg (half the paper book's)
 EVENT_STOP_PCT = 25.0
 EVENT_HEDGE_STOP_PCT = 40.0
+# Lanes (2026-10-29, autotrader/lanes.py): the scanner path ("ta") runs beside mirrors of the evidence books — event
+# shorts, unlock shorts and the weekly basket — and each lane's entries are sized by its own record in the current
+# regime. The mirrors use the same per-leg size; the weekly basket mirrors at WEEKLY_PCT of equity a name.
+UNLOCKS_IN_AUTO = os.getenv("AUTOTRADER_UNLOCKS", "false").lower() == "true"
+WEEKLY_IN_AUTO = os.getenv("AUTOTRADER_WEEKLY", "false").lower() == "true"
+WEEKLY_PCT = float(os.getenv("AUTOTRADER_WEEKLY_PCT", "10"))         # % of equity a name (the weekly book runs 25%)
+UNLOCK_STOP_PCT = 25.0
+UNLOCK_HEDGE_STOP_PCT = 40.0
 
 STATE_KEY = kv.key("auto", "state")
 PAUSED_KEY = kv.key("auto", "paused")
@@ -287,8 +297,8 @@ async def _thesis_exits(scans: dict[str, dict], watched: set[str]) -> None:
 
     for wallet, trade in [(w, t) for w in _wallets() for t in w.get_portfolio()["open_trades"]]:
         symbol = trade["symbol"]
-        if trade.get("event_id"):
-            continue                                    # managed by the event book, not by the scan
+        if lanes.lane_of(trade) != "ta":
+            continue                                    # a mirrored book position: that book manages it, not the scan
 
         if TIGHTEN_ON_LEAVE and watchlist_known and symbol not in watched and not trade.get("watchlist_tightened"):
             price = await _live_price(symbol, scans) or trade["current_price"]
@@ -429,7 +439,8 @@ async def _enter(
         levels = {**atr_levels, "sl_pct": abs(entry - atr_levels["stop_loss"]) / entry * 100}
     else:
         levels = strategy.build_levels(direction, entry, scan, fast)
-    size = strategy.position_size_pct(levels["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name)
+    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"])
+    size = strategy.position_size_pct(levels["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * lane_mult
     if size < 1.0:
         logger.info("Auto-entry %s skipped — wallet fully allocated", scan["symbol"])
         return None
@@ -453,6 +464,7 @@ async def _enter(
     }
     extra = {
         "strategy": "auto",
+        "lane": "ta", "lane_mult": lane_mult, "lane_why": lane_why,
         "exit_policy": exits.DEFAULT_POLICY,
         "entry_score": timing["score"],
         "entry_reasons": all_reasons,
@@ -894,7 +906,8 @@ async def _daily_minimum(by_symbol: dict[str, dict], held: set[str], orders: dic
         note(f"{scan['symbol']}: no {'price' if not price else 'fast-timeframe data'}")
         return None
     lv = strategy.build_levels(direction, price, scan, fast)
-    size = strategy.position_size_pct(lv["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * DAILY_MIN_RISK_X
+    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"])
+    size = strategy.position_size_pct(lv["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * DAILY_MIN_RISK_X * lane_mult
     if size <= 0:
         note(f"{scan['symbol']}: no room in the wallet (size {size:.2f}%)")
         return None
@@ -905,6 +918,7 @@ async def _daily_minimum(by_symbol: dict[str, dict], held: set[str], orders: dic
         oracle_reasoning=f"daily minimum: nothing entered for {DAILY_MIN_HOURS:g}h — strongest setup, {DAILY_MIN_RISK_X:g}× risk",
         hold_duration=scan.get("hold_duration") or "N/A",
         extra={"strategy": "auto", "exit_policy": exits.DEFAULT_POLICY, "entry_type": "market", "forced_daily": True,
+               "lane": "ta", "lane_mult": lane_mult, "lane_why": lane_why,
                "conviction_at_entry": scan.get("conviction"), "claude_verdict": "skipped",
                "setups_at_entry": (scan.get("conviction_detail") or {}).get("aligned_setups", []),
                "market_price_at_decision": price, "regime_at_entry": await regime.current(),
@@ -939,24 +953,176 @@ def _mirror_key() -> str:
     return kv.key("auto", "event_mirror")
 
 
-async def _open_event_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, p: dict, leg: str) -> dict | None:
+def _unlock_key() -> str:
+    return kv.key("auto", "unlock_mirror")
+
+
+def _weekly_key() -> str:
+    return kv.key("auto", "weekly_mirror")
+
+
+async def _lane_mult(lane: str, symbol: str | None) -> tuple[float, str]:
+    """The lane allocator's size multiplier for a new entry (autotrader/lanes.py), from the ledger and the regime now."""
+    try:
+        closed = await asyncio.to_thread(lambda: [t for w in _wallets() for t in w.all_trades()["closed"]])
+        card = await asyncio.to_thread(lanes.scorecard, closed)
+        return lanes.multiplier(lane, lanes.regime_key(await regime.current()), symbol, card)
+    except Exception as e:
+        logger.warning("Lane allocator unavailable (%s) — equal size", e)
+        return 1.0, "equal size — allocator unavailable"
+
+
+def _mirror_leverage(stop_pct: float, symbol: str) -> int:
+    """The most leverage whose liquidation still sits beyond a wide disaster stop (3× for a 30% stop, 2× for 40%).
+    The wallet's own rule wants liquidation twice the stop distance away, which a 25–40% stop can't meet at all,
+    so left to itself every mirrored leg ran at 1× and locked its whole notional as margin."""
+    from trading import futures
+    return max(1, min(futures.MAX_LEVERAGE, int(0.95 / (stop_pct / 100 + futures.mmr(symbol)))))
+
+
+async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, notional_pct: float,
+                           reasoning: str, hold: str, expires_at: float | None, extra: dict) -> dict | None:
+    """One leg of a mirrored position: market entry, a disaster stop, no targets, the book decides the exit."""
     price = await monitor.live_price(symbol)
     if not price:
         return None
     s = 1 if direction == "long" else -1
     equity = w.get_portfolio()["total_equity"] or 1
+    lane = extra.get("lane", "events")
+    lane_mult, lane_why = await _lane_mult(lane, symbol if not (extra.get("event_leg") == "hedge" or extra.get("unlock_leg") == "hedge") else None)
     t = await asyncio.to_thread(
         w.open_trade, symbol=symbol, direction=direction, entry_price=price,
         stop_loss=price * (1 - s * stop_pct / 100), take_profit_1=price * (1 + s * 0.9), take_profit_2=price * (1 + s * 0.95),
-        notional_usd=equity * EVENT_LEG_PCT / 100, timeframe="1d", oracle_confidence=0,
-        oracle_reasoning=f"event short ({p['kind']}): {p.get('title') or ''}"[:200], hold_duration=f"{p['kind']} · to {datetime.fromtimestamp(p['deadline_ts'], timezone.utc):%m-%d %H:%M} UTC",
+        notional_usd=equity * notional_pct / 100 * lane_mult, timeframe="1d", oracle_confidence=0,
+        leverage=_mirror_leverage(stop_pct, symbol),
+        oracle_reasoning=reasoning[:200], hold_duration=hold,
         extra={"strategy": "auto", "exit_policy": "manual", "shadows": False, "entry_type": "market", "claude_verdict": "skipped",
-               "event_id": p["id"], "event_kind": p["kind"], "event_leg": leg, "market_price_at_decision": price})
+               "market_price_at_decision": price, "lane_mult": lane_mult, "lane_why": lane_why,
+               "regime_at_entry": await regime.current(), **extra})
     if t.get("error"):
-        logger.info("Event %s leg %s %s refused: %s", leg, direction, symbol, t["error"])
+        logger.info("%s leg %s %s refused: %s", lane, direction, symbol, t["error"])
         return None
-    await asyncio.to_thread(w.annotate, t["id"], expires_at=p["deadline_ts"] + 3600)      # the book closes it first
+    if expires_at:
+        await asyncio.to_thread(w.annotate, t["id"], expires_at=expires_at)        # the book closes it first
     return t
+
+
+async def _open_event_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, p: dict, leg: str) -> dict | None:
+    return await _open_mirror_leg(
+        w, symbol, direction, stop_pct, EVENT_LEG_PCT,
+        f"event short ({p['kind']}): {p.get('title') or ''}",
+        f"{p['kind']} · to {datetime.fromtimestamp(p['deadline_ts'], timezone.utc):%m-%d %H:%M} UTC", p["deadline_ts"] + 3600,
+        {"lane": "events", "event_id": p["id"], "event_kind": p["kind"], "event_leg": leg})
+
+
+async def _mirror_unlocks() -> None:
+    """Mirror the unlock book's pairs on the autotrader's active ledger, as the event mirror does."""
+    if not UNLOCKS_IN_AUTO or await is_paused():
+        return
+    from experiments import books as experiment_books_, unlocks
+    if not experiment_books_.ENABLED:
+        return
+    mirrored = await kv.hgetall(_unlock_key())
+    w = _active()
+    open_rows = {p["id"]: p for p in unlocks.open_positions()}
+    held = {t["symbol"]: t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
+    for uid, p in open_rows.items():
+        if uid in mirrored or p["symbol"] in held:
+            continue
+        when = datetime.fromtimestamp(p["unlock_ts"], timezone.utc).strftime("%m-%d %H:%M")
+        coin = await _open_mirror_leg(w, p["symbol"], "short", UNLOCK_STOP_PCT, EVENT_LEG_PCT,
+                                      f"unlock short: {p.get('pct') or 0:.1f}% of supply unlocks {when} UTC", f"to the unlock on {when} UTC",
+                                      p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "coin"})
+        if not coin:
+            continue
+        hedge = None if unlocks.HEDGE in held else await _open_mirror_leg(
+            w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, EVENT_LEG_PCT, f"BTC hedge for the {p['symbol']} unlock short",
+            f"to the unlock on {when} UTC", p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "hedge"})
+        await kv.hset(_unlock_key(), uid, {"coin": coin["id"], "hedge": hedge["id"] if hedge else None, "symbol": p["symbol"], "opened": time.time()})
+        logger.info("Autotrader mirrored unlock short: %s%s", p["symbol"], "" if hedge else " (no BTC hedge: BTC already held)")
+        _publish("auto_trade", {"event": "opened", "trade": coin})
+    if not mirrored:
+        return
+    closed_rows = {p["id"]: p for p in unlocks.closed_positions() if p["id"] in mirrored}
+    open_ids = {t["id"]: (ww, t) for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
+    for uid, m in list(mirrored.items()):
+        paper_closed = uid in closed_rows
+        coin_open, hedge_open = m.get("coin") in open_ids, m.get("hedge") in open_ids
+        if paper_closed or (not coin_open and hedge_open):
+            reason = f"unlock_{closed_rows[uid]['close_reason']}" if paper_closed else "unlock_hedge_unwound"
+            for tid in (m.get("coin"), m.get("hedge")):
+                if tid in open_ids:
+                    ww, t = open_ids[tid]
+                    price = await monitor.live_price(t["symbol"]) or t["current_price"]
+                    closed = await asyncio.to_thread(ww.close_trade_manually, tid, price, reason)
+                    if closed:
+                        await _on_closed(closed)
+            if paper_closed or not coin_open:
+                await kv.hdel(_unlock_key(), uid)
+        elif not coin_open and not hedge_open and uid not in open_rows:
+            await kv.hdel(_unlock_key(), uid)
+        elif coin_open and m.get("hedge") and not hedge_open and uid in open_rows \
+                and unlocks.HEDGE not in {t["symbol"] for _, t in open_ids.values()}:
+            # The hedge leg was closed on its own (a stop, a hand close): put it back so the pair stays a pair.
+            p = open_rows[uid]
+            when = datetime.fromtimestamp(p["unlock_ts"], timezone.utc).strftime("%m-%d %H:%M")
+            hedge = await _open_mirror_leg(w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, EVENT_LEG_PCT,
+                                           f"BTC hedge for the {p['symbol']} unlock short (re-hedged)", f"to the unlock on {when} UTC",
+                                           p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "hedge"})
+            if hedge:
+                await kv.hset(_unlock_key(), uid, {**m, "hedge": hedge["id"]})
+
+
+async def _mirror_weekly() -> None:
+    """Mirror the weekly basket's positions (long the near-highs, short the near-lows) at WEEKLY_PCT a name."""
+    if not WEEKLY_IN_AUTO or await is_paused():
+        return
+    from experiments import books as experiment_books_, weekly_rs
+    if not experiment_books_.ENABLED or "weekly_rs" not in experiment_books_.WALLETS:
+        return
+    src_open = {t["id"]: t for t in experiment_books_.WALLETS["weekly_rs"].get_portfolio()["open_trades"]}
+    mirrored = await kv.hgetall(_weekly_key())
+    w = _active()
+    held = {t["symbol"] for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
+    for wid, t in src_open.items():
+        if wid in mirrored or t["symbol"] in held:
+            continue
+        ours = await _open_mirror_leg(
+            w, t["symbol"], t["direction"], weekly_rs.DISASTER_PCT, WEEKLY_PCT,
+            f"weekly basket: {t['direction']} {t['symbol']} (score from 7d high {t.get('score_from_7d_high')})",
+            "to Monday's rebalance", None, {"lane": "weekly", "weekly_id": wid})
+        if not ours:
+            continue
+        await kv.hset(_weekly_key(), wid, {"trade": ours["id"], "symbol": t["symbol"], "opened": time.time()})
+        logger.info("Autotrader mirrored weekly basket: %s %s", t["direction"], t["symbol"])
+        _publish("auto_trade", {"event": "opened", "trade": ours})
+    if not mirrored:
+        return
+    open_ids = {t["id"]: (ww, t) for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
+    for wid, m in list(mirrored.items()):
+        if wid in src_open:
+            if m.get("trade") not in open_ids:
+                await kv.hdel(_weekly_key(), wid)          # ours is gone while the book still holds it: mirror again next pass
+            continue
+        if m.get("trade") in open_ids:
+            ww, t = open_ids[m["trade"]]
+            price = await monitor.live_price(t["symbol"]) or t["current_price"]
+            closed = await asyncio.to_thread(ww.close_trade_manually, m["trade"], price, "weekly_rebalance")
+            if closed:
+                await _on_closed(closed)
+        await kv.hdel(_weekly_key(), wid)
+
+
+async def _lanes_report() -> dict:
+    def _ledger() -> tuple[list[dict], list[dict]]:
+        ws = _wallets()
+        return ([t for w in ws for t in w.all_trades()["closed"]], [t for w in ws for t in w.get_portfolio()["open_trades"]])
+    closed, open_trades = await asyncio.to_thread(_ledger)               # whole-ledger reads: off the event loop
+    rep = await asyncio.to_thread(lanes.status, closed, open_trades, await regime.current())
+    on = {"ta": True, "events": EVENTS_IN_AUTO, "unlocks": UNLOCKS_IN_AUTO, "weekly": WEEKLY_IN_AUTO}
+    for l in rep["lanes"]:
+        l["enabled"] = on.get(l["lane"], True)
+    return rep
 
 
 async def _mirror_events() -> None:
@@ -1001,6 +1167,12 @@ async def _mirror_events() -> None:
                 await kv.hdel(_mirror_key(), eid)
         elif not coin_open and not hedge_open and eid not in open_rows:
             await kv.hdel(_mirror_key(), eid)
+        elif coin_open and m.get("hedge") and not hedge_open and eid in open_rows \
+                and events.HEDGE not in {t["symbol"] for _, t in open_ids.values()}:
+            # The hedge leg was closed on its own (a stop, a hand close): put it back so the pair stays a pair.
+            hedge = await _open_event_leg(w, events.HEDGE, "long", EVENT_HEDGE_STOP_PCT, open_rows[eid], "hedge")
+            if hedge:
+                await kv.hset(_mirror_key(), eid, {**m, "hedge": hedge["id"]})
 
 
 def _events_report() -> dict:
@@ -1020,10 +1192,12 @@ async def _on_scans(scans: list[dict], watched: set[str], global_market: dict | 
         await _monitor(by_symbol)
         await _thesis_exits(by_symbol, watched)
         if _v().primary:
-            try:
-                await _mirror_events()                 # event shorts come first: the edge is the event, not the chart
-            except Exception as e:
-                logger.warning("Event mirror failed: %s", e)
+            # The evidence lanes come first: the edge is the event, the unlock or the basket, not the chart.
+            for name, mirror in (("Event", _mirror_events), ("Unlock", _mirror_unlocks), ("Weekly", _mirror_weekly)):
+                try:
+                    await mirror()
+                except Exception as e:
+                    logger.warning("%s mirror failed: %s", name, e)
 
         held = {t["symbol"] for w in _wallets() for t in w.get_portfolio()["open_trades"]}
         orders = {o["symbol"]: o for w in _wallets() for o in w.get_orders()["pending"]}
@@ -1159,6 +1333,7 @@ async def summary() -> dict:
         "daily_min": await asyncio.to_thread(_daily_min_report),
         "dry": await asyncio.to_thread(dry_mode),
         "events": await asyncio.to_thread(_events_report),
+        "lanes": await _lanes_report(),
         "open_shadows": shadow["open_shadows"],
         "states": states,
         "enabled": ENABLED,
@@ -1191,14 +1366,14 @@ async def summary() -> dict:
     }
 
 
-async def close(trade_id: str) -> dict | None:
-    """Manual override from the UI."""
+async def close(trade_id: str, reason: str = "manual") -> dict | None:
+    """Manual override from the UI (or a named administrative close)."""
     found = live_swing.find_trade("auto", trade_id)
     if not found:
         return None
     wallet, trade = found
     price = await monitor.live_price(trade["symbol"]) or trade["current_price"]
-    closed = await asyncio.to_thread(wallet.close_trade_manually, trade_id, price, "manual")
+    closed = await asyncio.to_thread(wallet.close_trade_manually, trade_id, price, reason)
     if closed:
         await _on_closed(closed)
         bus.publish("auto", await summary())

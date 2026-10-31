@@ -30,7 +30,7 @@ TTL = {
     "news": 1800,
     "macro_news": 7200,
     "global_market": 900,
-    "coingecko": 1800,       # per-coin fundamentals change slowly; the free tier is ~30 calls a minute
+    "coingecko": 21600,      # rank / 7d change / votes, shown to Claude only (FA retired as a signal): 6h is plenty and ends the 429s
     "social": 3600,
     "positioning": 900,      # Binance futures stats update hourly; funding every 8h
     "defillama": 3600,       # protocol / chain / fee listings — one call each for every project

@@ -53,9 +53,33 @@ def flatten(x: dict) -> dict:
     return out
 
 
+# Builder-deployed markets (HIP-3): "xyz" lists stock, commodity, index and FX perps as xyz:TSLA, xyz:GOLD… Their
+# positions live in a separate clearinghouse state (dex="xyz"); fills carry the prefixed coin name.
+DEXES = ("", "xyz")
+XYZ_TO_BINANCE = {"GOLD": "XAUUSDT", "SILVER": "XAGUSDT", "CL": "CLUSDT", "BRENTOIL": "BZUSDT", "COPPER": "COPPERUSDT", "NATGAS": "NATGASUSDT",
+                  "PLATINUM": "XPTUSDT", "PALLADIUM": "XPDUSDT", "SMSN": "SAMSUNGUSDT", "SKHX": "SKHYNIXUSDT", "SP500": "SPYUSDT", "XYZ100": "QQQUSDT"}
+
+
 async def positions(address: str) -> list[dict]:
-    """Open perp positions: {coin, side, size, entry, leverage, liquidation, value, upnl, roe}."""
-    st = await _post({"type": "clearinghouseState", "user": address})
+    """Open perp positions on the main market and the builder markets: {coin, side, size, entry, leverage, liquidation,
+    value, upnl, roe}; builder coins keep their prefix (xyz:TSLA)."""
+    out = []
+    for dex in DEXES:
+        body = {"type": "clearinghouseState", "user": address}
+        if dex:
+            body["dex"] = dex
+        try:
+            st = await _post(body)
+        except Exception as e:
+            if not dex:
+                raise
+            logger.debug("Hyperliquid %s positions for %s unavailable: %s", dex, address, e)
+            continue
+        out += _positions_of(st)
+    return out
+
+
+def _positions_of(st: dict) -> list[dict]:
     out = []
     for ap in st.get("assetPositions") or []:
         p = ap.get("position") or {}
@@ -137,9 +161,15 @@ def pnl_curve(fill_rows: list[dict], equity: float, days: int = 60) -> list[tupl
 
 
 def binance_symbol(coin: str, perps: set[str]) -> str | None:
-    """Hyperliquid coin → Binance USDT perp: BTC → BTCUSDT, kPEPE → 1000PEPEUSDT, else None."""
+    """Hyperliquid coin → Binance USDT perp: BTC → BTCUSDT, kPEPE → 1000PEPEUSDT, xyz:TSLA → TSLAUSDT, xyz:GOLD → XAUUSDT, else None."""
     if not coin or coin.startswith("@"):
         return None
+    if ":" in coin:
+        dex, name = coin.split(":", 1)
+        if dex != "xyz":
+            return None
+        cand = XYZ_TO_BINANCE.get(name, f"{name}USDT")
+        return cand if cand in perps else None
     cands = [f"{coin}USDT"]
     if coin.startswith("k"):
         cands.append(f"1000{coin[1:]}USDT")

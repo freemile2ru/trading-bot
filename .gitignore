@@ -35,3 +35,4 @@ backend/data/recorder.db*
 backend/data/copy_trading.db*
 backend/data/positioning.db*
 backend/data/unlocks.db*
+backend/data/funding_venues.db*

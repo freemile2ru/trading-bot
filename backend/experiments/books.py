@@ -27,11 +27,20 @@ LABELS = {
     "signals_rules": "Signals · rules only",
     "claude_swing": "Claude swing",
     "weekly_rs": "Weekly near-high (long/short)",
-    "cascade": "Cascade fade (4h)",
+    "cascade": "Cascade fade (+1h, 4h)",
     "copy_trading": "Copy trading (Binance & Hyperliquid leaders)",
+    "copy_stocks": "Copy trading · stock perps",
+    "copy_futures": "Copy trading · commodity perps",
+    "multi_factor": "Multi-factor basket (momentum + trend + funding)",
+    "auction": "Auction levels (mentor's NQ system, stock & index perps)",
+    # Copy-trading variants (2026-10-30): the same leaders' board read three other ways, one wallet per market each.
+    **{f"copy_{m}_{v}": f"Copy · {ml} · {vl}" for m, ml in (("crypto", "crypto"), ("stocks", "stock perps"), ("futures", "commodity perps"))
+       for v, vl in (("wide", "more leaders"), ("fast", "faster traders"), ("late", "late entries, half size"))},
 }
 # Each experiment and what it's compared with (None: judged on its own against the criterion).
-PAIRS = {"auto_rules": "auto", "signals_rules": "signals_claude", "signals_claude": None, "claude_swing": None, "weekly_rs": None, "cascade": None, "copy_trading": None}
+PAIRS = {"auto_rules": "auto", "signals_rules": "signals_claude", "signals_claude": None, "claude_swing": None, "weekly_rs": None, "cascade": None,
+         "copy_trading": None, "copy_stocks": None, "copy_futures": None, "multi_factor": None, "auction": None,
+         **{f"copy_{m}_{v}": None for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")}}
 
 WALLETS: dict[str, PaperWallet] = {
     name: PaperWallet(SWING_DB, label=name, history_cap=3000, min_snapshot_seconds=120) for name in LABELS
@@ -53,7 +62,8 @@ async def monitor_all() -> None:
     from trading import monitor
     if not ENABLED:
         return
-    for name in ("signals_claude", "signals_rules", "claude_swing", "weekly_rs", "cascade", "copy_trading"):
+    for name in ("signals_claude", "signals_rules", "claude_swing", "weekly_rs", "cascade", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction",
+                 *[f"copy_{m}_{v}" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")]):
         try:
             await monitor.run(WALLETS[name])
         except Exception as e:
@@ -63,6 +73,16 @@ async def monitor_all() -> None:
         await weekly_rs.rebalance()                 # a cheap check; acts once each Monday
     except Exception as e:
         logging.getLogger("experiments").warning("Weekly RS rebalance failed: %s", e)
+    try:
+        from experiments import auction
+        await auction.tick()                        # every minute; acts on each closed 5-minute bar in the New York session
+    except Exception as e:
+        logging.getLogger("experiments").warning("Auction levels failed: %s", e)
+    try:
+        from experiments import multi_factor
+        await multi_factor.rebalance()              # a cheap check; acts once a day after 00:10 UTC
+    except Exception as e:
+        logging.getLogger("experiments").warning("Multi-factor rebalance failed: %s", e)
     try:
         from experiments import hold72
         await hold72.monitor_pairs()

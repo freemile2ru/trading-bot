@@ -29,8 +29,9 @@ def test_pair_book_deposit_and_ledger(monkeypatch):
     _clean()
 
 
-def test_pause_shrinks_sizing_only():
+def test_pause_shrinks_sizing_only(monkeypatch):
     _clean()
+    monkeypatch.setattr(capital, "PLAN", {"carry": 30_000.0})       # the book holds what its plan says
     kv.set_sync(capital._k("added", "carry"), 20_000.0)
     assert capital.sizing_equity("carry", 29_500) == 29_500
     capital.pause("test")
