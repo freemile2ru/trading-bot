@@ -22,7 +22,7 @@ mv app.env.new app.env
 {
   echo "BACKEND_IMAGE=$BACKEND_IMAGE"
   echo "WEB_IMAGE=$WEB_IMAGE"
-  param /ai-trader/web-env
+  param /ai-trader/web-env | sed 's/\$/$$/g'       # compose reads $NAME as a variable: a bcrypt hash's $2a$14$… must be $$-escaped
 } > .env.new
 [ -f .env ] && cp .env .env.previous
 mv .env.new .env
