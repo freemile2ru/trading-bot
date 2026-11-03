@@ -16,10 +16,7 @@ SWING_DB = os.getenv("SWING_DB", os.path.join(DATA_DIR, "swing_trading.db"))
 SIGNALS_DB = os.getenv("SIGNALS_DB", os.path.join(DATA_DIR, "signals.db"))
 
 
-def connect(path: str) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    con = sqlite3.connect(path, timeout=10, check_same_thread=False)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=NORMAL")
-    con.execute("PRAGMA busy_timeout=10000")
-    return con
+def connect(path: str):
+    """The database at `path`: a SQLite file, or its schema on Postgres when DATABASE_URL is set (storage/engine.py)."""
+    from storage import engine
+    return engine.connect(path)

@@ -78,7 +78,8 @@ def log_pair_equity(now: float | None = None) -> dict[str, float]:
             out[name] = round(mod.equity(), 2)
         except Exception as e:                       # a ledger that isn't initialised yet
             logger.debug("%s equity unavailable: %s", name, e)
-    con = sqlite3.connect(SWING_DB, timeout=10)
+    from storage.db import connect
+    con = connect(SWING_DB)
     with con:
         con.executemany("INSERT OR IGNORE INTO equity VALUES (?,?,?)", [(n, ts, eq) for n, eq in out.items()])
     con.close()

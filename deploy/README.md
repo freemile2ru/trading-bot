@@ -54,6 +54,26 @@ GitHub (main) ──deploy.yml──▶ GHCR images ──┐
    ```
    Stop the Mac's `./start.sh` for good at this point — two copies would trade the same account.
 
+## The database
+
+Production runs on **RDS PostgreSQL 16** (`db.t4g.micro`, private to the VPC, 7-day automated backups, deletion
+protection). `storage/engine.py` is the switch: with `DATABASE_URL` set (deploy.sh adds it to `app.env` from SSM)
+every database the app opens through `storage.db.connect()` lives in Postgres, one schema per former SQLite file;
+without it the app runs on SQLite files exactly as in development. The test suite runs on both (`TEST_DATABASE_URL`).
+
+The migration is staged. Already on Postgres when `DATABASE_URL` is set: the kv state, every paper and live wallet,
+signals and scan labels, the pair books (carry, carry-q, events, unlocks, vol premium), the news store. Still on
+SQLite files (next stages, book by book): the copy-trading observation log, cascade, positioning, funding venues,
+the unlock snapshots, the research labs' read-only replays.
+
+**Moving the data** (one-off, after the first deploy, with the Mac's backend stopped — see step 8 for the files):
+```
+# on the box, with the data files in /srv/ai-trader/data:
+docker compose run --rm backend python scripts/sqlite_to_postgres.py --all
+```
+The script creates each schema from the SQLite DDL and copies rows in batches; it can be re-run to top up. The SQLite
+files stay on the volume for the books that haven't moved and as the fallback (`unset DATABASE_URL`).
+
 ## Day to day
 
 - **Deploy**: merge to `main`. Rollback: re-run the Deploy workflow from the previous commit (`workflow_dispatch`),

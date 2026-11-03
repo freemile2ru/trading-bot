@@ -13,6 +13,15 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        engine: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     defaults: { run: { working-directory: backend } }
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +32,8 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest tests -q -p no:cacheprovider
+        env:
+          TEST_DATABASE_URL: ${{ matrix.engine == 'postgres' && 'postgresql://postgres:test@localhost:5432/postgres' || '' }}
 
   frontend:
     runs-on: ubuntu-latest

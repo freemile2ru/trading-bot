@@ -315,10 +315,14 @@ def _equity_series(system: str) -> list[tuple[float, float]]:
             con = _scalper_con()
             cond = "mode = 'live'" if system == "scalper_live" else "COALESCE(mode, 'paper') = 'paper'"
             return [(ts, eq) for ts, eq in con.execute(f"SELECT ts, equity FROM equity WHERE {cond} ORDER BY ts")]
-        con = sqlite3.connect(SWING_DB, timeout=10)
-        return [(_ts(ts), eq) for ts, eq in con.execute(
-            "SELECT ts, equity FROM equity WHERE label=? ORDER BY ts", (system,))]
-    except sqlite3.Error:
+        from storage.db import connect
+        con = connect(SWING_DB)
+        try:
+            return [(_ts(ts), eq) for ts, eq in con.execute(
+                "SELECT ts, equity FROM equity WHERE label=? ORDER BY ts", (system,)).fetchall()]
+        finally:
+            con.close()
+    except Exception:
         return []
 
 

@@ -13,6 +13,9 @@ for db in "$ROOT"/data/*.db; do
   [ -e "$db" ] || continue
   sqlite3 "$db" ".backup '$TMP/$(basename "$db")'"
 done
+if DBURL=$(aws ssm get-parameter --region "${AWS_REGION:-ap-northeast-1}" --with-decryption --name /ai-trader/database-url --query Parameter.Value --output text 2>/dev/null) && [ -n "$DBURL" ]; then
+  docker run --rm -e PGURL="$DBURL" postgres:16-alpine sh -c 'pg_dump --no-owner --no-privileges "$PGURL"' > "$TMP/postgres.sql" || echo "pg_dump failed" >&2
+fi
 tar -C "$TMP" -cf - . | zstd -q -T0 -o "$TMP.tar.zst"
 aws s3 cp --only-show-errors "$TMP.tar.zst" "s3://$BUCKET/backups/$DAY/sqlite-$(date -u +%H%M).tar.zst"
 rm -f "$TMP.tar.zst"

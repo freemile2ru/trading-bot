@@ -22,6 +22,12 @@ variable "data_volume_gb" {
   default     = 50
 }
 
+variable "db_instance_class" {
+  description = "RDS Postgres class. db.t4g.micro (1 GB) is enough: the app holds one connection and the data is a few GB."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
 variable "domain" {
   description = "The hostname the dashboard is served on (Caddy obtains the TLS certificate for it)."
   type        = string

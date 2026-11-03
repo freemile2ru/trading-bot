@@ -15,6 +15,12 @@ os.environ["AUTOTRADER_DAILY_MIN"] = "false"  # forces an entry when idle — te
 # once kill-switched the real live autotrader wallet and booked a fake close into swing_trading.db.
 import tempfile
 _TMP = tempfile.mkdtemp(prefix="oracle-tests-")
+# TEST_DATABASE_URL runs the whole suite on Postgres (storage/engine.py): every throwaway file below becomes its own
+# schema there, so the isolation is the same. CI runs the suite both ways.
+if os.getenv("TEST_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+else:
+    os.environ.pop("DATABASE_URL", None)
 for _var, _name in (("STATE_DB", "state.db"), ("SWING_DB", "swing_trading.db"), ("SIGNALS_DB", "signals.db"),
                     ("LIVE_DB", "live.db"), ("SCALPER_TRADES_DB", "scalper_trades.db"),
                     ("SCALPER_MARKET_DB", "scalper_market.db"), ("IMPULSE_TRADES_DB", "impulse_trades.db"),

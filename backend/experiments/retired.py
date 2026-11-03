@@ -387,11 +387,14 @@ def _trade_inputs(rs: list[float], pnl: float, capital: float, note: str) -> dic
 
 def _left_watchlist_inputs() -> dict | None:
     import json
-    from storage.db import SWING_DB
+    from storage.db import SWING_DB, connect
     try:
-        con = sqlite3.connect(f"file:{SWING_DB}?mode=ro", uri=True, timeout=10)
-        trades = [json.loads(r[0]) for r in con.execute("SELECT data FROM trades WHERE label='auto' AND status='closed'")]
-    except sqlite3.Error:
+        con = connect(SWING_DB)
+        try:
+            trades = [json.loads(r[0]) for r in con.execute("SELECT data FROM trades WHERE label='auto' AND status='closed'").fetchall()]
+        finally:
+            con.close()
+    except Exception:
         return None
     hit = [t for t in trades if t.get("close_reason") == "left_watchlist"]
     rs = [t["pnl_usd"] / t["risk_usd"] for t in hit if t.get("risk_usd")]

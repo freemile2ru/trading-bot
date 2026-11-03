@@ -345,7 +345,7 @@ def test_audit_keeps_order_bodies_but_not_routine_reads(tmp_path):
     control.audit(row("GET", 200))
     control.audit(row("POST", 200))
     control.audit(row("GET", 400))
-    got = control._db().execute("SELECT method, status, length(response) FROM audit ORDER BY rowid DESC LIMIT 3").fetchall()
+    got = control._db().execute("SELECT method, status, length(response) FROM audit ORDER BY ts DESC LIMIT 3").fetchall()
     assert [(m, s, n > 100) for m, s, n in reversed(got)] == [("GET", 200, False), ("POST", 200, True), ("GET", 400, True)]
 
 

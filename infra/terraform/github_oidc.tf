@@ -43,8 +43,8 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [aws_s3_bucket.backups.arn, "${aws_s3_bucket.backups.arn}/release/*"]
   }
   statement {
-    sid       = "RunDeployOnTheInstance"
-    actions   = ["ssm:SendCommand"]
+    sid     = "RunDeployOnTheInstance"
+    actions = ["ssm:SendCommand"]
     resources = [
       aws_instance.app.arn,
       "arn:aws:ssm:${var.region}::document/AWS-RunShellScript",

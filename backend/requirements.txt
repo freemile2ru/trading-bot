@@ -12,6 +12,9 @@ numpy>=1.26.0
 # Cache (scanner + data layer)
 redis==5.2.1
 
+# Production database (storage/engine.py: PostgreSQL when DATABASE_URL is set; SQLite otherwise)
+psycopg[binary]==3.2.3
+
 # AI / Claude
 anthropic==0.40.0
 

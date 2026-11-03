@@ -284,7 +284,7 @@ class PaperWallet:
             "open": [_normalize(json.loads(r[0])) for r in self._rows(
                 "SELECT data FROM trades WHERE label=? AND status='open' ORDER BY opened_at", (L,), con)],
             "closed": [json.loads(r[0]) for r in self._rows(
-                "SELECT data FROM trades WHERE label=? AND status='closed' ORDER BY closed_at, rowid", (L,), con)],
+                "SELECT data FROM trades WHERE label=? AND status='closed' ORDER BY closed_at, id", (L,), con)],
             "orders": [json.loads(r[0]) for r in self._rows(
                 "SELECT data FROM orders WHERE label=? AND status='pending' ORDER BY placed_at", (L,), con)],
             "order_history": list(reversed([json.loads(r[0]) for r in self._rows(

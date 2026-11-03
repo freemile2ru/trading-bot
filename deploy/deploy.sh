@@ -16,7 +16,9 @@ param() { aws ssm get-parameter --region "$REGION" --with-decryption --name "$1"
 
 echo "== secrets from SSM"
 umask 077
-param /ai-trader/app-env > app.env.new && mv app.env.new app.env
+param /ai-trader/app-env > app.env.new
+echo "DATABASE_URL=$(param /ai-trader/database-url)" >> app.env.new      # RDS Postgres (storage/engine.py); remove the line to run on SQLite files
+mv app.env.new app.env
 {
   echo "BACKEND_IMAGE=$BACKEND_IMAGE"
   echo "WEB_IMAGE=$WEB_IMAGE"
