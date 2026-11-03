@@ -376,6 +376,10 @@ def score(inp: dict) -> dict:
             "grade": "severe" if total >= 60 else "clear failure" if total >= 35 else "mild" if total >= 15 else "harmless"}
 
 
+NO_RECORD_INPUTS = {"result_r": None, "result_note": "no trade record on this instance", "t": None,
+                    "t_note": "nothing to test", "n": 0, "n_note": "closed trades found here", "lost_pct": 0.0}
+
+
 def _trade_inputs(rs: list[float], pnl: float, capital: float, note: str) -> dict:
     n = len(rs)
     m = sum(rs) / n if n else None
@@ -502,8 +506,10 @@ def summary() -> dict:
                      if ev.get("live") else [])
         if e.get("dynamic") == "left_watchlist":
             item["score_inputs"] = _left_watchlist_inputs() or {"result_r": None, "n": 5, "lost_pct": 0.0}
-        elif e.get("dynamic") in ("scalper", "impulse") and item.get("data"):
-            item["score_inputs"] = item["data"]["score_inputs"]
+        elif e.get("dynamic") in ("scalper", "impulse"):
+            # A fresh instance (production starts with empty data) has no scalper record: the entry
+            # still needs score inputs, or the page has nothing to render for it.
+            item["score_inputs"] = item["data"]["score_inputs"] if item.get("data") else NO_RECORD_INPUTS
         item["score"] = score(item.get("score_inputs") or {})
         item["numbers"] = [{"label": a, "value": b, "note": c} for a, b, c in item.get("numbers", [])]
         out.append(item)

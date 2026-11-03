@@ -37,7 +37,7 @@ export interface RetiredExperiment {
   key: string
   rank: number
   score: FailureScore
-  score_inputs: ScoreInputs
+  score_inputs?: ScoreInputs   // absent only on an instance with no record of the experiment
   title: string
   category: string
   active: string

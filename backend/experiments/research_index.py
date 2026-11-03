@@ -324,6 +324,11 @@ RESEARCH: list[dict] = [
 ]
 
 
+# Research runs on the research machine; a production instance ships no results files and never will.
+NO_RESULTS_HERE = ("results not on this instance — the study was run on the research machine"
+                   if os.getenv("APP_ENV") == "production" else "results file not found — run the script")
+
+
 def shelf() -> list[dict]:
     out = []
     for e in RESEARCH:
@@ -331,7 +336,7 @@ def shelf() -> list[dict]:
         finding = e["finding"]
         if callable(finding):
             try:
-                finding = finding(d) if d else "results file not found — run the script"
+                finding = finding(d) if d else NO_RESULTS_HERE
             except Exception as ex:
                 finding = f"results file present but unreadable here ({ex.__class__.__name__}) — see {e['file']}"
         ran = _mtime(e["file"]) if e.get("file") else None

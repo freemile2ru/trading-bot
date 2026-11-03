@@ -85,6 +85,17 @@ def test_retired_registry_is_complete():
     assert {"order_flow_scalper", "fa_signal", "hedge_straddle"} <= {e["key"] for e in items}
     for e in items:
         assert e["hypothesis"] and e["method"] and e["why"] and e["kept"] and e["removed"]
+        assert "result_r" in e["score_inputs"] and "lost_pct" in e["score_inputs"]   # every entry, even without data
+
+
+def test_retired_scalpers_without_a_record_still_have_score_inputs(monkeypatch):
+    """A fresh instance has no scalper tables: the entries say so instead of leaving the inputs out."""
+    from experiments import retired
+    monkeypatch.setattr(retired, "_scalper_evidence", lambda kind: None)
+    items = {e["key"]: e for e in retired.summary()["retired"]}
+    for key in ("order_flow_scalper", "impulse_scalper"):
+        assert items[key]["score_inputs"] == retired.NO_RECORD_INPUTS
+        assert items[key]["score"]["partial"]
 
 
 def test_regime_label():

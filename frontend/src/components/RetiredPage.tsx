@@ -22,7 +22,8 @@ const GRADE_TONE: Record<FailureScore['grade'], string> = {
   mild: 'bg-amber-900/30 text-amber-300', harmless: 'bg-gray-800 text-gray-300',
 }
 
-function inputsText(i: ScoreInputs): string {
+function inputsText(i: ScoreInputs | undefined): string {
+  if (!i) return 'no record on this instance'
   const parts = [
     i.result_r == null ? 'result not measurable' : `${i.result_r > 0 ? '+' : ''}${i.result_r.toFixed(2)}R per trade`,
     i.t != null ? `t ${i.t.toFixed(1)}` : null,
@@ -44,7 +45,7 @@ function ScoreBar({ s }: { s: FailureScore }) {
 
 function Ranking({ items, jump }: { items: RetiredExperiment[]; jump: (key: string) => void }) {
   const t = useSort(items, {
-    rank: e => e.rank, experiment: e => e.title, score: e => e.score.score, grade: e => e.score.grade, result: e => e.score_inputs.result_r,
+    rank: e => e.rank, experiment: e => e.title, score: e => e.score.score, grade: e => e.score.grade, result: e => e.score_inputs?.result_r ?? null,
   })
   const th = (k: string, label: string, cls: string) => (
     <th className={clsx('font-semibold pb-2', cls)}><SortHeader k={k} sort={t.sort} onSort={t.toggle} align={cls.includes('right') ? 'right' : 'left'}>{label}</SortHeader></th>
@@ -85,7 +86,7 @@ function Ranking({ items, jump }: { items: RetiredExperiment[]; jump: (key: stri
                 <td className="py-2 pl-3">
                   <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap', GRADE_TONE[e.score.grade])}>{e.score.grade}</span>
                   <span className="ml-2 text-gray-400 underline decoration-dotted decoration-gray-700 underline-offset-2 cursor-help"
-                        title={[e.score_inputs.result_note, e.score_inputs.t_note].filter(Boolean).join(' · ') || undefined}>
+                        title={[e.score_inputs?.result_note, e.score_inputs?.t_note].filter(Boolean).join(' · ') || undefined}>
                     {inputsText(e.score_inputs)}
                   </span>
                   {e.score.partial && <span className="ml-1 text-gray-500">(partial: no result to score)</span>}
