@@ -1,0 +1,48 @@
+# Production composition on the Tokyo instance (one host; the app is one stateful process over SQLite files).
+# The compose project lives at /srv/ai-trader: this file, a `.env` with the variables below (written by
+# deploy/deploy.sh from SSM), `app.env` with the application's secrets, and `data/` on its own EBS volume.
+#
+#   BACKEND_IMAGE, WEB_IMAGE      the image tags being deployed
+#   DOMAIN, BASIC_AUTH_USER, BASIC_AUTH_HASH   the web tier's hostname and password (bcrypt, from `caddy hash-password`)
+services:
+  backend:
+    image: ${BACKEND_IMAGE}
+    env_file: app.env
+    environment:
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8000"
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+
+  web:
+    image: ${WEB_IMAGE}
+    environment:
+      DOMAIN: ${DOMAIN}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

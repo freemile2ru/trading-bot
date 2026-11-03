@@ -1,0 +1,121 @@
+# main: test → build and push both images (arm64 for the Tokyo instance) → hand the release to the instance through
+# SSM Run Command, which runs deploy/deploy.sh (pull, up, health check, rollback). No SSH, no long-lived AWS keys.
+#
+# Repository variables: AWS_REGION, AWS_DEPLOY_ROLE_ARN, AWS_INSTANCE_ID, RELEASE_BUCKET (all from terraform output).
+# Environment "production" with a required reviewer makes every deploy a click, if you want that gate.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
+  WEB_IMAGE: ghcr.io/${{ github.repository }}-web
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements*.txt }
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+        working-directory: backend
+      - run: python -m pytest tests -q -p no:cacheprovider
+        working-directory: backend
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci && npm run build
+        working-directory: frontend
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.WEB_IMAGE }}:${{ github.sha }}
+            ${{ env.WEB_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: release files to S3
+        run: |
+          aws s3 cp docker-compose.yml "s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/docker-compose.yml"
+          aws s3 cp deploy/deploy.sh   "s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/deploy.sh"
+          aws s3 cp deploy/backup.sh   "s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/backup.sh"
+      - name: run deploy.sh on the instance
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.AWS_INSTANCE_ID }}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${{ github.sha }}" \
+            --timeout-seconds 900 \
+            --parameters commands="[
+              'set -e',
+              'mkdir -p /srv/ai-trader && cd /srv/ai-trader',
+              'aws s3 cp --only-show-errors s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/docker-compose.yml docker-compose.yml',
+              'aws s3 cp --only-show-errors s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/deploy.sh deploy.sh',
+              'aws s3 cp --only-show-errors s3://${{ vars.RELEASE_BUCKET }}/release/${{ github.sha }}/backup.sh backup.sh',
+              'chmod +x deploy.sh backup.sh',
+              'AWS_REGION=${{ vars.AWS_REGION }} ./deploy.sh ${{ env.BACKEND_IMAGE }}:${{ github.sha }} ${{ env.WEB_IMAGE }}:${{ github.sha }}'
+            ]" \
+            --query Command.CommandId --output text)
+          echo "command $CMD_ID"
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "${{ vars.AWS_INSTANCE_ID }}" --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in
+              Success) break ;;
+              Failed|Cancelled|TimedOut|Undeliverable|Terminated) break ;;
+            esac
+            sleep 10
+          done
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "${{ vars.AWS_INSTANCE_ID }}" --query StandardOutputContent --output text
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "${{ vars.AWS_INSTANCE_ID }}" --query StandardErrorContent --output text >&2
+          [ "$STATUS" = "Success" ]

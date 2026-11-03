@@ -208,4 +208,6 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     # Local only by default: anyone who can reach this port can trade the connected Binance account.
-    uvicorn.run("main:app", host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", 8000)), reload=True)
+    # The reloader is for development; in the container (APP_ENV=production) docker-entrypoint.sh runs one plain worker.
+    uvicorn.run("main:app", host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", 8000)),
+                reload=os.getenv("APP_ENV", "development") != "production")

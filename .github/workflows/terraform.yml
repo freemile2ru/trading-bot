@@ -1,0 +1,68 @@
+# Infrastructure changes: a plan on every pull request that touches infra/ (posted as a comment), an apply on main
+# behind the "infra" environment (add a required reviewer there to make applies a manual approval).
+#
+# Repository variables: AWS_REGION, AWS_TERRAFORM_ROLE_ARN, TF_STATE_BUCKET, TF_LOCK_TABLE, APP_DOMAIN,
+# and optionally ROUTE53_ZONE_ID.
+name: Terraform
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: infra/terraform
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: terraform fmt -check -recursive
+      - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ vars.TF_LOCK_TABLE }}" -backend-config="region=${{ vars.AWS_REGION }}"
+      - run: terraform validate
+      - id: plan
+        run: terraform plan -input=false -no-color -var "domain=${{ vars.APP_DOMAIN }}" -var "route53_zone_id=${{ vars.ROUTE53_ZONE_ID }}" -out tfplan 2>&1 | tee plan.txt
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const plan = fs.readFileSync('infra/terraform/plan.txt', 'utf8').slice(-60000)
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+              body: `### Terraform plan\n\n<details><summary>show</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n\n</details>` })
+
+  apply:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="dynamodb_table=${{ vars.TF_LOCK_TABLE }}" -backend-config="region=${{ vars.AWS_REGION }}"
+      - run: terraform apply -input=false -auto-approve -var "domain=${{ vars.APP_DOMAIN }}" -var "route53_zone_id=${{ vars.ROUTE53_ZONE_ID }}"
+      - run: terraform output

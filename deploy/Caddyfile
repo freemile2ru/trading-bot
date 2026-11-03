@@ -1,0 +1,27 @@
+# The public face of the app: automatic TLS for {$DOMAIN}, one password in front of everything (the dashboard can
+# place trades and the API holds the account), the SPA from /srv, /api and /health proxied to the backend container.
+# DOMAIN, BASIC_AUTH_USER and BASIC_AUTH_HASH come from the compose environment (SSM parameter /ai-trader/web-env).
+{$DOMAIN} {
+	encode gzip
+
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+	handle /health {
+		reverse_proxy backend:8000
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
