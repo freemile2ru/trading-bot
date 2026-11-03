@@ -14,9 +14,9 @@ def run(coro):
 
 
 def test_state_ttl_and_atomic_claim():
-    run(state.set("a", {"x": 1}, ttl=0.05))
+    run(state.set("a", {"x": 1}, ttl=0.5))                              # long enough for a Postgres round trip on a slow CI runner
     assert run(state.get("a")) == {"x": 1}
-    time.sleep(0.06)
+    time.sleep(0.6)
     assert run(state.get("a")) is None                                   # expired → invisible
     assert run(state.acquire_once("lock", 60)) is True
     assert run(state.acquire_once("lock", 60)) is False                  # already held
