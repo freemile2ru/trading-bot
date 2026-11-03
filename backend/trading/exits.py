@@ -25,6 +25,11 @@ Policies:
                    expiry by timeframe (4h/8h/24h/72h). Also used for trades recorded
                    before policies existed.
   hold           — baseline: original stop or TP2 only, until max hold.
+  manual_lock    — manual (the book decides the exit, no clock) plus a DOLLAR profit lock (2026-11-02, the user's
+                   rule "secure profits over $100"): once the open P&L has reached LOCK_ARM_USD, the stop sits where
+                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. Live on the copy books; a shadow
+                   on every other manual-policy book (the weekly basket's lab and the reversal legs' paths both said
+                   trailing exits earn less than holding, so those keep their rule until their own shadows disagree).
   protect_quick, protect_cut6, protect_trim — shadow-only candidates (see each one's note).
 
 The replay covers one week of mostly-long signals in a rising market; the shadow book
@@ -65,6 +70,8 @@ class Policy:
     run_if_r: float | None = None         # at the max hold, a trade at least this far in profit gets run_extend_h more
     run_extend_h: float = 24.0            # …each time, up to run_cap_h in total; it then leaves on its stop or trail
     run_cap_h: float = 168.0
+    lock_arm_usd: float | None = None     # dollar profit lock: arm once the open P&L has been this high…
+    lock_keep: float = 0.5                # …and keep this share of the peak open P&L (the stop ratchets with the peak)
 
 
 POLICIES: dict[str, Policy] = {
@@ -83,6 +90,8 @@ POLICIES: dict[str, Policy] = {
     # Trades placed by hand on the Trade tab: the stop and (optional) target you set, and
     # nothing else — no breakeven moves, trailing, stale cut or expiry.
     "manual": Policy("manual", breakeven=None, stale=False),
+    "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
+                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "100")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5"))),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
     # run forward on every new entry. Rule, set now: after 60 entries opened from 2026-10-20, adopt one as
@@ -105,8 +114,21 @@ POLICIES: dict[str, Policy] = {
                           max_hold_h=24, run_if_r=0.5, run_extend_h=24, run_cap_h=168),
 }
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
-SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k != "manual")).split(",")
+SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock"))).split(",")
                    if p in POLICIES]
+# The profit lock on the books that hold to their own rule: "live" stamps manual_lock on every manual trade (the
+# user's "all our trades" switch), "shadow" (default) runs it beside each such trade and scores it in the shadow book.
+LOCK_MODE = os.getenv("EXIT_LOCK_MODE", "shadow")
+LOCK_BOOKS = set(os.getenv("EXIT_LOCK_BOOKS", "copy").split(","))     # labels (or prefixes) where the lock is live regardless
+
+
+def lock_policy_for(label: str | None, policy_name: str | None) -> str | None:
+    """The policy a book's "manual" trade actually opens under: manual_lock where the lock is live, else as asked."""
+    if policy_name != "manual":
+        return policy_name
+    if LOCK_MODE == "live" or (label and any(label == b or label.startswith(b) for b in LOCK_BOOKS)):
+        return "manual_lock"
+    return policy_name
 
 # (stale deadline, max hold) by the trade's timeframe. Winners are allowed to run far past
 # the stale deadline; only trades going nowhere are cut there.
@@ -142,7 +164,7 @@ def stamp(trade: dict, policy_name: str | None = None, now: float | None = None)
     # A "manual" trade is held until its owner closes it (you, Claude swing, a trend flip) — never by a
     # timeframe's clock. (Keyed on the timeframe, trend trades marked "1d" fell back to the 1h window
     # and were force-closed after 72 h — fixed 2026-10-12.)
-    stale_s, max_hold_s = WINDOWS["manual"] if p.name == "manual" else \
+    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock") else \
         WINDOWS.get(trade.get("timeframe") or "1h", WINDOWS["1h"])
     trade["exit_policy"] = p.name
     trade["opened_ts"] = now
@@ -266,6 +288,19 @@ def apply_bar(
             t["stop_loss"] = round(trail, 8)
             t["trailing"] = True
             t["stop_moved"] = True
+    # 5b. Dollar profit lock: once the best open P&L has reached lock_arm_usd, keep lock_keep of it — effective from the next bar.
+    if p.lock_arm_usd is not None and t.get("quantity", 0) > 0:
+        peak_pnl = (t["peak_price"] - t["entry_price"]) * s * t["quantity"] - t.get("fees_usd", 0.0) - t.get("funding_usd", 0.0)
+        if peak_pnl >= p.lock_arm_usd:
+            keep = t["entry_price"] + s * (p.lock_keep * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
+            # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
+            # −$385) that "locked" a level above the market and the next tick stopped it out at the current price.
+            if (keep - t["stop_loss"]) * s > 0 and (c - keep) * s > 0:
+                t.setdefault("original_stop_loss", stop)
+                t["stop_loss"] = round(keep, 8)
+                t["trailing"] = True
+                t["stop_moved"] = True
+                t["locked_usd"] = round(p.lock_keep * peak_pnl, 2)
 
     # 6. Time: cut trades going nowhere; cap how long anything is held.
     if t.get("stale_after_s") and bar_end - t.get("opened_ts", bar_end) >= t["stale_after_s"] \
@@ -309,8 +344,15 @@ def make_shadows(trade: dict, wallet_label: str, policies: list[str] | None = No
     """One virtual copy of a freshly opened trade per policy, sharing its fill and costs. A trade marked
     shadows=False gets none — the trend books hold for weeks on a daily rule, where intraday exit policies
     mean nothing (they had 100+ shadows fetching minute bars for nothing)."""
+    lock_shadow = trade.get("exit_policy") == "manual" and LOCK_MODE == "shadow" and policies is None
     if trade.get("shadows") is False and policies is None:
-        return []
+        # A manual-policy book still shadows the profit lock, so the user's rule is scored on its own trades.
+        if lock_shadow:
+            policies = ["manual_lock"]
+        else:
+            return []
+    elif lock_shadow:
+        policies = [*SHADOW_POLICIES, "manual_lock"]
     shadows = []
     for name in policies or SHADOW_POLICIES:
         sh = {k: trade.get(k) for k in _SHADOW_KEYS}

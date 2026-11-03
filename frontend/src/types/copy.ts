@@ -12,7 +12,9 @@ export interface CopyLeader {
   positions?: { symbol: string; market?: string; side: string; entry: number; leverage: number | null; opened_ts: number | null; remaining: number
                 mark: number | null; moved_pct: number | null; state: string }[]
 }
-export interface CopyBook { market: string; variant: string; book: string; label: string; note: string; enabled: boolean; equity: number; initial: number; open: number; closed: number; win_rate: number | null; net_pnl: number
+export interface CopyBook {
+  shared_wallet?: boolean
+  market: string; variant: string; book: string; label: string; note: string; enabled: boolean; equity: number; initial: number; open: number; closed: number; win_rate: number | null; net_pnl: number
   per_day_7d?: number; trades_7d?: number
   recent: { symbol: string; direction: string; leader: string | null; venue?: string | null; pnl_usd: number | null; roe_pct: number | null; close_reason: string | null
             opened_at: string | null; closed_at: string | null; moved_pct_at_entry: number | null }[] }
@@ -37,5 +39,5 @@ export interface CopyStatus {
   skipped: { ts: number; leader: string; venue?: string | null; symbol: string; market?: string; variant?: string; side: string; reason: string; mark: number | null; moved_pct?: number; age_h?: number; outcome_pct?: number; leader_roi?: number }[]
   skip_rule: { judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null }
   config: { leaders_n: number; wide_n?: number; fast_hold_h?: number; late_size_x?: number; venues?: string[]; consensus_x?: number; leg_pct: number; max_leverage: number; max_open: number; disaster_pct: number; late_age_frac: number; late_move_frac: number
-            adverse_frac: number; max_hold_x: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
+            adverse_frac: number; max_hold_h?: number; stop_x?: number; stop_pct_min?: number; max_leg_pct?: number; fee_gate_x?: number; round_trip_pct?: number; reduce_frac?: number; risk_pct?: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
 }

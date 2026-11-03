@@ -17,7 +17,8 @@ def client():
 def test_every_book_is_listed_and_starts_on(client):
     d = client.get("/api/books").json()
     names = [b["name"] for b in d["books"]]
-    assert names == ["main", "auto", "claude_swing", "carry", "futures_trend", "weekly_rs", "copy_stocks", "copy_futures", *[f"copy_{m}_{v}" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")], "auction", "multi_factor", "carry_q", "cascade", "events", "copy_trading", "unlocks", "vol_premium"]
+    assert names == ["main", "auto", "carry", "futures_trend", "weekly_rs", "copy_stocks", "auction", "multi_factor", "carry_q", "cascade", "events", "copy_trading", "unlocks", "vol_premium"]
+    assert "claude_swing" not in names and not any(n.startswith("copy_crypto_") for n in names)      # retired / folded 2026-11-02
     main = d["books"][0]
     assert main["enabled"] and main["mode"] == "paper" and main["unavailable"] is None
     retired = [r["name"] for r in d["retired"]]
@@ -26,9 +27,10 @@ def test_every_book_is_listed_and_starts_on(client):
 
 def test_books_turned_off_in_env_cannot_be_switched(client):
     # conftest sets EXPERIMENTS_ENABLED=false
-    exp = next(b for b in client.get("/api/books").json()["books"] if b["name"] == "claude_swing")
+    exp = next(b for b in client.get("/api/books").json()["books"] if b["name"] == "weekly_rs")
     assert not exp["enabled"] and "EXPERIMENTS_ENABLED" in exp["unavailable"]
-    assert client.post("/api/books/claude_swing", json={"enabled": True}).status_code == 409
+    assert client.post("/api/books/weekly_rs", json={"enabled": True}).status_code == 409
+    assert client.post("/api/books/claude_swing", json={"enabled": True}).status_code in (404, 409)     # retired
     assert client.post("/api/books/nope", json={"enabled": False}).status_code == 404
 
 
@@ -77,7 +79,7 @@ def test_ledger_filter_splits_paper_wallets_from_live_ledgers():
 def test_each_book_lists_its_own_wallets_and_the_switch_filters_the_record(client):
     books_ = {b["name"]: b for b in client.get("/api/books").json()["books"]}
     assert [w["system"] for w in books_["auto"]["wallets"]] == ["auto", "auto_live"]
-    assert [w["system"] for w in books_["claude_swing"]["wallets"]] == ["claude_swing"]
+    assert [w["system"] for w in books_["weekly_rs"]["wallets"]] == ["weekly_rs"]
     live_view = client.get("/api/books?ledger=live").json()
     assert live_view["ledger"] == "live" and client.get("/api/books?ledger=bogus").status_code == 422
     for path in ("/api/experiments?ledger=paper", "/api/history/insights?ledger=live", "/api/exits/compare?ledger=paper"):

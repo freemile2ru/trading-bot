@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
-import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users } from 'lucide-react'
+import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users, Crosshair } from 'lucide-react'
 import { AllSignals } from './components/AllSignals'
 import { OracleSignal } from './components/OracleSignal'
 import { SignalScores } from './components/SignalScores'
@@ -21,6 +21,7 @@ const LivePage = lazy(() => import('./components/LivePage').then(m => ({ default
 const TradeTerminal = lazy(() => import('./components/trade/TradeTerminal').then(m => ({ default: m.TradeTerminal })))
 const RetiredPage = lazy(() => import('./components/RetiredPage').then(m => ({ default: m.RetiredPage })))
 const LabPage = lazy(() => import('./components/LabPage').then(m => ({ default: m.LabPage })))
+const AuctionPage = lazy(() => import('./components/AuctionPage').then(m => ({ default: m.AuctionPage })))
 const CopyPage = lazy(() => import('./components/CopyPage').then(m => ({ default: m.CopyPage })))
 const MarketsPage = lazy(() => import('./components/MarketsPage').then(m => ({ default: m.MarketsPage })))
 const BooksPage = lazy(() => import('./components/BooksPage').then(m => ({ default: m.BooksPage })))
@@ -29,11 +30,11 @@ const NewsPage = lazy(() => import('./components/NewsPage').then(m => ({ default
 const Portfolio = lazy(() => import('./components/Portfolio').then(m => ({ default: m.Portfolio })))
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
-type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'lab' | 'retired' | 'live' | 'books'
+type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'lab' | 'retired' | 'live' | 'books'
 
 export default function App() {
   // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
-  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'lab', 'retired', 'live', 'books', 'portfolio']
+  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'mentor', 'lab', 'retired', 'live', 'books', 'portfolio']
   const [tab, setTabState] = useState<Tab>(() => {
     const h = window.location.hash.slice(1).split('/')[0] as Tab
     return TABS.includes(h) ? h : 'all'
@@ -278,6 +279,7 @@ export default function App() {
             ['history', History, 'History'],
             ['markets', Globe2, 'Markets'],
             ['copy', Users, 'Copy'],
+            ['mentor', Crosshair, 'Mentor'],
             ['lab', Microscope, 'Lab'],
             ['retired', Archive, 'Retired'],
             ['live', ShieldAlert, 'Live'],
@@ -373,6 +375,7 @@ export default function App() {
           {/* Everything we tried that failed, with the evidence */}
           {tab === 'markets' && <MarketsPage />}
           {tab === 'copy' && <CopyPage />}
+          {tab === 'mentor' && <AuctionPage />}
           {tab === 'books' && <BooksPage />}
           {tab === 'retired' && <RetiredPage />}
 

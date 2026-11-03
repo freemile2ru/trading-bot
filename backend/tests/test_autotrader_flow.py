@@ -14,6 +14,13 @@ from storage import state as kv
 from trading.paper_trader import PaperWallet
 
 
+@pytest.fixture(autouse=True)
+def _scanner_lane_on(monkeypatch):
+    """These tests exercise the scanner path itself; the lane is retired in production (engine.TA_LANE)."""
+    monkeypatch.setattr(engine, "TA_LANE", True)
+
+
+
 @pytest.fixture
 def auto(tmp_path, monkeypatch):
     w = PaperWallet(str(tmp_path / "swing.db"), label="auto")
@@ -311,6 +318,7 @@ def _event_row(status="open", symbol="ABCUSDT", kind="spot listing", close_reaso
 def test_autotrader_mirrors_the_event_book_and_closes_with_it(auto, monkeypatch):
     monkeypatch.setattr(engine.experiment_books, "ENABLED", True)
     monkeypatch.setattr(engine, "EVENTS_IN_AUTO", True)
+    asyncio.run(kv.set(kv.key("auto", "events_since"), {"at": 1.0}, 3600))           # the lane has been following for a while
     from experiments import events
     row = _event_row()
     asyncio.run(engine.on_scans([_scan("SOLUSDT", 0.1)], {"SOLUSDT"}, {}))
@@ -319,7 +327,9 @@ def test_autotrader_mirrors_the_event_book_and_closes_with_it(auto, monkeypatch)
     coin, hedge = held["ABCUSDT"], held["BTCUSDT"]
     assert coin["direction"] == "short" and hedge["direction"] == "long"
     assert coin["event_id"] == row["id"] and coin["exit_policy"] == "manual" and coin["expires_at"] == pytest.approx(row["deadline_ts"] + 3600)
-    assert coin["stop_loss"] == pytest.approx(100.0 * 1.25) and coin["notional_usd"] == pytest.approx(10_000 * engine.EVENT_LEG_PCT / 100, rel=0.01)
+    from experiments import events as events_book
+    expected = engine._lane_budget("events", 10_000) * events_book.LEG_PCT / 100          # the event lane's budget share × the book's leg share
+    assert coin["stop_loss"] == pytest.approx(100.0 * 1.25) and coin["notional_usd"] == pytest.approx(expected, rel=0.01)
     asyncio.run(engine.on_scans([_scan("SOLUSDT", 0.1)], {"SOLUSDT"}, {}))
     assert len(auto.get_portfolio()["open_trades"]) == 2                         # mirrored once
     events._write("UPDATE events SET status='closed', closed_ts=?, close_reason='funding_kill', net=0 WHERE id=?", (time.time(), row["id"]))

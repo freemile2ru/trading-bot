@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 
 import httpx
 
@@ -37,6 +38,9 @@ EXCLUDED = STABLECOINS | DERIVATIVES | COMMODITY_BACKED
 # anything up to 200 costs the same as 50.
 def _fetch_limit(pool_size: int) -> int:
     return min(5000, max(100, int(pool_size * 1.8)))
+
+
+LAST_POOL_KEY = "cmc:last_pool"          # the last pool that resolved — the fallback when CMC is unreachable
 
 
 def _listings_key(limit: int) -> str:
@@ -101,11 +105,23 @@ async def get_tradeable_pool(pool_size: int = 30) -> list[dict]:
     global _last_listings_key
     limit = _fetch_limit(pool_size)
     _last_listings_key = _listings_key(limit)
-    listings = await cache.cached(
-        _last_listings_key,
-        cache.TTL["cmc_listings"],
-        lambda: _fetch_listings(limit),
-    )
+    try:
+        listings = await cache.cached(
+            _last_listings_key,
+            cache.TTL["cmc_listings"],
+            lambda: _fetch_listings(limit),
+        )
+    except Exception as e:
+        # The cache's stale copy lives six hours; after an overnight stop there is none, and one CMC timeout then
+        # aborted the whole sweep (2026-11-03). The last pool that resolved is kept durably and serves until CMC is back.
+        from data.http import err_text
+        from storage import state as kv
+        last = kv.get_sync(LAST_POOL_KEY) or {}
+        if last.get("pool"):
+            logger.warning("CMC listings unavailable (%s) — using the last tradeable pool (%d coins, from %s)",
+                           err_text(e), len(last["pool"]), time.strftime("%Y-%m-%d %H:%M", time.gmtime(last.get("at") or 0)))
+            return last["pool"][:pool_size]
+        raise
     pairs = set(await cache.cached(
         cache.key("binance", "usdt_pairs"),
         86400,
@@ -137,6 +153,11 @@ async def get_tradeable_pool(pool_size: int = 30) -> list[dict]:
         raise RuntimeError("CMC universe resolved to zero tradeable symbols")
     if len(pool) < pool_size:
         logger.warning("Pool has %d tradeable coins, fewer than the %d requested", len(pool), pool_size)
+    try:
+        from storage import state as kv
+        kv.set_sync(LAST_POOL_KEY, {"at": time.time(), "pool": pool})
+    except Exception as e:                                            # bookkeeping only — never fails a sweep
+        logger.debug("Could not remember the pool: %s", e)
     return pool
 
 

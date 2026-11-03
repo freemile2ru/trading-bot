@@ -100,16 +100,41 @@ _dry_cache: dict = {"at": 0.0, "idle_h": 0.0}
 # book closes. They skip Claude, the direction gate and the entry-timing rules: the edge is the event, not the chart.
 # Mirrors are OFF by default since 2026-10-29: each signal is traded in exactly one book (the event, unlock and weekly
 # books hold their own positions), so a stop is never paid twice. Set AUTOTRADER_EVENTS/UNLOCKS/WEEKLY=true to mirror.
-EVENTS_IN_AUTO = os.getenv("AUTOTRADER_EVENTS", "false").lower() == "true"
+# The executor (2026-10-31): the autotrader is the one account that trades every signal with a record. The evidence books
+# keep running their rules on their own wallets, but those are SIGNAL ledgers (trading/overview.SIGNAL_SYSTEMS): every
+# position they open is mirrored here, sized by the book's plan share of this ledger and the lane allocator, and closed
+# when the book closes it. AUTOTRADER_EXECUTOR=false returns to the per-lane switches below.
+EXECUTOR = os.getenv("AUTOTRADER_EXECUTOR", "true").lower() != "false"
+EVENTS_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_EVENTS", "false").lower() == "true"
 EVENT_LEG_PCT = float(os.getenv("AUTOTRADER_EVENT_LEG_PCT", "5"))      # % of equity a leg (half the paper book's)
 EVENT_STOP_PCT = 25.0
 EVENT_HEDGE_STOP_PCT = 40.0
 # Lanes (2026-10-29, autotrader/lanes.py): the scanner path ("ta") runs beside mirrors of the evidence books — event
 # shorts, unlock shorts and the weekly basket — and each lane's entries are sized by its own record in the current
-# regime. The mirrors use the same per-leg size; the weekly basket mirrors at WEEKLY_PCT of equity a name.
-UNLOCKS_IN_AUTO = os.getenv("AUTOTRADER_UNLOCKS", "false").lower() == "true"
-WEEKLY_IN_AUTO = os.getenv("AUTOTRADER_WEEKLY", "false").lower() == "true"
-WEEKLY_PCT = float(os.getenv("AUTOTRADER_WEEKLY_PCT", "10"))         # % of equity a name (the weekly book runs 25%)
+# regime. The mirrors use the same per-leg size; the weekly basket mirrors through _mirror_wallet_book like the others.
+UNLOCKS_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_UNLOCKS", "false").lower() == "true"
+WEEKLY_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_WEEKLY", "false").lower() == "true"
+CASCADE_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_CASCADE", "false").lower() == "true"
+FACTOR_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_FACTOR", "false").lower() == "true"
+REVERSAL_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_REVERSAL", "false").lower() == "true"
+# The scanner lane ("ta": the scanner's conviction with Claude's confirmation, the original autotrader) was retired on
+# 2026-11-03 with the user: 20 trades at −0.13R (longs −0.17R), after every scanner-signal book before it had been
+# retired on the same finding. The scanner keeps running — the reversal lane is built from its scans — but its
+# conviction no longer opens trades here. Set AUTOTRADER_TA_LANE=true to bring it back.
+TA_LANE = os.getenv("AUTOTRADER_TA_LANE", "false").lower() == "true"
+REVERSAL_K = int(os.getenv("AUTOTRADER_REVERSAL_K", "2"))          # names a side every 4h
+REVERSAL_RISK_PCT = float(os.getenv("AUTOTRADER_REVERSAL_RISK_PCT", "1"))   # a reversal leg risks 1% of the ledger (4 legs a slot, 24h holds overlap)
+REVERSAL_MAX_OPEN = int(os.getenv("AUTOTRADER_REVERSAL_MAX_OPEN", "12"))
+# Short side only (2026-11-02): on the lab's 190 slots (09-27 → 11-01) shorting the top of the score earned +1.7%/slot vs BTC
+# after costs (t 4.9, both halves positive, 68% of slots) while buying the bottom LOST −0.4%/slot in both halves and under
+# both BTC trends. The first live day said the same: every short won, every long lost. Set "short,long" to run both.
+REVERSAL_SIDES = tuple(s.strip() for s in os.getenv("AUTOTRADER_REVERSAL_SIDES", "short").split(",") if s.strip() in ("short", "long"))
+# Risk floor for every mirrored leg (2026-11-01, "real-world P&L numbers"): a leg risks at least LANE_RISK_PCT of the
+# ledger at its stop, so notional ≥ equity × LANE_RISK_PCT / stop%, never above LANE_MAX_NOTIONAL_PCT of the ledger.
+LANE_RISK_PCT = float(os.getenv("AUTOTRADER_LANE_RISK_PCT", "2"))    # 2% (set 3 for a day on 2026-11-01): the weekly and factor baskets mirror 9–17 legs at once
+LANE_MAX_NOTIONAL_PCT = float(os.getenv("AUTOTRADER_LANE_MAX_NOTIONAL_PCT", "50"))
+REVERSAL_HOLD_H = 24.0
+REVERSAL_STOP_PCT = 10.0
 UNLOCK_STOP_PCT = 25.0
 UNLOCK_HEDGE_STOP_PCT = 40.0
 
@@ -439,7 +464,7 @@ async def _enter(
         levels = {**atr_levels, "sl_pct": abs(entry - atr_levels["stop_loss"]) / entry * 100}
     else:
         levels = strategy.build_levels(direction, entry, scan, fast)
-    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"])
+    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"], direction)
     size = strategy.position_size_pct(levels["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * lane_mult
     if size < 1.0:
         logger.info("Auto-entry %s skipped — wallet fully allocated", scan["symbol"])
@@ -906,7 +931,7 @@ async def _daily_minimum(by_symbol: dict[str, dict], held: set[str], orders: dic
         note(f"{scan['symbol']}: no {'price' if not price else 'fast-timeframe data'}")
         return None
     lv = strategy.build_levels(direction, price, scan, fast)
-    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"])
+    lane_mult, lane_why = await _lane_mult("ta", scan["symbol"], direction)
     size = strategy.position_size_pct(lv["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * DAILY_MIN_RISK_X * lane_mult
     if size <= 0:
         note(f"{scan['symbol']}: no room in the wallet (size {size:.2f}%)")
@@ -957,16 +982,32 @@ def _unlock_key() -> str:
     return kv.key("auto", "unlock_mirror")
 
 
-def _weekly_key() -> str:
-    return kv.key("auto", "weekly_mirror")
+def _lane_history() -> list[dict]:
+    """The lanes' record: this ledger's closed trades, plus each mirror lane's signal book's own closes from before the
+    lane began (those are the rule's history too; what the lane mirrored since is already in the ledger). Only the
+    PaperWallet books (weekly, cascade, factor) have such a history here; the event and unlock books keep their
+    positions in their own tables and start their lanes at equal size."""
+    from experiments import books
+    out = [t for w in _wallets() for t in w.all_trades()["closed"]]
+    for lane, book in lanes.LANE_BOOK.items():
+        w = books.WALLETS.get(book) if book != "auto" else None
+        if w is None:
+            continue
+        stamp = kv.get_sync(kv.key("auto", f"{lane}_since")) or {}
+        since = stamp.get("at") if isinstance(stamp, dict) else stamp
+        if not isinstance(since, (int, float)):
+            since = float("inf")                                      # the lane never began: the whole book is prehistory
+        for t in w.all_trades()["closed"]:
+            if (t.get("opened_ts") or 0) < since and t.get("close_reason") not in lanes.ADMIN_CLOSES:
+                out.append({**t, "lane": lane, "prehistory": True})
+    return out
 
 
-async def _lane_mult(lane: str, symbol: str | None) -> tuple[float, str]:
-    """The lane allocator's size multiplier for a new entry (autotrader/lanes.py), from the ledger and the regime now."""
+async def _lane_mult(lane: str, symbol: str | None, direction: str | None = None) -> tuple[float, str]:
+    """The lane allocator's size multiplier for a new entry (autotrader/lanes.py), from the record and the regime now."""
     try:
-        closed = await asyncio.to_thread(lambda: [t for w in _wallets() for t in w.all_trades()["closed"]])
-        card = await asyncio.to_thread(lanes.scorecard, closed)
-        return lanes.multiplier(lane, lanes.regime_key(await regime.current()), symbol, card)
+        card = await asyncio.to_thread(lambda: lanes.scorecard(_lane_history()))
+        return lanes.multiplier(lane, lanes.regime_key(await regime.current()), symbol, card, direction)
     except Exception as e:
         logger.warning("Lane allocator unavailable (%s) — equal size", e)
         return 1.0, "equal size — allocator unavailable"
@@ -980,8 +1021,32 @@ def _mirror_leverage(stop_pct: float, symbol: str) -> int:
     return max(1, min(futures.MAX_LEVERAGE, int(0.95 / (stop_pct / 100 + futures.mmr(symbol)))))
 
 
+def _is_hedge(t: dict) -> bool:
+    return t.get("event_leg") == "hedge" or t.get("unlock_leg") == "hedge"
+
+
+def opposite_holding(symbol: str, direction: str, open_trades: list[dict]) -> dict | None:
+    """The open position (a hedge leg doesn't count — it is not a view) on the other side of `symbol`, if any. One
+    trade, one system (2026-11-02): the ledger was long WLD in the reversal lane while the weekly book was short it,
+    so the two cancelled and paid fees twice. Whoever holds the name first keeps it."""
+    other = "short" if direction == "long" else "long"
+    return next((t for t in open_trades if t.get("symbol") == symbol and t.get("direction") == other and not _is_hedge(t)), None)
+
+
+def _holdings_elsewhere(include_books: bool = True) -> list[dict]:
+    """What this ledger (and, if asked, the signal books) hold right now — the positions a new leg must not oppose."""
+    from experiments import books
+    from trading import overview
+    out = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]
+    for name in overview.SIGNAL_SYSTEMS if include_books else ():
+        ww = books.WALLETS.get(name)
+        if ww is not None:
+            out += [{**t, "system": name} for t in ww.get_portfolio()["open_trades"]]
+    return out
+
+
 async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, notional_pct: float,
-                           reasoning: str, hold: str, expires_at: float | None, extra: dict) -> dict | None:
+                           reasoning: str, hold: str, expires_at: float | None, extra: dict, risk_pct: float | None = None) -> dict | None:
     """One leg of a mirrored position: market entry, a disaster stop, no targets, the book decides the exit."""
     price = await monitor.live_price(symbol)
     if not price:
@@ -989,11 +1054,27 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
     s = 1 if direction == "long" else -1
     equity = w.get_portfolio()["total_equity"] or 1
     lane = extra.get("lane", "events")
-    lane_mult, lane_why = await _lane_mult(lane, symbol if not (extra.get("event_leg") == "hedge" or extra.get("unlock_leg") == "hedge") else None)
+    if not _is_hedge(extra):
+        # A mirror of a signal book is refused only by what this ledger already holds (two books on opposite sides of
+        # a name would otherwise refuse each other forever); a lane with no book (reversal) also defers to the books.
+        own_book = lanes.LANE_BOOK.get(lane, "auto") != "auto"
+        opp = opposite_holding(symbol, direction, await asyncio.to_thread(_holdings_elsewhere, not own_book))
+        if opp:
+            logger.info("%s leg %s %s skipped: %s already holds the other side", lane, direction, symbol, opp.get("system") or lanes.lane_of(opp))
+            return None
+    lane_mult, lane_why = await _lane_mult(lane, symbol if not _is_hedge(extra) else None, direction)
+    notional = min(max(equity * notional_pct / 100, equity * (risk_pct if risk_pct is not None else LANE_RISK_PCT) / max(stop_pct, 0.1)) * lane_mult,
+                   equity * LANE_MAX_NOTIONAL_PCT / 100)
+    if not _is_hedge(extra):
+        capped = lanes.net_cap_reason(direction, notional, [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]], equity)
+        if capped:
+            logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, capped)
+            return None
     t = await asyncio.to_thread(
         w.open_trade, symbol=symbol, direction=direction, entry_price=price,
         stop_loss=price * (1 - s * stop_pct / 100), take_profit_1=price * (1 + s * 0.9), take_profit_2=price * (1 + s * 0.95),
-        notional_usd=equity * notional_pct / 100 * lane_mult, timeframe="1d", oracle_confidence=0,
+        notional_usd=notional,
+        timeframe="1d", oracle_confidence=0,
         leverage=_mirror_leverage(stop_pct, symbol),
         oracle_reasoning=reasoning[:200], hold_duration=hold,
         extra={"strategy": "auto", "exit_policy": "manual", "shadows": False, "entry_type": "market", "claude_verdict": "skipped",
@@ -1007,9 +1088,19 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
     return t
 
 
+def _pair_leg_pct(lane: str, book_leg_pct: float) -> float:
+    """A pair book's leg (LEG_PCT of its own equity) as a % of this ledger's equity: the lane's budget share × LEG_PCT.
+    Falls back to EVENT_LEG_PCT when the ledger is empty."""
+    equity = _active().get_portfolio()["total_equity"]
+    if not equity:
+        return EVENT_LEG_PCT
+    return _lane_budget(lane, equity) / equity * book_leg_pct
+
+
 async def _open_event_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, p: dict, leg: str) -> dict | None:
+    from experiments import events as events_book
     return await _open_mirror_leg(
-        w, symbol, direction, stop_pct, EVENT_LEG_PCT,
+        w, symbol, direction, stop_pct, _pair_leg_pct("events", events_book.LEG_PCT),
         f"event short ({p['kind']}): {p.get('title') or ''}",
         f"{p['kind']} · to {datetime.fromtimestamp(p['deadline_ts'], timezone.utc):%m-%d %H:%M} UTC", p["deadline_ts"] + 3600,
         {"lane": "events", "event_id": p["id"], "event_kind": p["kind"], "event_leg": leg})
@@ -1025,18 +1116,19 @@ async def _mirror_unlocks() -> None:
     mirrored = await kv.hgetall(_unlock_key())
     w = _active()
     open_rows = {p["id"]: p for p in unlocks.open_positions()}
+    mirrored = await _mark_pre_existing("unlocks", _unlock_key(), open_rows, mirrored)
     held = {t["symbol"]: t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
     for uid, p in open_rows.items():
         if uid in mirrored or p["symbol"] in held:
             continue
         when = datetime.fromtimestamp(p["unlock_ts"], timezone.utc).strftime("%m-%d %H:%M")
-        coin = await _open_mirror_leg(w, p["symbol"], "short", UNLOCK_STOP_PCT, EVENT_LEG_PCT,
+        coin = await _open_mirror_leg(w, p["symbol"], "short", UNLOCK_STOP_PCT, _pair_leg_pct("unlocks", unlocks.LEG_PCT),
                                       f"unlock short: {p.get('pct') or 0:.1f}% of supply unlocks {when} UTC", f"to the unlock on {when} UTC",
                                       p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "coin"})
         if not coin:
             continue
         hedge = None if unlocks.HEDGE in held else await _open_mirror_leg(
-            w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, EVENT_LEG_PCT, f"BTC hedge for the {p['symbol']} unlock short",
+            w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, _pair_leg_pct("unlocks", unlocks.LEG_PCT), f"BTC hedge for the {p['symbol']} unlock short",
             f"to the unlock on {when} UTC", p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "hedge"})
         await kv.hset(_unlock_key(), uid, {"coin": coin["id"], "hedge": hedge["id"] if hedge else None, "symbol": p["symbol"], "opened": time.time()})
         logger.info("Autotrader mirrored unlock short: %s%s", p["symbol"], "" if hedge else " (no BTC hedge: BTC already held)")
@@ -1046,6 +1138,10 @@ async def _mirror_unlocks() -> None:
     closed_rows = {p["id"]: p for p in unlocks.closed_positions() if p["id"] in mirrored}
     open_ids = {t["id"]: (ww, t) for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
     for uid, m in list(mirrored.items()):
+        if m.get("pre_existing"):
+            if uid not in open_rows:
+                await kv.hdel(_unlock_key(), uid)
+            continue
         paper_closed = uid in closed_rows
         coin_open, hedge_open = m.get("coin") in open_ids, m.get("hedge") in open_ids
         if paper_closed or (not coin_open and hedge_open):
@@ -1066,60 +1162,158 @@ async def _mirror_unlocks() -> None:
             # The hedge leg was closed on its own (a stop, a hand close): put it back so the pair stays a pair.
             p = open_rows[uid]
             when = datetime.fromtimestamp(p["unlock_ts"], timezone.utc).strftime("%m-%d %H:%M")
-            hedge = await _open_mirror_leg(w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, EVENT_LEG_PCT,
+            hedge = await _open_mirror_leg(w, unlocks.HEDGE, "long", UNLOCK_HEDGE_STOP_PCT, _pair_leg_pct("unlocks", unlocks.LEG_PCT),
                                            f"BTC hedge for the {p['symbol']} unlock short (re-hedged)", f"to the unlock on {when} UTC",
                                            p["unlock_ts"] + 3600, {"lane": "unlocks", "unlock_id": uid, "unlock_leg": "hedge"})
             if hedge:
                 await kv.hset(_unlock_key(), uid, {**m, "hedge": hedge["id"]})
 
 
-async def _mirror_weekly() -> None:
-    """Mirror the weekly basket's positions (long the near-highs, short the near-lows) at WEEKLY_PCT a name."""
-    if not WEEKLY_IN_AUTO or await is_paused():
+ENTRY_BUDGET_USD = float(os.getenv("AUTOTRADER_ENTRY_BUDGET_USD", "2000"))   # the scanner and reversal lanes' own budget each (measuring size)
+
+
+async def _mark_pre_existing(lane: str, key: str, open_rows: dict, mirrored: dict) -> dict:
+    """The first time a lane runs (or after its ledger changed), what the book already holds is recorded as pre-existing
+    and never mirrored; only positions opened after that are followed."""
+    since_key = kv.key("auto", f"{lane}_since")
+    if await kv.get(since_key):
+        return mirrored
+    await kv.set(since_key, {"at": time.time()}, 10 * 365 * 86400)
+    for pid, p in open_rows.items():
+        if pid not in mirrored:
+            await kv.hset(key, pid, {"coin": None, "hedge": None, "symbol": p.get("symbol"), "pre_existing": True, "opened": time.time()})
+    return await kv.hgetall(key)
+
+
+def _lane_budget(lane: str, equity: float) -> float:
+    """What a lane may put on, in dollars: an executed book's lane gets that book's plan entry (its budget, capped by the
+    ledger); the autotrader's own lanes (scanner, reversal) get ENTRY_BUDGET_USD each. When the ledger is smaller than
+    the budgets together (the $5k demo account), every lane is scaled down pro rata."""
+    from trading import capital
+    plan = capital.plan()
+    budgets = {l: (plan.get(lanes.LANE_BOOK[l], 0.0) if lanes.LANE_BOOK[l] != "auto" else ENTRY_BUDGET_USD) for l in lanes.LANES
+               if l != "ta" or TA_LANE}                                   # the retired scanner lane reserves nothing
+    total = sum(budgets.values()) or 1.0
+    mine = budgets.get(lane, 0.0)
+    return mine if total <= equity else equity * mine / total
+
+
+def _stop_pct_of(t: dict) -> float:
+    e, st = t.get("entry_price") or 0, t.get("stop_loss") or 0
+    return abs(e - st) / e * 100 if e and st else 10.0
+
+
+async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
+    """Mirror a paper-wallet signal book (cascade, multi-factor) on the active ledger: open what it opens, at the same
+    share of the lane's budget that the book used of its own equity; close when it closes, with its reason."""
+    if not enabled or await is_paused():
         return
-    from experiments import books as experiment_books_, weekly_rs
-    if not experiment_books_.ENABLED or "weekly_rs" not in experiment_books_.WALLETS:
+    from experiments import books as experiment_books_
+    if not experiment_books_.ENABLED or book not in experiment_books_.WALLETS:
         return
-    src_open = {t["id"]: t for t in experiment_books_.WALLETS["weekly_rs"].get_portfolio()["open_trades"]}
-    mirrored = await kv.hgetall(_weekly_key())
+    src = experiment_books_.WALLETS[book]
+    sp = src.get_portfolio()
+    src_open = {t["id"]: t for t in sp["open_trades"]}
+    key = kv.key("auto", f"{lane}_mirror")
+    mirrored = await kv.hgetall(key)
+    # Only positions the book opens from now on are followed (2026-11-01): what it already held when this lane began — or
+    # when the ledger changed — is entered late, at a different price, with its thesis partly spent, and is left alone.
+    since_key = kv.key("auto", f"{lane}_since")
+    if not await kv.get(since_key):
+        await kv.set(since_key, {"at": time.time()}, 10 * 365 * 86400)
+        for sid, t in src_open.items():
+            if sid not in mirrored:
+                await kv.hset(key, sid, {"trade": None, "symbol": t["symbol"], "pre_existing": True, "opened": time.time()})
+        mirrored = await kv.hgetall(key)
     w = _active()
+    equity = w.get_portfolio()["total_equity"]
+    budget = _lane_budget(lane, equity)
     held = {t["symbol"] for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
-    for wid, t in src_open.items():
-        if wid in mirrored or t["symbol"] in held:
+    for sid, t in src_open.items():
+        if sid in mirrored or t["symbol"] in held:
+            continue                                        # already mirrored, or ended on its own (kept as "ended" so it isn't re-opened)
+        frac = (t.get("notional_usd") or 0) / (sp["total_equity"] or 1)
+        notional_pct = frac * budget / (equity or 1) * 100
+        if notional_pct <= 0:
             continue
         ours = await _open_mirror_leg(
-            w, t["symbol"], t["direction"], weekly_rs.DISASTER_PCT, WEEKLY_PCT,
-            f"weekly basket: {t['direction']} {t['symbol']} (score from 7d high {t.get('score_from_7d_high')})",
-            "to Monday's rebalance", None, {"lane": "weekly", "weekly_id": wid})
+            w, t["symbol"], t["direction"], _stop_pct_of(t), notional_pct,
+            f"{lanes.LANES[lane]}: {t['direction']} {t['symbol']} — {(t.get('oracle_reasoning') or '')[:120]}",
+            t.get("hold_duration") or "while the book holds it", t.get("expires_at"), {"lane": lane, f"{lane}_id": sid})
         if not ours:
             continue
-        await kv.hset(_weekly_key(), wid, {"trade": ours["id"], "symbol": t["symbol"], "opened": time.time()})
-        logger.info("Autotrader mirrored weekly basket: %s %s", t["direction"], t["symbol"])
+        await kv.hset(key, sid, {"trade": ours["id"], "symbol": t["symbol"], "opened": time.time()})
+        logger.info("Autotrader mirrored %s: %s %s", lane, t["direction"], t["symbol"])
         _publish("auto_trade", {"event": "opened", "trade": ours})
     if not mirrored:
         return
     open_ids = {t["id"]: (ww, t) for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
-    for wid, m in list(mirrored.items()):
-        if wid in src_open:
-            if m.get("trade") not in open_ids:
-                await kv.hdel(_weekly_key(), wid)          # ours is gone while the book still holds it: mirror again next pass
+    src_closed = {t["id"]: t for t in src.all_trades()["closed"][-200:]}
+    for sid, m in list(mirrored.items()):
+        if sid in src_open:
+            if m.get("trade") in open_ids or m.get("ended") or m.get("pre_existing"):
+                continue
+            await kv.hset(key, sid, {**m, "ended": time.time()})     # ours ended on its own (stop, expiry): not re-opened while the book holds it
+            continue
+        if m.get("pre_existing"):
+            await kv.hdel(key, sid)
             continue
         if m.get("trade") in open_ids:
             ww, t = open_ids[m["trade"]]
             price = await monitor.live_price(t["symbol"]) or t["current_price"]
-            closed = await asyncio.to_thread(ww.close_trade_manually, m["trade"], price, "weekly_rebalance")
+            reason = f"{lane}_{(src_closed.get(sid) or {}).get('close_reason') or 'closed'}"
+            closed = await asyncio.to_thread(ww.close_trade_manually, m["trade"], price, reason)
             if closed:
                 await _on_closed(closed)
-        await kv.hdel(_weekly_key(), wid)
+        await kv.hdel(key, sid)
+
+
+async def _reversal_lane(scans: list[dict]) -> None:
+    """Every 4 hours: score the sweep's coins (autotrader/reversal.py), buy the top REVERSAL_K, sell the bottom REVERSAL_K,
+    each at an equal slice of the lane's budget, for REVERSAL_HOLD_H with a disaster stop. No Claude, no chart gates —
+    the lane allocator sizes it by its own record."""
+    if not REVERSAL_IN_AUTO or await is_paused() or not scans:
+        return
+    from autotrader import reversal
+    now = time.time()
+    bucket = int(now // (4 * 3600))
+    slot_key = kv.key("auto", "reversal_slot")
+    if (await kv.get(slot_key) or {}).get("bucket") == bucket:
+        return
+    scores = reversal.score(scans)
+    if len(scores) < 2 * REVERSAL_K + 2:
+        return
+    await kv.set(slot_key, {"bucket": bucket, "at": now, "n": len(scores)}, 5 * 3600)
+    picks = reversal.picks(scores, REVERSAL_K, REVERSAL_SIDES)
+    w = _active()
+    equity = w.get_portfolio()["total_equity"]
+    budget = _lane_budget("reversal", equity)
+    all_open = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]
+    held = {t["symbol"] for t in all_open}
+    lane_open = sum(1 for t in all_open if lanes.lane_of(t) == "reversal")
+    notional_pct = budget / max(len(picks), 1) / (equity or 1) * 100
+    for sym, direction in picks:
+        if sym in held or notional_pct <= 0 or lane_open >= REVERSAL_MAX_OPEN:
+            continue
+        ours = await _open_mirror_leg(
+            w, sym, direction, REVERSAL_STOP_PCT, notional_pct,
+            f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)})",
+            f"{REVERSAL_HOLD_H:g}h", now + REVERSAL_HOLD_H * 3600, {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym]},
+            risk_pct=REVERSAL_RISK_PCT)
+        if ours:
+            lane_open += 1
+            logger.info("Autotrader reversal lane: %s %s (score %+.3f)", direction, sym, scores[sym])
+            _publish("auto_trade", {"event": "opened", "trade": ours})
 
 
 async def _lanes_report() -> dict:
     def _ledger() -> tuple[list[dict], list[dict]]:
-        ws = _wallets()
-        return ([t for w in ws for t in w.all_trades()["closed"]], [t for w in ws for t in w.get_portfolio()["open_trades"]])
+        return (_lane_history(), [t for w in _wallets() for t in w.get_portfolio()["open_trades"]])
     closed, open_trades = await asyncio.to_thread(_ledger)               # whole-ledger reads: off the event loop
     rep = await asyncio.to_thread(lanes.status, closed, open_trades, await regime.current())
-    on = {"ta": True, "events": EVENTS_IN_AUTO, "unlocks": UNLOCKS_IN_AUTO, "weekly": WEEKLY_IN_AUTO}
+    on = {"ta": TA_LANE, "events": EVENTS_IN_AUTO, "unlocks": UNLOCKS_IN_AUTO, "weekly": WEEKLY_IN_AUTO, "cascade": CASCADE_IN_AUTO,
+          "factor": FACTOR_IN_AUTO, "reversal": REVERSAL_IN_AUTO}
+    rep["executor"] = EXECUTOR
     for l in rep["lanes"]:
         l["enabled"] = on.get(l["lane"], True)
     return rep
@@ -1135,6 +1329,7 @@ async def _mirror_events() -> None:
     mirrored = await kv.hgetall(_mirror_key())
     w = _active()
     open_rows = {p["id"]: p for p in events.open_positions()}
+    mirrored = await _mark_pre_existing("events", _mirror_key(), open_rows, mirrored)
     held = {t["symbol"]: t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
     for eid, p in open_rows.items():
         if eid in mirrored or p["symbol"] in held:
@@ -1152,6 +1347,10 @@ async def _mirror_events() -> None:
     closed_rows = {p["id"]: p for p in events.closed_positions() if p["id"] in mirrored}
     open_ids = {t["id"]: (ww, t) for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
     for eid, m in list(mirrored.items()):
+        if m.get("pre_existing"):
+            if eid not in open_rows:
+                await kv.hdel(_mirror_key(), eid)          # the book closed it: forget it
+            continue
         paper_closed = eid in closed_rows
         coin_open, hedge_open = m.get("coin") in open_ids, m.get("hedge") in open_ids
         if paper_closed or (not coin_open and hedge_open):
@@ -1193,7 +1392,11 @@ async def _on_scans(scans: list[dict], watched: set[str], global_market: dict | 
         await _thesis_exits(by_symbol, watched)
         if _v().primary:
             # The evidence lanes come first: the edge is the event, the unlock or the basket, not the chart.
-            for name, mirror in (("Event", _mirror_events), ("Unlock", _mirror_unlocks), ("Weekly", _mirror_weekly)):
+            for name, mirror in (("Event", _mirror_events), ("Unlock", _mirror_unlocks),
+                                 ("Weekly", lambda: _mirror_wallet_book("weekly_rs", "weekly", WEEKLY_IN_AUTO)),
+                                 ("Cascade", lambda: _mirror_wallet_book("cascade", "cascade", CASCADE_IN_AUTO)),
+                                 ("Factor", lambda: _mirror_wallet_book("multi_factor", "factor", FACTOR_IN_AUTO)),
+                                 ("Reversal", lambda: _reversal_lane(scans))):
                 try:
                     await mirror()
                 except Exception as e:
@@ -1210,7 +1413,7 @@ async def _on_scans(scans: list[dict], watched: set[str], global_market: dict | 
 
         # In a dry market every scanned coin is a candidate, not only the watchlist.
         dry = await asyncio.to_thread(dry_mode)
-        consider = watched | set(by_symbol) if dry["active"] else watched
+        consider = (watched | set(by_symbol) if dry["active"] else watched) if TA_LANE else set()     # lane retired: no candidates
         for scan in scans:
             if scan["symbol"] not in consider:
                 continue
@@ -1224,7 +1427,7 @@ async def _on_scans(scans: list[dict], watched: set[str], global_market: dict | 
             except Exception as e:
                 logger.warning("Auto-trade decision failed for %s: %s", scan["symbol"], e)
 
-        if _v().primary:
+        if _v().primary and TA_LANE:
             try:
                 await _daily_minimum(by_symbol, held, orders, elsewhere)
             except Exception as e:

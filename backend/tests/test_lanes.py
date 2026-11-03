@@ -63,3 +63,52 @@ def test_status_reports_every_lane_with_the_rule():
     weekly = next(l for l in s["lanes"] if l["lane"] == "weekly")
     assert weekly["open"] == 1 and weekly["mult"] == 1.0 and "equal size" in weekly["why"]
     assert "Set 2026-10-29" in s["rule"]
+
+
+def test_bookkeeping_closes_do_not_score():
+    from autotrader import lanes
+    admin = [{"lane": "weekly", "risk_usd": 10.0, "pnl_usd": -1.0, "close_reason": "resize", "closed_ts": i} for i in range(15)]
+    real = [{"lane": "weekly", "risk_usd": 10.0, "pnl_usd": 5.0, "close_reason": "weekly_rebalance", "closed_ts": 100 + i} for i in range(3)]
+    card = lanes.scorecard(admin + real)
+    assert card["weekly"]["all"]["n"] == 3 and card["weekly"]["all"]["avg_r"] == 0.5
+    assert lanes.multiplier("weekly", "down/calm", None, card)[0] == lanes.FULL          # three trades: still equal size, not measuring
+
+
+# ── Sides and the net-exposure cap (2026-11-02) ────────────────────────────────
+
+def test_a_lanes_losing_side_goes_to_measuring_size_while_the_other_side_stays_full():
+    closed = ([_t("reversal", -0.6, regime="down/calm", i=i) for i in range(lanes.MIN_N)]
+              + [_t("reversal", 0.9, regime="down/calm", i=100 + i) for i in range(lanes.MIN_N)])
+    for i, t in enumerate(closed):
+        t["direction"] = "long" if i < lanes.MIN_N else "short"
+    card = lanes.scorecard(closed)
+    assert card["reversal"]["by_side"]["long"]["avg_r"] == -0.6 and card["reversal"]["by_regime_side"]["down/calm|short"]["n"] == lanes.MIN_N
+    m_long, why_long = lanes.multiplier("reversal", "down/calm", "NEARUSDT", card, "long")
+    m_short, why_short = lanes.multiplier("reversal", "down/calm", "UNIUSDT", card, "short")
+    assert m_long == lanes.MEASURE and "longs in down/calm" in why_long
+    assert m_short == 1.0 and "shorts in down/calm" in why_short
+    # without a side the regime cell (both sides together, +0.15R) decides as before
+    assert lanes.multiplier("reversal", "down/calm", None, card)[0] == 1.0
+    # a thin side cell in this regime falls back to the side's record over every regime BEFORE the mixed regime cell:
+    # seven winning shorts (under MIN_N) are "equal size", never cut by the longs' losses
+    thin = [{**t, "regime_at_entry": {"btc_trend": "up", "btc_vol_30d": 30.0}} for t in closed[:lanes.MIN_N]] + [dict(t) for t in closed[lanes.MIN_N:lanes.MIN_N + 7]]
+    for t in thin[lanes.MIN_N:]:
+        t["regime_at_entry"] = {"btc_trend": "up", "btc_vol_30d": 30.0}
+    m, why = lanes.multiplier("reversal", "up/calm", "UNIUSDT", lanes.scorecard(thin), "short")
+    assert m == 1.0 and "equal size" in why
+    # a side's record over every regime is the last fallback
+    assert lanes.multiplier("reversal", "up/wild", "ZZZUSDT", card, "long")[0] == lanes.MEASURE
+    s = lanes.status(closed, [], {"btc_trend": "down", "btc_vol_30d": 30.0, "label": "BTC downtrend · calm"})
+    rev = next(l for l in s["lanes"] if l["lane"] == "reversal")
+    assert rev["sides"]["long"]["mult"] == lanes.MEASURE and rev["sides"]["short"]["mult"] == 1.0 and s["net_exposure_usd"] == 0
+
+
+def test_net_exposure_cap_refuses_a_leg_that_widens_the_imbalance_and_allows_one_that_narrows_it():
+    held = [{"symbol": "A", "direction": "long", "notional_usd": 9_000.0}, {"symbol": "B", "direction": "long", "notional_usd": 5_000.0},
+            {"symbol": "C", "direction": "short", "notional_usd": 3_000.0}]
+    assert lanes.net_exposure(held) == 11_000.0
+    why = lanes.net_cap_reason("long", 5_000.0, held, 50_000.0)                       # 11k → 16k on a 12.5k cap
+    assert why and "net exposure cap" in why and "net long $11,000" in why
+    assert lanes.net_cap_reason("long", 1_000.0, held, 50_000.0) is None               # 12k: under the cap
+    assert lanes.net_cap_reason("short", 20_000.0, held, 50_000.0) is None             # flips to −9k: narrower than the 11k it was
+    assert lanes.net_cap_reason("short", 30_000.0, held, 50_000.0)                     # −19k: past the cap and wider than 11k

@@ -198,7 +198,7 @@ async def _review_wallet(name: str, wallet: PaperWallet, scans: dict[str, dict],
         last = (trade.get("last_review") or {}).get("ts", 0)
         if not scan or not scan.get("price") or now - last < INTERVAL:
             continue
-        if trade.get("exit_policy") == "manual" or trade.get("lane") not in (None, "ta") or trade.get("event_id"):
+        if trade.get("exit_policy") in ("manual", "manual_lock") or trade.get("lane") not in (None, "ta") or trade.get("event_id"):
             continue                        # book-managed positions (mirrors, trend, weekly): the book sizes them, not the scan
 
         d = decide(trade, scan, now, strategy.MAX_GROSS_PCT - gross, balance)

@@ -276,14 +276,36 @@ def next_levels(r: pd.Series) -> tuple[tuple[float, str], tuple[float, str]]:
     return up, dn
 
 
+RETEST_BARS = 3                  # the study's retest window after confirmation
+
+
+def second_levels(r: pd.Series) -> tuple[tuple[float, str], tuple[float, str]]:
+    """The level BEYOND the nearest one each way — the nearest is often inside the costs; a round number past it if none."""
+    c = r["close"]
+    names = ["PDH", "ONH", "WKH", "WKL", "PDL", "ONL", "ORBH", "IBH", "IBH05", "IBH1", "IBH2", "ORBL", "IBL", "IBL05", "IBL1", "IBL2"]
+    above = sorted((r[n], n) for n in names if np.isfinite(r[n]) and r[n] > c)
+    below = sorted(((r[n], n) for n in names if np.isfinite(r[n]) and r[n] < c), reverse=True)
+    up = above[1] if len(above) > 1 else (_psych(above[0][0] if above else c, True), "PSYCH")
+    dn = below[1] if len(below) > 1 else (_psych(below[0][0] if below else c, False), "PSYCH")
+    return up, dn
+
+
 def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at_end: bool = FLAT_AT_SESSION_END,
-             min_target_bps: float = 0.0, cont_only: bool = False, min_rr: float = 0.0) -> list[Trade]:
+             min_target_bps: float = 0.0, cont_only: bool = False, min_rr: float = 0.0,
+             entry: str = "next_open", target_mode: str = "next", trail: bool = False) -> list[Trade]:
     """Walk the closed bars, one trade at a time, exactly as the study sequences acceptance → confirmation → entry → exit.
 
     The replay found the study's targets sit a dozen basis points away on index perps — inside the costs. The filters
     (2026-10-31, "build around the weaknesses"): `min_target_bps` skips a setup whose next level is closer than that;
     `cont_only` takes only continuation setups (price on the EMA200's side of the trade); `min_rr` needs target distance
-    ≥ that multiple of the risk."""
+    ≥ that multiple of the risk.
+
+    The mentor's reading of his own study (2026-11-01): "wait for confirmation, then the best entry and exit".
+      entry="retest"      after confirmation, wait up to RETEST_BARS bars for price to come back and touch the level and
+                          close beyond it again (the study's retest, cyan candle) — enter at that close, stop under the
+                          retest bar; no retest within the window → no trade
+      target_mode="second" aim at the level beyond the nearest one (the nearest is often inside the costs)
+      trail=True          once the trade is +1R, the stop follows the 5m EMA20 (closes through it exit the trade)"""
     d = session_frame(df5)
     trades: list[Trade] = []
     pending: dict | None = None            # accepted, waiting for the confirmation bar
@@ -297,11 +319,19 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
         if open_trade is not None:
             t = open_trade
             s = 1 if t.direction == "long" else -1
+            if trail:
+                gain = (r["close"] - t.entry) * s
+                if gain >= t.risk and not t.context.get("trailing"):
+                    t.context["trailing"] = True
+                if t.context.get("trailing"):
+                    ema = float(r["ema20"])
+                    if (s > 0 and ema > t.stop) or (s < 0 and ema < t.stop):
+                        t.stop = ema                                        # the stop only ever moves in the trade's favour
             hit_stop = r["low"] <= t.stop if s > 0 else r["high"] >= t.stop
             hit_target = r["high"] >= t.target if s > 0 else r["low"] <= t.target
             through = (r["close"] < t.level) if s > 0 else (r["close"] > t.level)
             if hit_stop:
-                t.exit, t.exit_reason = (min(t.stop, r["open"]) if s > 0 else max(t.stop, r["open"])), "stop"
+                t.exit, t.exit_reason = (min(t.stop, r["open"]) if s > 0 else max(t.stop, r["open"])), ("trail" if t.context.get("trailing") else "stop")
             elif hit_target:
                 t.exit, t.exit_reason = t.target, "target"
             elif through:
@@ -314,13 +344,29 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
                 open_trade = None
         if entering is not None and open_trade is None:
             e = entering
-            entering = None
-            if r["in_session"]:
-                t = Trade(symbol=symbol, direction=e["direction"], level_name=e["level_name"], level=e["level"], accept_ts=e["accept_ts"],
-                          confirm_ts=e["confirm_ts"], entry_ts=ts, entry=float(r["open"]), stop=e["stop"], target=e["target"],
-                          target_name=e["target_name"], grade=e["grade"], context=e["context"])
-                if (t.direction == "long" and t.stop < t.entry < t.target) or (t.direction == "short" and t.target < t.entry < t.stop):
-                    open_trade = t
+            px, stop = None, e["stop"]
+            if entry == "retest":
+                e["waited"] = e.get("waited", 0) + 1
+                s_ = 1 if e["direction"] == "long" else -1
+                touched = r["low"] <= e["level"] if s_ > 0 else r["high"] >= e["level"]
+                held = r["close"] > e["level"] + r["close"] * BUFFER_BPS / 1e4 if s_ > 0 else r["close"] < e["level"] - r["close"] * BUFFER_BPS / 1e4
+                if touched and held:
+                    px = float(r["close"])
+                    off = r["close"] * STOP_OFFSET_BPS / 1e4
+                    stop = float(r["low"] - off) if s_ > 0 else float(r["high"] + off)
+                elif e["waited"] >= RETEST_BARS or not r["in_session"]:
+                    entering = None                                      # no retest came: the study's "best entry" never showed
+                    continue
+            else:
+                px = float(r["open"])
+            if px is not None:
+                entering = None
+                if r["in_session"]:
+                    t = Trade(symbol=symbol, direction=e["direction"], level_name=e["level_name"], level=e["level"], accept_ts=e["accept_ts"],
+                              confirm_ts=e["confirm_ts"], entry_ts=ts, entry=px, stop=stop, target=e["target"],
+                              target_name=e["target_name"], grade=e["grade"], context={**e["context"], "entry_mode": entry, "trailing": False})
+                    if (t.direction == "long" and t.stop < t.entry < t.target) or (t.direction == "short" and t.target < t.entry < t.stop):
+                        open_trade = t
         if pending is not None:
             p = pending
             pending = None
@@ -344,7 +390,7 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
         dns = [(r[n], n) for n in DOWN_LEVELS if np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
         if not ups and not dns:
             continue
-        up_lv, dn_lv = next_levels(r)
+        up_lv, dn_lv = next_levels(r) if target_mode == "next" else second_levels(r)
         off = r["close"] * STOP_OFFSET_BPS / 1e4
         if ups:
             level, name = max(ups)

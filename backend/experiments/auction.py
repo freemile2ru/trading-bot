@@ -31,11 +31,17 @@ logger = logging.getLogger("experiments.auction")
 BOOK = "auction"
 LABEL = "Auction levels (mentor's NQ system, stock & index perps)"
 SYMBOLS = tuple(os.getenv("AUCTION_SYMBOLS", "QQQUSDT,NVDAUSDT,TSLAUSDT,AMDUSDT").split(","))
-VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "min_grade": int(os.getenv("AUCTION_MIN_GRADE", "7"))}
-RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "1.0"))
-MAX_GROSS = float(os.getenv("AUCTION_MAX_GROSS", "3.0"))
+# 2026-11-01, the mentor's reading of his study — "wait for confirmation, then the best entry and exit": the entry is the
+# RETEST (price comes back to the level within 3 bars and closes beyond it again; stop under that bar), the target is the
+# level BEYOND the nearest. In the replay that was the only arrangement positive in both halves at futures costs
+# (+0.017% a trade); at Binance costs it still loses (−0.13%), so the minimum target distance and grade stay as gates.
+VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "min_grade": int(os.getenv("AUCTION_MIN_GRADE", "7")),
+           "entry": os.getenv("AUCTION_ENTRY", "retest"), "target_mode": os.getenv("AUCTION_TARGET", "second")}
+RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "2.0"))           # 2% of the book at the stop (2026-11-01, was 1)
+MAX_GROSS = float(os.getenv("AUCTION_MAX_GROSS", "2.0"))         # a trade is at most 2× the book in notional (2026-11-01, was 3): $60k on $30k
 MAX_LEVERAGE = int(os.getenv("AUCTION_MAX_LEVERAGE", "5"))
-MAX_OPEN = int(os.getenv("AUCTION_MAX_OPEN", "4"))
+MAX_OPEN = int(os.getenv("AUCTION_MAX_OPEN", "3"))               # 3 at once (was 4): at 2× each, three fill the book's margin at 5×
+DAILY_GOAL = (float(os.getenv("AUCTION_GOAL_LOW", "200")), float(os.getenv("AUCTION_GOAL_HIGH", "500")))   # the user's $/day goal on $30k
 HISTORY_DAYS = 10                      # enough closed 30-minute candles for the HTF ATR and a prior week for its levels
 BAR_S = 300
 LOG_KEEP = 60
@@ -120,11 +126,28 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
         st["pending"], st["entering"] = None, None
         _set_state(sym, st)
         return out
-    # 2. confirmed last bar: enter now (this bar's open is behind us; the live price is the next best thing)
+    # 2. confirmed: enter — at this bar (the one after confirmation), or, in retest mode, on the bar that comes back to the
+    #    level and closes beyond it again (within AL.RETEST_BARS bars; no retest → no trade)
     entering = st.get("entering")
     if entering:
+        take = True
+        if VARIANT.get("entry") == "retest":
+            entering["waited"] = entering.get("waited", 0) + 1
+            sd = 1 if entering["direction"] == "long" else -1
+            touched = r["low"] <= entering["level"] if sd > 0 else r["high"] >= entering["level"]
+            buf = r["close"] * AL.BUFFER_BPS / 1e4
+            held_again = r["close"] > entering["level"] + buf if sd > 0 else r["close"] < entering["level"] - buf
+            take = bool(touched and held_again)
+            if take:
+                off = r["close"] * AL.STOP_OFFSET_BPS / 1e4
+                entering["stop"] = float(r["low"] - off) if sd > 0 else float(r["high"] + off)
+            elif entering["waited"] < AL.RETEST_BARS and r["in_session"]:
+                _set_state(sym, st)
+                return None                                          # keep waiting for the retest
+            else:
+                _log({"ts": now, "sym": sym, "event": "no_retest", "level": entering["level_name"]})
         st["entering"] = None
-        if r["in_session"] and len(open_trades) < MAX_OPEN and book_switches.enabled(BOOK) and books.ENABLED:
+        if take and r["in_session"] and len(open_trades) < MAX_OPEN and book_switches.enabled(BOOK) and books.ENABLED:
             why = gates(sym, now)
             if why:
                 _log({"ts": now, "sym": sym, "event": "gated", "why": why, "level": entering["level_name"]})
@@ -188,7 +211,7 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
         ups = [(r[n], n) for n in AL.UP_LEVELS if np.isfinite(r[n]) and r["close"] > r[n] + buf and prev_c <= r[n] + buf]
         dns = [(r[n], n) for n in AL.DOWN_LEVELS if np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
         if ups or dns:
-            up_lv, dn_lv = AL.next_levels(r)
+            up_lv, dn_lv = AL.second_levels(r) if VARIANT.get("target_mode") == "second" else AL.next_levels(r)
             off = r["close"] * AL.STOP_OFFSET_BPS / 1e4
             if ups:
                 level, name = max(ups)
@@ -233,3 +256,173 @@ def status() -> dict:
     return {"symbols": list(SYMBOLS), "variant": VARIANT, "risk_pct": RISK_PCT, "max_gross": MAX_GROSS, "max_open": MAX_OPEN,
             "states": {s: {k: v for k, v in _state(s).items() if k != "bar"} for s in SYMBOLS},
             "log": list(reversed(kv.get_sync(_k("log")) or []))[:30]}
+
+
+# ── The mentor's page ──────────────────────────────────────────────────────────
+_snap_cache: dict = {"at": 0.0, "data": None}
+LEVEL_NAMES = ("PDH", "PDL", "ONH", "ONL", "WKH", "WKL", "ORBH", "ORBL", "IBH", "IBL", "IBH05", "IBL05", "IBH1", "IBL1", "IBH2", "IBL2")
+LEVEL_LABELS = {"PDH": "Prior day high", "PDL": "Prior day low", "ONH": "Overnight high", "ONL": "Overnight low", "WKH": "Last week's high",
+                "WKL": "Last week's low", "ORBH": "Opening range high (09:30–10:00)", "ORBL": "Opening range low", "IBH": "Initial balance high (09:30–10:30)",
+                "IBL": "Initial balance low", "IBH05": "IB high + ½ range", "IBL05": "IB low − ½ range", "IBH1": "IB high + 1× range", "IBL1": "IB low − 1× range",
+                "IBH2": "IB high + 2× range", "IBL2": "IB low − 2× range", "PSYCH": "Round number"}
+
+
+def _symbol_view(sym: str, d: pd.DataFrame, now: float) -> dict:
+    """What the chart would show for one instrument: the levels, the session, the context readings and the grade a long
+    or short would get right now, plus where the book stands in its sequence."""
+    import numpy as np
+    r = d.iloc[-1]
+    price = float(r["close"])
+    levels = []
+    for n in LEVEL_NAMES:
+        v = r.get(n)
+        if v is not None and np.isfinite(v):
+            levels.append({"name": n, "label": LEVEL_LABELS.get(n, n), "price": round(float(v), 6), "bps": round((float(v) / price - 1) * 1e4, 1)})
+    levels.sort(key=lambda x: -x["price"])
+    ctx = AL.context(d, len(d) - 1)
+    g_long, sd_long, why_long = AL.grade(ctx, 1)
+    g_short, sd_short, why_short = AL.grade(ctx, -1)
+    up, dn = AL.second_levels(r) if VARIANT.get("target_mode") == "second" else AL.next_levels(r)
+    st = _state(sym)
+    return {"symbol": sym, "price": price, "bar_ts": float(d.index[-1].timestamp()), "et": r["et"].strftime("%a %H:%M ET"),
+            "in_session": bool(r["in_session"]), "orb_valid": bool(r["orb_valid"]), "ib_valid": bool(r["ib_valid"]),
+            "vwap": round(float(r["vwap"]), 6), "ema20": round(float(r["ema20"]), 6), "ema50": round(float(r["ema50"]), 6), "ema200": round(float(r["ema200"]), 6),
+            "atr_pct": round(float(r["atr"] / price * 100), 3) if np.isfinite(r["atr"]) else None,
+            "levels": levels, "next_above": {"name": up[1], "price": round(float(up[0]), 6)}, "next_below": {"name": dn[1], "price": round(float(dn[0]), 6)},
+            "context": {k: (round(v, 4) if isinstance(v, float) else v) for k, v in ctx.items()},
+            "grade_long": {"score": g_long, "stand_down": sd_long, "reasons": why_long}, "grade_short": {"score": g_short, "stand_down": sd_short, "reasons": why_short},
+            "state": {k: v for k, v in st.items() if k != "bar"}, "gate": gates(sym, now)}
+
+
+async def snapshot(now: float | None = None) -> dict:
+    """Everything the mentor's page shows, refreshed at most once a minute."""
+    from experiments import books
+    from trading import overview, trade_analytics
+    import random
+    now = now or time.time()
+    if _snap_cache["data"] and now - _snap_cache["at"] < 60:
+        return _snap_cache["data"]
+    views = []
+    for sym in SYMBOLS:
+        try:
+            df = await bars(sym, now)
+            if len(df) < 300:
+                views.append({"symbol": sym, "error": "not enough history yet"})
+                continue
+            views.append(_symbol_view(sym, AL.session_frame(df), now))
+        except Exception as e:
+            views.append({"symbol": sym, "error": str(e)})
+    w = books.WALLETS[BOOK]
+    p = w.get_portfolio(closed_limit=100)
+    rows, _ = overview.all_rows()
+    mine = [r for r in rows if r["system"] == BOOK]
+    closed = [r for r in mine if r["status"] == "closed"]
+    conf = trade_analytics._confidence(closed, random.Random(3)) if closed else {"trades": 0, "enough": False}
+    lo, hi = (conf.get("expectancy_ci") or (None, None))
+    verdict = ("collecting" if len(closed) < 40 else "edge" if lo is not None and lo > 0 else "no_edge" if hi is not None and hi < 0 else "inconclusive")
+    try:
+        import json as _json
+        replay = _json.load(open(os.path.join(os.path.dirname(__file__), "..", "data", "research_cache", "auction_results.json")))
+        variants = replay.get("variants") or {}
+        replay_summary = {"verdict": replay.get("verdict"), "variant_verdict": replay.get("variant_verdict"),
+                          "variants": {k: {"trades": v.get("trades"), "binance": (v.get("all") or {}).get("avg_net_pct"),
+                                           "futures": ((v.get("low_cost") or {}).get("all") or {}).get("avg_net_pct"),
+                                           "halves_futures": [((v.get("low_cost") or {}).get("first_half") or {}).get("avg_net_pct"),
+                                                              ((v.get("low_cost") or {}).get("second_half") or {}).get("avg_net_pct")]}
+                                       for k, v in variants.items() if v.get("trades")}}
+    except Exception:
+        replay_summary = None
+    # $/day: closed P&L by New York day, today and the 7-day average
+    by_day: dict[str, float] = {}
+    for r in closed:
+        if r.get("closed_ts"):
+            day = datetime.fromtimestamp(r["closed_ts"], ET).strftime("%Y-%m-%d")
+            by_day[day] = by_day.get(day, 0.0) + (r.get("net_pnl") or 0.0)
+    today = datetime.fromtimestamp(now, ET).strftime("%Y-%m-%d")
+    last7 = [datetime.fromtimestamp(now - i * 86400, ET).strftime("%Y-%m-%d") for i in range(7)]
+    daily = {"goal": list(DAILY_GOAL), "today": round(by_day.get(today, 0.0), 2), "avg7": round(sum(by_day.get(d_, 0.0) for d_ in last7) / 7, 2),
+             "days": {d_: round(v, 2) for d_, v in sorted(by_day.items())[-14:]}}
+    data = {"at": now, "daily": daily, "book": {"equity": p["total_equity"], "initial": p["initial_balance"], "balance": p["balance"],
+                                "return_pct": round((p["total_equity"] / p["initial_balance"] - 1) * 100, 2) if p["initial_balance"] else None,
+                                "open": p["open_trades"], "closed": len(closed), "wins": sum(1 for r in closed if (r.get("net_pnl") or 0) > 0),
+                                "net_pnl": round(sum(r.get("net_pnl") or 0 for r in closed), 2),
+                                "avg_r": round(sum(r["r"] for r in closed if r.get("r") is not None) / max(1, sum(1 for r in closed if r.get("r") is not None)), 3) if closed else None,
+                                "enabled": book_switches.enabled(BOOK), "equity_history": p.get("equity_history", [])[-300:]},
+            "verdict": {"status": verdict, "trades": len(closed), "needed": 40, "expectancy_usd": conf.get("expectancy_usd"), "ci": [lo, hi]},
+            "config": {"symbols": list(SYMBOLS), "variant": VARIANT, "risk_pct": RISK_PCT, "max_gross": MAX_GROSS, "max_open": MAX_OPEN, "max_leverage": MAX_LEVERAGE,
+                       "session": "09:30–17:00 ET", "buffer_bps": AL.BUFFER_BPS, "stop_offset_bps": AL.STOP_OFFSET_BPS, "retest_bars": AL.RETEST_BARS},
+            "instruments": views, "log": list(reversed(kv.get_sync(_k("log")) or []))[:40], "replay": replay_summary,
+            "level_labels": LEVEL_LABELS}
+    _snap_cache.update(at=now, data=data)
+    return data
+
+
+# ── The chart: bars with the study's levels, lines, signals and this book's trades drawn on them ────────────────────
+CHART_LEVELS = ("PDH", "PDL", "ONH", "ONL", "WKH", "WKL", "ORBH", "ORBL", "IBH", "IBL", "IBH1", "IBL1", "IBH2", "IBL2")
+
+
+async def chart(sym: str, bars_n: int = 600, now: float | None = None) -> dict:
+    """What the mentor's chart shows for one instrument: the last `bars_n` closed 5-minute bars, VWAP and the EMAs, every
+    level as a per-bar series (they step at the session boundaries), the study's own signals over the window (what the
+    sequence would have marked: acceptance, confirmation, retest entry, exit) and this book's real trades."""
+    import numpy as np
+    now = now or time.time()
+    df = await bars(sym, now)
+    if len(df) < 300:
+        return {"symbol": sym, "error": "not enough history yet"}
+    d = AL.session_frame(df)
+    tail = d.iloc[-bars_n:]
+    ts = [int(t.timestamp()) for t in tail.index]
+
+    def series(col: str) -> list:
+        vals = tail[col].values
+        return [None if (v is None or not np.isfinite(v)) else round(float(v), 6) for v in vals]
+    out = {"symbol": sym, "at": now, "bar_s": BAR_S,
+           "bars": [{"t": t, "o": round(float(r.open), 6), "h": round(float(r.high), 6), "l": round(float(r.low), 6), "c": round(float(r.close), 6), "v": round(float(r.volume), 2),
+                     "session": bool(r.in_session)} for t, r in zip(ts, tail.itertuples())],
+           "lines": {k: series(k) for k in ("vwap", "ema9", "ema20", "ema50", "ema200")},
+           "levels": {k: series(k) for k in CHART_LEVELS},
+           "current_levels": [{"name": k, "label": LEVEL_LABELS.get(k, k), "price": round(float(tail.iloc[-1][k]), 6)} for k in CHART_LEVELS if np.isfinite(tail.iloc[-1][k])]}
+    # the study's signals over the window, under the book's own arrangement (every setup, gates aside)
+    events = []
+    try:
+        trades = AL.simulate(df, sym, min_grade=0, entry=VARIANT.get("entry", "retest"), target_mode=VARIANT.get("target_mode", "second"))
+        lo = tail.index[0]
+        for t in trades:
+            if t.accept_ts < lo:
+                continue
+            g = t.grade
+            events.append({"t": int(t.accept_ts.timestamp()), "kind": "accept", "direction": t.direction, "level": t.level_name, "price": t.level})
+            events.append({"t": int(t.confirm_ts.timestamp()), "kind": "confirm", "direction": t.direction, "level": t.level_name, "grade": g})
+            events.append({"t": int(t.entry_ts.timestamp()), "kind": "entry", "direction": t.direction, "price": t.entry, "stop": t.stop, "target": t.target,
+                           "target_name": t.target_name, "grade": g, "taken": g >= VARIANT.get("min_grade", 0) and abs(t.target / t.entry - 1) * 1e4 >= VARIANT.get("min_target_bps", 0)})
+            if t.exit_ts is not None:
+                events.append({"t": int(t.exit_ts.timestamp()), "kind": "exit", "direction": t.direction, "price": t.exit, "reason": t.exit_reason,
+                               "pnl_pct": round(t.pnl_pct, 3), "r": round(t.r, 2) if t.r is not None else None})
+    except Exception as e:
+        out["events_error"] = str(e)
+    out["study_events"] = events
+    # this book's real trades on the instrument
+    from experiments import books
+    w = books.WALLETS[BOOK]
+    p = w.get_portfolio(closed_limit=100)
+    mine = []
+    for t in p["open_trades"] + p["closed_trades"]:
+        if t["symbol"] != sym:
+            continue
+        mine.append({"id": t["id"], "direction": t["direction"], "entry_ts": _ts_of(t.get("opened_at")), "exit_ts": _ts_of(t.get("closed_at")),
+                     "entry": t["entry_price"], "exit": t.get("current_price") if t.get("status") == "open" else t.get("exit_price") or t.get("current_price"),
+                     "stop": t.get("stop_loss"), "target": t.get("take_profit_1"), "level": t.get("level_name"), "target_name": t.get("target_name"),
+                     "grade": t.get("grade"), "reason": t.get("close_reason"), "pnl_usd": t.get("pnl_usd"), "status": t.get("status")})
+    out["trades"] = mine
+    return out
+
+
+def _ts_of(iso) -> float | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+        return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+    except (TypeError, ValueError):
+        return None

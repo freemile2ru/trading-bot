@@ -54,10 +54,11 @@ export function TargetPanel() {
             <span className="text-sm text-gray-400">/ day, 7-day avg</span>
           </div>
           <div className="text-xs text-gray-400 mt-0.5">
-            target <b className="text-gray-200">{fmtUsd(r.target, 0)}</b> · today <span className={tone(t.today)}>{fmtUsdSigned(t.today, 0)}</span> · 30-day <span className={tone(t.avg30)}>{fmtUsdSigned(t.avg30, 0)}</span>/day
+            target <b className="text-gray-200" title={r.target_why}>{fmtUsd(r.target, 0)}</b>{r.goal != null && <> · goal <span className="text-gray-300">{fmtUsd(r.goal, 0)}</span></>} · today <span className={tone(t.today)}>{fmtUsdSigned(t.today, 0)}</span> · 30-day <span className={tone(t.avg30)}>{fmtUsdSigned(t.avg30, 0)}</span>/day
           </div>
           <div className="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden"><div className={clsx('h-full rounded-full', t.avg7 >= r.target ? 'bg-emerald-500' : 'bg-blue-500')} style={{ width: `${pct7 * 100}%` }} /></div>
           <div className="mt-1 text-[11px] text-gray-500">{t.avg7 >= r.target ? 'on target' : `${fmtUsd(r.gap7, 0)}/day short of target`}{r.measuring_since && ` · measuring since ${r.measuring_since}`}</div>
+          {r.target_why && <div className="mt-0.5 text-[10px] text-gray-600">Target = {r.target_why}. It rises as books earn their verdicts and the ladder funds them.</div>}
         </div>
 
         <div className="min-w-[14rem]">

@@ -42,16 +42,26 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "107500"))      # $50k across the books + $56.5k added to the copy books + $1k auction book (2026-10-31)
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "185500"))      # $50k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01)
 TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "200"))    # $200/day since 2026-10-29 (0.4% of the $50k a day)
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
     "futures_trend": 5_500.0,
     "unlocks": 4_000.0, "vol_premium": 3_000.0,
-    "claude_swing": 500.0, "auto": 1_000.0, "copy_trading": 20_000.0, "copy_stocks": 20_000.0, "copy_futures": 20_000.0,
-    "weekly_rs": 1_000.0, "multi_factor": 1_000.0, "cascade": 500.0, "main": 500.0, "auction": 1_000.0,
-    **{f"copy_{m}_{v}": round(5_500 / 9, 2) for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")},
+    "auto": 50_000.0, "copy_trading": 32_750.0, "copy_stocks": 32_750.0,
+    "weekly_rs": 1_000.0, "multi_factor": 1_000.0, "cascade": 500.0, "main": 1_000.0, "auction": 30_000.0,
 }
+# 2026-11-02 (consolidation, the user's call after the first full review): claude_swing retired (12 trades, −0.16R,
+# 24 days) — its $500 parked in main; the nine $611.11 copy-variant wallets folded into the three market books
+# (+$1,833.33 each) so the variants are judged as rules on one wallet instead of nine books with 0–15 trades each.
+# 2026-11-03: copy_futures retired (zero copies in a week) — its $21,833.34 split between the crypto and stock copy books.
+GOAL_USD_DAY = TARGET_USD_DAY                                   # the $200/day ambition; trading/target.py sets today's target from the evidence
+# 2026-11-01 (later): the mentor's book goes to $30,000 (new money) — the user's live experiment with real-world sizes and a
+# $200–500/day goal (experiments/auction.DAILY_GOAL).
+# 2026-11-01: the autotrader is the executor of the evidence books (autotrader/engine.EXECUTOR) and the user moved it to
+# its paper wallet so trades can carry real-world sizes: $50,000 (new money). The signal books' entries (events 8k,
+# unlocks 4k, weekly 1k, cascade 500, multi_factor 1k) are its lane budgets; the scanner and reversal lanes get a fixed
+# measuring budget each (autotrader/engine.ENTRY_BUDGET_USD); the rest is the ledger's reserve.
 # 2026-10-30: the stocks trend book failed its 40-trade verdict and was retired (its lifetime −$375 stays on its ledger,
 # off the plan). Its $5,500 went, as asked, entirely to the nine copy-trading variant books ($611.11 each).
 # 2026-10-29 (later): copy books for stock and commodity perps join at $1k each, taken from the autotrader's scanner
@@ -159,9 +169,13 @@ def shortfall(book: str) -> float:
 
 
 def apply_plan(withdraw_only: bool = False) -> list[dict]:
-    """Bring every planned book to its plan (idempotent; run every tracker tick so withdrawals catch up)."""
+    """Bring every planned book to its plan (idempotent; run every tracker tick so withdrawals catch up). Signal ledgers
+    (trading/overview.SIGNAL_SYSTEMS) keep their plan entry as the autotrader lane's budget but hold no plan money."""
+    from trading import overview
     out = []
     for book in plan():
+        if book in overview.SIGNAL_SYSTEMS:
+            continue
         gap = shortfall(book)
         try:
             entry = deposit(book, gap) if gap > 0 and not withdraw_only else withdraw(book, -gap) if gap < 0 else None

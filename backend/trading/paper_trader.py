@@ -162,7 +162,7 @@ def _new_trade(
     trade["risk_usd"] = round(risk, 2)
     trade["reward_1_usd"] = round(reward_1, 2)
     trade["risk_reward"] = round(reward_1 / risk, 2) if risk else 0
-    exits.stamp(trade, (extra or {}).get("exit_policy"))
+    exits.stamp(trade, exits.lock_policy_for((extra or {}).get("strategy"), (extra or {}).get("exit_policy")))
     _refresh(trade, fill)
     return trade
 

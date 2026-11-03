@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  CandlestickSeries, ColorType, createChart, CrosshairMode, HistogramSeries, LineSeries, LineStyle,
+  CandlestickSeries, ColorType, createChart, createSeriesMarkers, CrosshairMode, HistogramSeries, LineSeries, LineStyle,
   type IChartApi, type IPriceLine, type ISeriesApi, type MouseEventParams, type Time, type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Candle } from '../../types/trade'
@@ -22,6 +22,9 @@ export type Tool = 'cursor' | 'trend' | 'hline'
 export type Drawing =
   | { id: string; type: 'hline'; price: number }
   | { id: string; type: 'trend'; a: { time: number; price: number }; b: { time: number; price: number } }
+/** Extra annotations a caller can paint: markers on the candles and price segments (entry → exit legs, stop/target lines). */
+export type ChartMarker = { time: number; position: 'aboveBar' | 'belowBar' | 'inBar'; color: string; shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square'; text?: string }
+export type ChartSegment = { a: { time: number; price: number }; b: { time: number; price: number }; color: string; dashed?: boolean; width?: 1 | 2 }
 export type NewDrawing =
   | { type: 'hline'; price: number }
   | { type: 'trend'; a: { time: number; price: number }; b: { time: number; price: number } }
@@ -101,9 +104,9 @@ const fmt = (v: number | null | undefined, p: number) =>
 
 // ── Chart ────────────────────────────────────────────────────────────────────
 
-export function TradeChart({ candles, live, indicators, levels, precision, tool, drawings, onDraw }: {
+export function TradeChart({ candles, live, indicators, levels, precision, tool, drawings, onDraw, markers = [], segments = [] }: {
   candles: Candle[]; live: Candle | null; indicators: Indicators; levels: Level[]; precision: number
-  tool: Tool; drawings: Drawing[]; onDraw: (d: NewDrawing) => void
+  tool: Tool; drawings: Drawing[]; onDraw: (d: NewDrawing) => void; markers?: ChartMarker[]; segments?: ChartSegment[]
 }) {
   const box = useRef<HTMLDivElement>(null)
   const chart = useRef<IChartApi | null>(null)
@@ -112,6 +115,8 @@ export function TradeChart({ candles, live, indicators, levels, precision, tool,
   const vals = useRef<Computed | null>(null)
   const lines = useRef<IPriceLine[]>([])
   const drawn = useRef<{ price: IPriceLine[]; series: ISeriesApi<'Line'>[] }>({ price: [], series: [] })
+  const painted = useRef<ISeriesApi<'Line'>[]>([])
+  const markerApi = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null)
   const toolRef = useRef(tool)
   const pending = useRef<{ time: number; price: number } | null>(null)
   const [hasPending, setHasPending] = useState(false)
@@ -198,7 +203,7 @@ export function TradeChart({ candles, live, indicators, levels, precision, tool,
       }
     })
     chart.current = ch
-    return () => { ch.remove(); chart.current = null; s.current = {} }
+    return () => { ch.remove(); chart.current = null; s.current = {}; markerApi.current = null; painted.current = [] }
   }, [])
 
   // Changing tool cancels a half-drawn trend line.
@@ -277,6 +282,28 @@ export function TradeChart({ candles, live, indicators, levels, precision, tool,
       }
     }
   }, [drawings])
+
+  // Caller's annotations: markers on the candles, and price segments.
+  useEffect(() => {
+    const series = s.current.candles
+    if (!series) return
+    const ms = [...markers].sort((x, y) => x.time - y.time).map(m => ({ ...m, time: m.time as UTCTimestamp }))
+    if (!markerApi.current) markerApi.current = createSeriesMarkers(series, ms)
+    else markerApi.current.setMarkers(ms)
+  }, [markers, candles])
+  useEffect(() => {
+    const ch = chart.current
+    if (!ch) return
+    painted.current.forEach(x => ch.removeSeries(x))
+    painted.current = []
+    for (const sg of segments) {
+      if (sg.b.time <= sg.a.time) continue
+      const ln = ch.addSeries(LineSeries, { color: sg.color, lineWidth: sg.width ?? 1, lineStyle: sg.dashed ? LineStyle.Dotted : LineStyle.Solid,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false })
+      ln.setData([{ time: sg.a.time as UTCTimestamp, value: sg.a.price }, { time: sg.b.time as UTCTimestamp, value: sg.b.price }])
+      painted.current.push(ln)
+    }
+  }, [segments, candles])
 
   // Legend: the hovered bar, or the latest one.
   const cs = data.current

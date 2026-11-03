@@ -12,12 +12,15 @@ import logging
 import os
 import time
 
+import httpx
+
 from autotrader import engine as autotrader
 from trading import monitor, position_manager
 from data import feeds
 from storage import signals as signal_log
 from storage import state
 from data.coinmarketcap_client import get_tradeable_pool
+from data.http import err_text
 from scanner import bus, escalation, selection, watchlist
 from scanner.engine import scan_symbol
 
@@ -416,6 +419,9 @@ async def _loop(name: str, interval: int, fn, initial_delay: float = 0.0) -> Non
             await fn()
         except asyncio.CancelledError:
             raise
+        except (httpx.TransportError, httpx.HTTPStatusError) as e:
+            # A feed being down is a one-line event, not a 60-line traceback every interval.
+            logger.warning("%s sweep skipped — a feed is unavailable: %s", name, err_text(e))
         except Exception as e:
             logger.exception("%s sweep raised — continuing: %s", name, e)
 

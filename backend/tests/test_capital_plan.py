@@ -20,26 +20,27 @@ def test_withdraw_takes_at_most_free_cash(tmp_path):
 
 
 def test_plan_adds_up_to_the_total():
-    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 107_500
-    assert all(capital.PLAN[b] == 20_000 for b in ("copy_trading", "copy_stocks", "copy_futures"))
+    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 185_500
+    assert capital.PLAN["copy_trading"] == capital.PLAN["copy_stocks"] == 32_750.0 and "copy_futures" not in capital.PLAN   # $60k + the variants' $5.5k, futures retired
+    assert "claude_swing" not in capital.PLAN and not any(b.startswith("copy_crypto_") for b in capital.PLAN) and capital.PLAN["main"] == 1_000
 
 
 def test_apply_plan_moves_pair_books_both_ways(monkeypatch):
-    _clean("carry", "events")
+    _clean("carry", "carry_q")
     kv.set_sync(capital._k("added", "carry"), 20_000.0)             # held $30k under the old programme
-    monkeypatch.setattr(capital, "PLAN", {"carry": 8_000.0, "events": 12_000.0})
+    monkeypatch.setattr(capital, "PLAN", {"carry": 8_000.0, "carry_q": 12_000.0})
     done = capital.apply_plan()
-    assert sorted((d["book"], d["amount"]) for d in done) == [("carry", -22_000.0), ("events", 2_000.0)]
+    assert sorted((d["book"], d["amount"]) for d in done) == [("carry", -22_000.0), ("carry_q", 2_000.0)]
     assert capital.added("carry") == -2_000 and capital.initial("carry", 10_000) == 8_000
-    assert capital.initial("events", 10_000) == 12_000
+    assert capital.initial("carry_q", 10_000) == 12_000
     assert capital.apply_plan() == []                                 # idempotent
     assert capital.shortfall("carry") == 0.0
     # While paused only withdrawals run.
-    monkeypatch.setattr(capital, "PLAN", {"carry": 9_000.0, "events": 11_000.0})
+    monkeypatch.setattr(capital, "PLAN", {"carry": 9_000.0, "carry_q": 11_000.0})
     done = capital.apply_plan(withdraw_only=True)
-    assert [(d["book"], d["amount"]) for d in done] == [("events", -1_000.0)]
+    assert [(d["book"], d["amount"]) for d in done] == [("carry_q", -1_000.0)]
     assert capital.shortfall("carry") == 1_000.0
-    _clean("carry", "events")
+    _clean("carry", "carry_q")
 
 
 def test_pause_never_raises_sizing_for_a_cut_book():

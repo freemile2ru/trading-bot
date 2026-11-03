@@ -71,7 +71,7 @@ function fmtWhen(ts: number | null): string {
   return new Date(ts * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket' }
+const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket', cascade: 'cascade fade', factor: 'multi-factor', reversal: 'reversal score' }
 
 function SystemBadge({ system, lane }: { system: SystemKey; lane?: string | null }) {
   return (

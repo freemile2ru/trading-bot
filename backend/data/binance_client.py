@@ -142,7 +142,7 @@ async def fetch_futures_klines(symbol: str, interval: str = "4h", limit: int = 1
 
     rows = await get_json(f"{FAPI}/klines", params={"symbol": symbol, "interval": interval, "limit": limit})
     return [{"open_time": r[0], "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]),
-             "close_time": r[6]} for r in rows]
+             "volume": float(r[5]), "close_time": r[6]} for r in rows]
 
 
 async def fetch_futures_price(symbol: str) -> float | None:

@@ -46,7 +46,9 @@ function VariantCard({ b, open }: { b: CopyBook; open: CopyStatus['open'] }) {
         <span className={clsx('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded', b.enabled ? 'bg-emerald-900/50 text-emerald-300' : 'bg-gray-800 text-gray-400')} title="Switch it on the Books tab">{b.enabled ? 'ON' : 'OFF'}</span>
       </div>
       <div className="grid grid-cols-3 gap-2 text-xs">
-        <div className="bg-gray-800/40 rounded px-2 py-1.5"><div className="text-[10px] text-gray-500">Equity</div><div className="tabular-nums text-gray-100">{fmtUsd(b.equity, 0)} <span className={clsx('text-[10px]', tone(ret))}>{pct(ret, 2)}</span></div></div>
+        {b.shared_wallet
+          ? <div className="bg-gray-800/40 rounded px-2 py-1.5"><div className="text-[10px] text-gray-500">7-day</div><div className="tabular-nums text-gray-100"><span className={tone(b.per_day_7d ?? 0)}>{fmtUsdSigned(b.per_day_7d ?? 0, 0)}</span>/day · {b.trades_7d ?? 0} trades</div></div>
+          : <div className="bg-gray-800/40 rounded px-2 py-1.5"><div className="text-[10px] text-gray-500">Equity</div><div className="tabular-nums text-gray-100">{fmtUsd(b.equity, 0)} <span className={clsx('text-[10px]', tone(ret))}>{pct(ret, 2)}</span></div></div>}
         <div className="bg-gray-800/40 rounded px-2 py-1.5"><div className="text-[10px] text-gray-500">Open · closed</div><div className="tabular-nums text-gray-100">{b.open} · {b.closed}</div></div>
         <div className="bg-gray-800/40 rounded px-2 py-1.5"><div className="text-[10px] text-gray-500">Won · net</div><div className="tabular-nums text-gray-100">{b.win_rate == null ? '—' : `${b.win_rate}%`} · <span className={tone(b.net_pnl)}>{fmtUsdSigned(b.net_pnl, 0)}</span></div></div>
       </div>
@@ -203,7 +205,7 @@ export function CopyPage() {
     <div className="space-y-4">
       {/* Sub-tabs: one per market */}
       <div className="flex flex-wrap items-end gap-1 border-b border-gray-800">
-        {MARKETS.map(([k, label]) => {
+        {MARKETS.filter(([k]) => !d.books || d.books[k]).map(([k, label]) => {
           const bk = d.books?.[k]
           return (
             <button key={k} onClick={() => setMarket(k)}
@@ -266,7 +268,7 @@ export function CopyPage() {
           <div className="text-[10px] text-gray-500">Record kept for later study: {d.log.observations.toLocaleString()} observations of {d.log.positions} leader positions{d.log.since ? ` since ${new Date(d.log.since * 1000).toLocaleDateString()}` : ''} · {d.log.selections} daily selections — every poll's pair, side, leverage, entry, price and our decision (<span className="font-mono">/api/copy/log</span>).</div>
         )}
         <div className="text-[10px] text-gray-600">Under each leader: the pairs they hold in this market at the last poll{d.positions_at ? ` (${ago(d.positions_at)})` : ''} — direction, leverage, entry, move since entry in their favour, and what we did: copied, skipped (hover for why), seen but not copied, or held before we started tracking them.</div>
-        <div className="text-[10px] text-gray-600">Hyperliquid and Lighter bar: equity $50k–$20M, month ROI 5–300% (more is deposits), the month's P&L positive (Hyperliquid also week and all-time), monthly turnover 2–300× equity (more is a market maker), then the same profile and curve tests on the account's fills. ROI for Binance is 90-day, for Hyperliquid the month. Score = the curve's daily Sharpe × share of positive weeks − drawdown. Our copies run at {d.config.leg_pct}% of the book's equity each, leverage capped at {d.config.max_leverage}×, an {d.config.disaster_pct}% stop.</div>
+        <div className="text-[10px] text-gray-600">Hyperliquid and Lighter bar: equity $50k–$20M, month ROI 5–300% (more is deposits), the month's P&L positive (Hyperliquid also week and all-time), monthly turnover 2–300× equity (more is a market maker), then the same profile and curve tests on the account's fills. ROI for Binance is 90-day, for Hyperliquid the month. Score = the curve's daily Sharpe × share of positive weeks − drawdown. Each copy's stop sits at {d.config.stop_x ?? 2}× that leader's median losing move (between {d.config.stop_pct_min ?? 1}% and {d.config.disaster_pct}%) and the leg is sized so the stop costs {d.config.risk_pct ?? 2}% of the book (never more than the book's equity), leverage capped at {d.config.max_leverage}×. A copy is skipped when what is left of the leader's median win would not cover the round trip ({d.config.round_trip_pct ?? 0.16}%) {d.config.fee_gate_x ?? 3} times over. Profits are locked: once a copy has been $100 up, half of its best open P&L is kept by a ratcheting stop. When the leader halves we close half and ride the rest to their close; the only clock is a {Math.round((d.config.max_hold_h ?? 168) / 24)}-day backstop.</div>
       </section>
 
       {/* The copy rules under test in this market: base + three variants, each with its own wallet and verdict */}

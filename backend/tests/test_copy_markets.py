@@ -1,6 +1,8 @@
 """Copy trading routes each leader position to the book for its market."""
 import asyncio
+import pytest
 from experiments import books, copy_trading as ct
+from trading import tape
 
 
 def test_market_of_uses_the_markets_lists():
@@ -11,24 +13,30 @@ def test_market_of_uses_the_markets_lists():
 
 def test_every_market_has_its_own_wallet():
     ws = ct._wallets()
-    assert set(ws) == {"crypto", "stocks", "futures"}
-    assert ws["crypto"].label == "copy_trading" and ws["stocks"].label == "copy_stocks" and ws["futures"].label == "copy_futures"
+    assert set(ws) == {"crypto", "stocks"}                                                   # futures retired 2026-11-03
+    assert ws["crypto"].label == "copy_trading" and ws["stocks"].label == "copy_stocks" and "futures" in ct.RETIRED_MARKETS
     assert all(ct.BOOKS_BY_MARKET[m] in books.LABELS for m in ws)
 
 
 # ── Variants (2026-10-30) ──────────────────────────────────────────────────────
 
 NOW = 1_800_000_000.0
+
+
+async def no_tape(now=None):
+    """The tape feed as the mirror tests see it: unknown, so no gate."""
+    return None
 PROF = {"median_hold_h": 24.0, "win_move_pct": 2.0, "loss_move_pct": 1.0, "n": 30, "win_rate": 60.0}
 
 
-def test_every_market_has_a_wallet_per_variant_and_the_plan_funds_them():
+def test_every_variant_of_a_market_trades_in_that_markets_one_book():
     from trading import capital
     ws = ct._all_wallets()
-    assert set(ws) == {(m, v) for m in ct.MARKETS for v in ct.VARIANTS}
-    assert ws[("crypto", "base")].label == "copy_trading" and ws[("stocks", "wide")].label == "copy_stocks_wide"
-    assert all(name in books.LABELS for name in ct.ALL_BOOKS.values())
-    assert all(capital.PLAN.get(ct.book_name(m, v)) == round(5_500 / 9, 2) for m in ct.MARKETS for v in ct.VARIANTS if v != "base")
+    assert set(ws) == {(m, v) for m in ct.MARKETS if m not in ct.RETIRED_MARKETS for v in ct.VARIANTS}
+    assert ws[("crypto", "base")] is ws[("crypto", "wide")] is ws[("crypto", "late")] and ws[("crypto", "base")].label == "copy_trading"
+    assert ws[("stocks", "fast")].label == "copy_stocks" and len(ct._unique_wallets()) == 2      # crypto and stocks; futures retired
+    assert all(capital.PLAN.get(ct.book_name(m, v)) for m in ct.MARKETS if m not in ct.RETIRED_MARKETS for v in ct.VARIANTS)
+    assert not any(b.startswith("copy_crypto_") for b in capital.PLAN)                               # the nine $611 wallets were folded 2026-11-02
 
 
 def test_late_variant_takes_an_old_position_at_half_size_only_when_it_has_barely_moved():
@@ -92,6 +100,7 @@ def test_a_single_missed_poll_does_not_close_copies_held_by_several_variants(tmp
         return 101.0
     monkeypatch.setattr(ct, "leader_rows", rows)
     monkeypatch.setattr(monitor, "live_price", price)
+    monkeypatch.setattr(tape, "btc_tape", no_tape)
     out = asyncio.run(ct.mirror(NOW))
     assert out["closed"] == [] and all(len(w.get_portfolio()["open_trades"]) == 1 for w in ws.values())
     out = asyncio.run(ct.mirror(NOW + 90))                          # missing twice in a row: now it is a close, for both
@@ -131,12 +140,12 @@ def test_route_sends_a_position_to_one_book_by_record_then_by_order(tmp_path):
     w = ws[("crypto", "wide")]
     for i in range(10):
         t = w.open_trade(symbol="ETHUSDT", direction="long", entry_price=100.0, stop_loss=92.0, take_profit_1=150.0, take_profit_2=160.0,
-                         notional_usd=200.0, timeframe="copy", leverage=2, extra={"exit_policy": "manual", "shadows": False})
+                         notional_usd=200.0, timeframe="copy", leverage=2, extra={"exit_policy": "manual", "shadows": False, "variant": "wide"})
         w.close_trade_manually(t["id"], 104.0, "leader_closed")
     v, why = ct.route("crypto", ["wide", "base", "fast"], ws)
     assert v == "wide" and "best record" in why
-    n, avg = ct.record_r(w)
-    assert n == 10 and avg > 0
+    n, avg = ct.record_r(w, "wide")
+    assert n == 10 and avg > 0 and ct.record_r(w, "base") == (0, None)                               # the record is per rule, by the copies' tag
 
 
 def test_mirror_copies_a_position_into_exactly_one_book(tmp_path, monkeypatch):
@@ -165,6 +174,7 @@ def test_mirror_copies_a_position_into_exactly_one_book(tmp_path, monkeypatch):
         return 3003.0
     monkeypatch.setattr(ct, "leader_rows", rows)
     monkeypatch.setattr(monitor, "live_price", price)
+    monkeypatch.setattr(tape, "btc_tape", no_tape)                                      # the wide book's tape gate stays out of this
     out = asyncio.run(ct.mirror(NOW))
     assert len(out["opened"]) == 1 and out["opened"][0]["variant"] == "base"            # fresh position: all three would take it; base is the plainer rule
     assert sorted(out["opened"][0]["routed_from"]) == ["base", "late", "wide"]
@@ -172,3 +182,95 @@ def test_mirror_copies_a_position_into_exactly_one_book(tmp_path, monkeypatch):
     routed = [e for e in ct.skipped() if e.get("routed")]
     assert sorted(e["variant"] for e in routed) == ["late", "wide"] and "routed to" in routed[0]["reason"]
     kv.delete_sync(ct._k("leaders"), ct._k("seen", "L7"), ct._k("skipped"))
+
+
+# ── Exits and sizing re-ruled 2026-11-02 ──────────────────────────────────────
+
+def test_stop_sits_on_the_leaders_typical_loss_and_the_leg_is_sized_to_it():
+    assert ct.stop_pct({"loss_move_pct": 1.0}) == 2.0                                  # 2× their median loss
+    assert ct.stop_pct({"loss_move_pct": 0.2}) == ct.STOP_PCT_MIN                      # never tighter than 1%
+    assert ct.stop_pct({"loss_move_pct": 5.0}) == ct.DISASTER_PCT == ct.stop_pct(None)  # never wider than the disaster stop; no profile → disaster
+    assert ct.leg_notional(20_000, 2.0) == 20_000                                      # 2% risk at a 2% stop: the whole book, which is the cap
+    assert ct.leg_notional(20_000, 1.0) == 20_000 * ct.MAX_LEG_PCT / 100               # a 1% stop would ask for 2× equity: capped
+    assert ct.leg_notional(20_000, 4.0) == 10_000 and ct.leg_notional(500, 4.0) == 250     # the disaster stop: half the book
+    assert ct.leg_notional(20_000, 2.0, "stocks") == 10_000 and ct.leg_notional(20_000, 2.0, "crypto") == 20_000   # a stock perp: never more than half the book
+    assert ct.CONSENSUS_X == 1.0                                                           # consensus is recorded, never sized
+
+
+def test_a_copy_that_cannot_pay_its_fees_is_skipped():
+    pos = {"side": "long", "entry": 100.0, "opened_ts": NOW - 600}
+    ok, why, *_ = ct.judge(pos, {**PROF, "win_move_pct": 0.3}, 100.0, NOW)            # a 0.3% median win vs a 0.16% round trip × 3
+    assert not ok and why.startswith("not worth the fees")
+    ok, why, *_ = ct.judge(pos, PROF, 100.0, NOW)                                      # 2% is plenty
+    assert ok
+    ok, why, *_ = ct.judge(pos, {**PROF, "win_move_pct": 0.6}, 100.3, NOW)            # 0.6% win, +0.3% gone already: 0.3% left is not enough
+    assert not ok and "not worth the fees" in why
+
+
+def test_wide_variant_skips_legs_that_fight_the_tape(tmp_path, monkeypatch):
+    from trading import book_switches, monitor, tape
+    from trading.paper_trader import PaperWallet
+    from storage import state as kv
+    ws = {v: PaperWallet(str(tmp_path / f"{v}.db"), label=f"copy_{v}", initial_balance=10_000) for v in ("base", "wide")}
+    monkeypatch.setattr(ct, "VARIANTS", {v: ct.VARIANTS[v] for v in ("base", "wide")})
+    monkeypatch.setattr(ct, "ALL_BOOKS", {("crypto", "base"): "copy_trading", ("crypto", "wide"): "copy_crypto_wide"})
+    monkeypatch.setitem(books.WALLETS, "copy_trading", ws["base"])
+    monkeypatch.setitem(books.WALLETS, "copy_crypto_wide", ws["wide"])
+    monkeypatch.setattr(books, "ENABLED", True)
+    monkeypatch.setattr(book_switches, "enabled", lambda name: True)
+    monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    kv.set_sync(ct._k("leaders"), {"at": NOW, "pool": [{"id": "L8", "venue": "binance", "nickname": "eight", "profile": PROF}]})
+    kv.delete_sync(ct._k("seen", "L8"), ct._k("skipped"))
+    assert "base" in ct.variants_of("L8") and "wide" in ct.variants_of("L8")
+
+    async def rows(L, now):
+        return [{"position_id": "p8", "symbol": "NEARUSDT", "side": "long", "opened_ts": NOW - 600, "closed_ts": None, "entry": 4.0, "close_price": None,
+                 "leverage": 5.0, "remaining": 1.0, "roi": 0.0, "status": "Open"}]
+
+    async def price(sym):
+        return 4.0
+
+    async def red_tape(now=None):
+        return {"price": 77_000.0, "vwap": 78_000.0, "pct": -1.282, "tilt": "down"}
+    monkeypatch.setattr(ct, "leader_rows", rows)
+    monkeypatch.setattr(monitor, "live_price", price)
+    monkeypatch.setattr(tape, "btc_tape", red_tape)
+    # routing would normally hand a fresh position to the base book anyway; make base full so only wide could take it
+    monkeypatch.setattr(ct, "MAX_OPEN", 0)
+    out = asyncio.run(ct.mirror(NOW))
+    assert out["opened"] == [] and ws["wide"].get_portfolio()["open_trades"] == []
+    reasons = {s["variant"]: s["reason"] for s in ct.skipped() if s.get("position_id") == "p8"}
+    assert reasons["wide"].startswith("tape: BTC -1.28% below its 24h VWAP") and reasons["base"] == "book full"
+    kv.delete_sync(ct._k("leaders"), ct._k("seen", "L8"), ct._k("skipped"))
+
+
+def test_against_tape():
+    from trading import tape
+    assert tape.against_tape("long", {"tilt": "down", "pct": -0.5}).startswith("tape:")
+    assert tape.against_tape("short", {"tilt": "down", "pct": -0.5}) is None
+    assert tape.against_tape("short", {"tilt": "up", "pct": 0.5}).startswith("tape:")
+    assert tape.against_tape("long", None) is None                                  # feed down: no gate
+
+
+def test_btc_tape_is_a_volume_weighted_average_of_the_day(monkeypatch):
+    from trading import tape
+    from data import binance_client
+
+    async def klines(symbol, interval="4h", limit=100):
+        assert symbol == "BTCUSDT" and interval == "5m" and limit == 288
+        return [{"high": 101.0, "low": 99.0, "close": 100.0, "volume": 3.0}, {"high": 111.0, "low": 109.0, "close": 110.0, "volume": 1.0}]
+    monkeypatch.setattr(binance_client, "fetch_futures_klines", klines)
+    tape._cache.update(at=0.0, data=None)
+    t = asyncio.run(tape.btc_tape(1.0))
+    assert t["vwap"] == 102.5 and t["price"] == 110.0 and t["tilt"] == "up" and t["pct"] == pytest.approx(7.317, abs=0.01)
+    assert asyncio.run(tape.btc_tape(2.0)) is t                                     # cached
+    tape._cache.update(at=0.0, data=None)
+
+
+def test_an_empty_venue_selection_keeps_that_venues_previous_leaders():
+    prev = [{"id": "b1", "venue": "binance", "score": 1.0}, {"id": "h1", "venue": "hyperliquid", "score": 2.0}, {"id": "l1", "venue": "lighter", "score": 0.5}]
+    fresh = {"binance": [{"id": "b2", "venue": "binance", "score": 1.5}], "hyperliquid": [], "lighter": []}
+    out = ct._merge_with_previous(fresh, prev, 1_000.0)
+    assert [L["id"] for L in out] == ["b2", "h1", "l1"] and out[1]["stale_since"] == 1_000.0 and "stale_since" not in out[0]
+    assert ct._merge_with_previous({"binance": [], "hyperliquid": [], "lighter": []}, prev, 2_000.0) == [{**L, "stale_since": 2_000.0} for L in prev]
+    assert ct._merge_with_previous({"binance": [], "hyperliquid": [], "lighter": []}, [], 2_000.0) == []      # nothing before either

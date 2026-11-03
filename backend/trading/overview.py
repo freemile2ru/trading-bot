@@ -35,6 +35,15 @@ SYSTEMS["vol_premium"] = "Vol premium (weekly BTC/ETH condors)"
 from markets import engine as _markets                     # noqa: E402 — stocks / futures books
 SYSTEMS.update(_markets.LABELS)
 PAPER_SYSTEMS = ("main", "auto", "scalper", "impulse")
+# Signal ledgers (2026-10-31, "the autotrader executes the evidence"): these books still run their rules on their own paper
+# wallets, but those wallets are SIGNALS — the autotrader mirrors every position on its active ledger, where the trade
+# counts. Their rows are kept out of the Trades and Portfolio views and the tracker unless asked for, so a trade shows once.
+# Books with their own page (2026-11-01): the mentor's system is a separate project with its own tab; its trades stay out of
+# the Trades tab's default view and are shown only when that system is asked for.
+STANDALONE_SYSTEMS = {"auction": "the mentor's system — see its own tab"}
+SIGNAL_SYSTEMS = {"cascade": "signal ledger — executed by the autotrader's cascade lane", "weekly_rs": "signal ledger — executed by the autotrader's weekly lane",
+                  "multi_factor": "signal ledger — executed by the autotrader's factor lane", "events": "signal ledger — executed by the autotrader's event lane",
+                  "unlocks": "signal ledger — executed by the autotrader's unlock lane"}
 # Books of retired strategies (see experiments/retired.py). Their trades stay on record but are left
 # out of the Trades and Portfolio views — and the combined paper total — unless asked for.
 RETIRED_SYSTEMS = {"scalper": "order-flow scalper, retired 2026-09-29", "scalper_live": "order-flow scalper, retired 2026-09-29",
@@ -43,7 +52,9 @@ RETIRED_SYSTEMS = {"scalper": "order-flow scalper, retired 2026-09-29", "scalper
                    "auto_rules": "autotrader rules twin, retired 2026-10-17", "signals_rules": "signals · rules only, retired 2026-10-21",
                    "signals_claude": "signals · Claude, retired 2026-10-25", "hold72": "hold vs BTC, retired 2026-10-24", "fade24": "fade the scanner, retired 2026-10-28",
                    "stocks_trend": "stocks trend book, retired 2026-10-30", "stocks_rules": "stocks scanner rules, retired 2026-10-12", "futures_rules": "futures scanner rules, retired 2026-10-12",
-                   "stocks_claude": "stocks Claude-confirmed, retired 2026-10-19", "futures_claude": "futures Claude-confirmed, retired 2026-10-19"}
+                   "stocks_claude": "stocks Claude-confirmed, retired 2026-10-19", "futures_claude": "futures Claude-confirmed, retired 2026-10-19",
+                   "claude_swing": "Claude swing, retired 2026-11-02", "copy_futures": "copy trading · commodity perps, retired 2026-11-03",
+                   **{f"copy_{m}_{v}": f"copy variant wallet, folded into the {m} copy book 2026-11-02" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")}}
 SORTABLE = {"closed_ts", "opened_ts", "net_pnl", "gross_pnl", "r", "hold_min", "symbol", "notional",
             "system", "direction", "exit_reason", "entry_price", "exit_price", "outcome", "costs", "leverage"}
 
@@ -95,6 +106,8 @@ def _swing_row(t: dict, system: str) -> dict:
         "note": t.get("claude_thesis") or t.get("oracle_reasoning") or "",
         # The autotrader's lane (scanner / event short / unlock short / weekly basket) — which strategy placed it.
         "lane": _lane_of(t) if system.startswith("auto") else None,
+        # The mentor's book: which level was accepted, which level was the target, and the trade light's grade.
+        **({"level_name": t.get("level_name"), "target_name": t.get("target_name"), "grade": t.get("grade")} if system == "auction" else {}),
         "mfe_r": t.get("peak_r"),
         "quantity": t.get("quantity"), "liquidation": t.get("liquidation_price"), "tp_set": t.get("tp_set", True),
     }
@@ -220,7 +233,7 @@ def all_rows() -> tuple[list[dict], dict]:
 
 def matches(r: dict, f: dict) -> bool:
     """The Trades page filters — shared by the table and its charts."""
-    if r["system"] in RETIRED_SYSTEMS and not f.get("include_retired"):
+    if (r["system"] in RETIRED_SYSTEMS or r["system"] in SIGNAL_SYSTEMS) and not f.get("include_retired"):
         return False
     if f.get("system") and r["system"] != f["system"]:
         return False
@@ -249,8 +262,11 @@ def matches(r: dict, f: dict) -> bool:
 
 def trades(filters: dict, sort: str = "closed_ts", order: str = "desc", page: int = 1, page_size: int = 50) -> dict:
     rows, _ = all_rows()
-    hidden = 0 if filters.get("include_retired") else sum(1 for r in rows if r["system"] in RETIRED_SYSTEMS)
-    rows = [r for r in rows if filters.get("include_retired") or r["system"] not in RETIRED_SYSTEMS]
+    standalone_asked = filters.get("system") in STANDALONE_SYSTEMS
+    hidden = 0 if filters.get("include_retired") else sum(1 for r in rows if r["system"] in RETIRED_SYSTEMS or r["system"] in SIGNAL_SYSTEMS
+                                                           or (r["system"] in STANDALONE_SYSTEMS and not standalone_asked))
+    rows = [r for r in rows if filters.get("include_retired") or (r["system"] not in RETIRED_SYSTEMS and r["system"] not in SIGNAL_SYSTEMS
+                                                                  and (r["system"] not in STANDALONE_SYSTEMS or standalone_asked))]
     facets = {"symbols": sorted({r["symbol"] for r in rows}),
               "exit_reasons": sorted({r["exit_reason"] for r in rows if r["exit_reason"]})}
     open_rows = [r for r in rows if r["status"] == "open"]
@@ -442,7 +458,7 @@ def portfolio(include_retired: bool = False) -> dict:
     out, curves = {}, {}
     paper_systems = tuple(s for s in PAPER_SYSTEMS if include_retired or s not in RETIRED_SYSTEMS)
     present = [s for s in SYSTEMS if (s in paper_systems or s in initial)
-               and (include_retired or s not in RETIRED_SYSTEMS)]
+               and (include_retired or (s not in RETIRED_SYSTEMS and s not in SIGNAL_SYSTEMS))]
     for system in present:
         series = _equity_series(system)
         curves[system] = _thin(series)

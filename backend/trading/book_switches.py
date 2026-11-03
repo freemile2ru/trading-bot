@@ -135,6 +135,14 @@ BOOKS = [
 ]
 # Books switched off for good: kept out of the switch list (and always off), their records kept.
 RETIRED_BOOKS = {
+    "copy_futures": "Retired 2026-11-03 — zero copies in its week at $21.8k: every commodity-perp position the leaders held pre-dated "
+                    "tracking and they open new ones too rarely for a verdict. Its capital went to the crypto and stock copy books; "
+                    "a leader's commodity position is now recorded as a skip.",
+    "claude_swing": "Retired 2026-11-02 — 12 trades in 24 days, −0.16R a trade, −$198 (−40%); nobody was reading its reviews and the "
+                    "signal-rebuild lab had already shown the scanner it reads carries no information. Its $500 is parked in the main wallet.",
+    **{f"copy_{m}_{v}": f"Folded 2026-11-02 into the {ml} copy book — the rule still runs there, tagged on each copy, judged by its own "
+                        f"record; a $611 wallet with {n} trades in three days could not reach a verdict for months."
+       for m, ml, n in (("crypto", "crypto", "0–15"), ("stocks", "stock-perp", "0–2"), ("futures", "commodity-perp", "0")) for v in ("wide", "fast", "late")},
     "stocks_trend": "Retired 2026-10-30 — failed its pre-set 40-trade verdict: −0.23R a trade (90% range −0.37…−0.10), 42% won, "
                     "−$202 net; stops and trend flips (−$269) cost more than every winner made. Its 14 open positions were closed "
                     "and its capital parked in the main wallet.",

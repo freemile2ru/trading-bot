@@ -244,3 +244,56 @@ def test_protect_rides_the_last_six_hours_and_leaves_when_price_slips():
     assert exits.apply_bar(t, 100.6, 100.7, 100.3, 100.45, T0 + 20 * 3600) == ("window_exit", 100.45)   # slipped 0.175R: out
     t2 = exits.stamp({**t, "stop_loss": 98.0}, "protect", now=T0)
     assert exits.apply_bar(t2, 100.0, 100.5, 99.5, 99.7, T0 + 24 * 3600) == ("expired", 99.7)   # never turned: the bell
+
+
+# ── Dollar profit lock (2026-11-02) ────────────────────────────────────────────
+
+def test_manual_lock_keeps_half_of_the_peak_once_a_hundred_dollars_up(wallet):
+    t = wallet.open_trade("SOLUSDT", "long", 100, 98, 103, 105, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
+    assert t["exit_policy"] == "manual_lock" and t["quantity"] == pytest.approx(50, rel=0.05)    # $100 at risk over 2 points
+    ev = _walk(wallet, t, [
+        (100, 101.5, 99.9, 101.4),      # best open P&L ≈ +$70: under the arm, the stop stays at 98
+    ])
+    assert wallet.get_portfolio()["open_trades"][0]["stop_loss"] == 98
+    ev = _walk(wallet, t, [
+        (101.4, 104.2, 101.3, 104.0),   # ≈ +$205 at the peak: armed — half of it is kept from the next bar
+        (104.0, 104.1, 100.5, 100.8),   # gives most of it back: out on the lock
+    ], skip=1)
+    closed = ev[-1]["trade"]
+    assert closed["close_reason"] == "trailing_stop" and closed["locked_usd"] - 8 < closed["pnl_usd"] <= closed["locked_usd"]   # the exit's own fee and slippage come off the lock
+    assert 90 < closed["pnl_usd"] < 110
+
+
+def test_manual_lock_never_expires_and_keeps_the_original_stop_until_armed(wallet):
+    t = wallet.open_trade("SOLUSDT", "short", 100, 102, 97, 95, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
+    assert t["expires_at"] - t["opened_ts"] >= 300 * 24 * 3600
+    ev = _walk(wallet, t, [(100, 100.5, 99.6, 99.8), (99.8, 102.3, 99.7, 102.1)])              # straight to the stop
+    assert ev[-1]["trade"]["close_reason"] == "stop_loss"
+
+
+def test_the_lock_is_live_on_the_copy_books_and_a_shadow_elsewhere(wallet, monkeypatch):
+    monkeypatch.setattr(exits, "LOCK_MODE", "shadow")
+    assert exits.lock_policy_for("copy_trading", "manual") == exits.lock_policy_for("copy_stocks_wide", "manual") == "manual_lock"
+    assert exits.lock_policy_for("weekly_rs", "manual") == "manual" and exits.lock_policy_for("auto", "protect") == "protect"
+    monkeypatch.setattr(exits, "LOCK_MODE", "live")
+    assert exits.lock_policy_for("weekly_rs", "manual") == "manual_lock"
+    monkeypatch.setattr(exits, "LOCK_MODE", "shadow")
+    t = wallet.open_trade("ETHUSDT", "long", 100, 70, 150, 160, risk_pct=1, timeframe="1d", extra={"exit_policy": "manual", "shadows": False, "strategy": "weekly_rs"})
+    assert t["exit_policy"] == "manual"
+    sh = wallet._load()["shadows"]
+    assert [x["exit_policy"] for x in sh if x["trade_id"] == t["id"]] == ["manual_lock"]      # the lock is scored beside it
+    monkeypatch.setattr(exits, "LOCK_MODE", "off")
+    t2 = wallet.open_trade("BTCUSDT", "long", 100, 70, 150, 160, risk_pct=1, timeframe="1d", extra={"exit_policy": "manual", "shadows": False, "strategy": "weekly_rs"})
+    assert [x for x in wallet._load()["shadows"] if x["trade_id"] == t2["id"]] == []
+
+
+def test_the_lock_never_places_a_stop_the_price_has_already_crossed(wallet):
+    # A trade that peaked +$200 BEFORE the lock applied and has since fallen to a loss: switching it to manual_lock must
+    # not conjure a stop above the market (that closed HYPE at −$385 on 2026-11-02).
+    t = wallet.open_trade("SOLUSDT", "long", 100, 98, 103, 105, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual", "strategy": "x"})
+    _walk(wallet, t, [(100, 104.2, 99.9, 104.0), (104.0, 104.1, 98.6, 98.8)])            # peak +$200, now −$60, stop untouched at 98
+    wallet.annotate(t["id"], exit_policy="manual_lock")
+    ev = _walk(wallet, t, [(98.8, 99.2, 98.5, 99.0), (99.0, 99.5, 98.7, 99.3)], skip=2)
+    assert all(e.get("trade", {}).get("close_reason") is None for e in ev) and wallet.get_portfolio()["open_trades"][0]["stop_loss"] == 98
+    ev = _walk(wallet, t, [(99.3, 104.5, 99.2, 104.4), (104.4, 104.6, 101.0, 101.2)], skip=4)   # back above the lock level: now it arms and holds
+    assert ev[-1]["trade"]["close_reason"] == "trailing_stop" and ev[-1]["trade"]["pnl_usd"] > 80

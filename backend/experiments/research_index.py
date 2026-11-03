@@ -130,6 +130,18 @@ def _weekly_trails(d: dict) -> str:
             f"({best.get('first_half')} / {best.get('second_half')} by half) — trailing cuts the winners the basket lives on")
 
 
+def _entry(d: dict) -> str:
+    ic = (d.get("ic") or {}).get("xs_24h") or {}
+    top = ", ".join(f"{k} {v['ic']:+.2f}" for k, v in list(ic.items())[:6])
+    bt, yc = d.get("book_test") or {}, d.get("year_check") or {}
+    return (f"{d.get('rows')} scans of {d.get('coins')} coins, {d.get('from')} → {d.get('to')}, one per coin per 4h. Against the next 24h vs the cross-section "
+            f"the strongest readings are all NEGATIVE — {top} — i.e. what the scanner likes reverses over the next day in this period. A score of the "
+            f"{len(d.get('chosen') or {})} readings that passed on the first half has IC {d.get('score_test_ic')} on the second half (t {d.get('score_test_t')}); "
+            f"long the top 5 / short the bottom 5 every 4h for 24h nets {bt.get('avg_pct')}% a slot after costs ({bt.get('first_half_pct')} / {bt.get('second_half_pct')} by "
+            f"quarter), where the scanner's own conviction nets {(d.get('book_conviction_test') or {}).get('avg_pct')}%. Over the year-long 4h panel the plain "
+            f"24h-momentum fade loses {yc.get('avg_pct')}% a slot ({yc.get('first_half_pct')} / {yc.get('second_half_pct')}). {d.get('verdict')}")
+
+
 def _auction(d: dict) -> str:
     q = (d.get("symbols") or {}).get("QQQUSDT") or {}
     g = q.get("geometry") or {}
@@ -182,6 +194,17 @@ def _tradfi(d: dict) -> str:
 
 RESEARCH: list[dict] = [
     # ── 2026-10-31 ──
+    {"key": "entry_edge", "title": "Entry edge: what the scanner's own readings say about the next day", "script": "research/entry_lab.py",
+     "file": "entry_results.json",
+     "question": "The autotrader's exits earn and its entries lose. Of everything the scanner records every few minutes — positioning, flow, funding, "
+                 "news, fundamentals, its own scores — which readings predict the next 4h / 24h, and in which direction?",
+     "finding": _entry,
+     "decision": "regime-dependent, run as a lane — the five-week reversal score is strong out of sample but the year-long panel says fading momentum "
+                 "loses in trending markets; the autotrader's new 'reversal' lane trades the score at measuring size and the lane allocator sizes it "
+                 "by its own record per regime (down/calm vs up/wild), which is exactly the question left open. 2026-11-02: split by side on the "
+                 "lab's 190 slots, the SHORT side (sell what the scanner likes most) earned +1.7%/slot vs BTC after costs (t 4.9, both halves "
+                 "positive) and the LONG side (buy what it likes least) lost −0.4%/slot in both halves and under both BTC trends; the lane now "
+                 "runs short-only (AUTOTRADER_REVERSAL_SIDES)", "book": "auto"},
     {"key": "auction_levels", "title": "Auction-level acceptance (a mentor's NQ thinkScript), ported and replayed", "script": "research/auction_lab.py",
      "file": "auction_results.json",
      "question": "The mentor's 5-minute NQ system — accept beyond PDH/ONH/ORB/IB-type levels, confirm on the next close, trade to the next level with "
@@ -192,8 +215,10 @@ RESEARCH: list[dict] = [
                  "Binance's 8 bps a side turns every trade into −0.17%. No paper book; the port stays for the user's own experiments and for an "
                  "NQ-futures feed, where costs are ~0.5 bp and the geometry was designed. Variants built around the weaknesses (minimum target "
                  "distance, grade ≥ 7, continuation only, reward ≥ 1.5× risk) were all still negative at Binance costs; the least bad, target ≥ 50 bps "
-                 "and grade ≥ 7, lost 0.13% a trade. The user asked for a forward test anyway: the 'auction' book runs that variant at $1,000 with "
-                 "calendar gates, judged on its own 40 trades", "book": "auction"},
+                 "and grade ≥ 7, lost 0.13% a trade. The mentor's own reading — enter on the RETEST after confirmation, aim at the level beyond the "
+                 "nearest — was then tested (2026-11-01): at Binance costs it loses like the rest (−0.13%), but at futures costs it is the one "
+                 "arrangement positive in both halves (+0.017% a trade, 500 trades). The 'auction' book runs retest + second level with the "
+                 "target-distance and grade gates at $1,000, judged on its own 40 trades", "book": "auction"},
     # ── 2026-10-30 ──
     {"key": "copy_venues", "title": "Copy trading: which other platforms expose their leaders' positions?", "script": "data/lighter_client.py",
      "question": "Beyond Binance's copy board and Hyperliquid, which venues let us read a top trader's live positions without a key, so the copy "

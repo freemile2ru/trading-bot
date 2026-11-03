@@ -94,17 +94,27 @@ def test_mirror_enters_follows_and_exits(tmp_path, monkeypatch):
     assert [t["symbol"] for t in out["opened"]] == ["ETHUSDT"]
     t = w.get_portfolio()["open_trades"][0]
     assert t["leader_position_id"] == "p1" and t["leverage"] == min(10, ct.MAX_LEVERAGE) and t["leader"] == "Leader One"
-    assert t["notional_usd"] == pytest.approx(10_000 * ct.LEG_PCT / 100, rel=0.01)
+    assert t["stop_pct"] == ct.stop_pct({"loss_move_pct": 1.0}) == 2.0 and t["stop_loss"] == pytest.approx(3005.0 * 0.98, rel=1e-4)
+    assert t["notional_usd"] == pytest.approx(ct.leg_notional(10_000, 2.0), rel=0.01)
     sk = ct.skipped()
     assert len(sk) == 1 and sk[0]["symbol"] == "SOLUSDT" and sk[0]["reason"].startswith("too late")
     # the same positions again: nothing new, nothing doubled
     assert asyncio.run(ct.mirror(NOW + 60))["opened"] == []
     assert len(w.get_portfolio()["open_trades"]) == 1
-    # the leader halves ETH → we close; SOL closes at 190 → the skipped trade's outcome is filled in (+3.06% from our mark)
+    # the leader halves ETH → we close half and ride the rest; SOL closes at 190 → the skipped trade's outcome is filled in (+3.06% from our mark)
+    qty = t["quantity"]
     feed["rows"][0] = {**feed["rows"][0], "closed_qty": 1.2, "remaining": 0.4, "status": "Partially Closed"}
     feed["rows"][1] = {**feed["rows"][1], "closed_ts": NOW + 3600, "close_price": 190.0, "remaining": 0.0, "roi": 1.0}
     out = asyncio.run(ct.mirror(NOW + 120))
-    assert [c["close_reason"] for c in out["closed"]] == ["leader_reduced"]
+    assert [(c["close_reason"], c.get("partial")) for c in out["closed"]] == [("leader_reduced", True)]
+    rest = w.get_portfolio()["open_trades"]
+    assert len(rest) == 1 and rest[0]["quantity"] == pytest.approx(qty * ct.REDUCE_FRAC) and rest[0]["reduced"] is True
+    assert [c["close_reason"] for c in w.all_trades()["closed"]] == ["leader_reduced"]
+    # still at 0.4 next poll: nothing more happens; then they close → the rest goes as leader_closed
+    assert asyncio.run(ct.mirror(NOW + 180))["closed"] == []
+    feed["rows"][0] = {**feed["rows"][0], "closed_ts": NOW + 7200, "close_price": 3010.0, "remaining": 0.0, "status": "Closed"}
+    out = asyncio.run(ct.mirror(NOW + 240))
+    assert [c["close_reason"] for c in out["closed"]] == ["leader_closed"]
     assert w.get_portfolio()["open_trades"] == []
     assert ct.skipped()[0]["outcome_pct"] == pytest.approx((190 / 196 - 1) * -100, abs=0.01)
     st = ct.status()

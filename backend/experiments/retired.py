@@ -18,6 +18,73 @@ from scalper import config as SC
 
 RETIRED: list[dict] = [
     {
+        "key": "copy_futures",
+        "score_inputs": {"result_r": None, "result_note": "no closed copies", "t": None, "t_note": "nothing to test", "n": 0, "n_note": "copies in 7 days at $21.8k", "lost_pct": 0.0},
+        "title": "Copy trading · commodity perps",
+        "category": "Strategy",
+        "active": "2026-10-29 → 2026-11-03",
+        "retired": "2026-11-03",
+        "hypothesis": "The same vetted leaders' positions in Binance's commodity perpetuals (gold, silver, oil, metals) can be copied like their crypto ones.",
+        "method": "Its own $20k book (later $21.8k) fed by the shared leader selection on Binance, Hyperliquid and Lighter; the same entry rule, stop and sizing as the crypto book.",
+        "numbers": [
+            ("Copies", "0 in 7 days", "every commodity position the leaders held pre-dated tracking"),
+            ("Flow", "leaders open a new commodity perp perhaps once a week across the whole pool", "a 40-trade verdict was a year away"),
+        ],
+        "why": ["Retired in the 2026-11-03 consolidation, with the user: idle capital that could not reach a verdict. The signal isn't disproven — "
+                "it was never tested — but $21.8k waiting for one copy a week is not an experiment."],
+        "kept": "The stock-perp copy book runs on. A leader's commodity position is still seen and recorded as a skip, so the flow stays measurable.",
+        "removed": "Nothing deleted — the book is switched off, its capital moved to the crypto and stock copy books.",
+        "evidence": "trading/book_switches.RETIRED_BOOKS",
+    },
+    {
+        "key": "autotrader_ta_lane",
+        "score_inputs": {"result_r": -0.13, "result_note": "−0.13R a trade over its last 20 (longs −0.17R)", "t": 1.2, "t_note": "t ≈ −1.2", "n": 20, "n_note": "closed trades on the ledger", "lost_pct": 1.4},
+        "title": "Autotrader scanner lane (scanner conviction + Claude's confirmation)",
+        "category": "Strategy",
+        "active": "2026-09-25 → 2026-11-03",
+        "retired": "2026-11-03",
+        "hypothesis": "The scanner's multi-timeframe conviction, confirmed by Claude's review, picks swing trades that beat their costs.",
+        "method": "The original autotrader path: scanner sweeps → candidates → Claude's veto → ATR stops and targets under the 'protect' exit policy; "
+                  "later a daily-minimum entry and the lane allocator sizing it by its own record.",
+        "numbers": [
+            ("Ledger", "20 trades, −0.13R a trade; longs −0.17R over 20, shorts +0.39R over 3", "the allocator already had its longs at ¼ size"),
+            ("Context", "signal-rebuild lab: the scanner's conviction has no predictive power; auto_rules, signals_rules, signals_claude all retired", "the same finding four times"),
+            ("Claude's veto", "declined candidates averaged −0.14R", "the veto was right; there was nothing left to approve"),
+        ],
+        "why": ["Retired in the 2026-11-03 consolidation, with the user. The lane was the last consumer of the scanner's conviction as a trade signal; "
+                "the autotrader is now purely the executor of the evidence books and the reversal score."],
+        "kept": "The scanner keeps running — the reversal lane is built from its scans — and AUTOTRADER_TA_LANE=true brings the lane back.",
+        "removed": "Nothing deleted — no candidates are considered and no daily-minimum entry is forced.",
+        "evidence": "autotrader/engine.TA_LANE, autotrader/lanes.py",
+    },
+    {
+        "key": "claude_swing",
+        "score_inputs": {"result_r": -0.16, "result_note": "−0.16R a trade over 12 closed trades", "t": 1.1, "t_note": "t ≈ −1.1 (too few trades to say more)",
+                         "n": 12, "n_note": "closed trades (paper) in 24 days", "lost_pct": 39.5},
+        "title": "Claude swing (Claude picking its own 1–7 day trades)",
+        "category": "Strategy",
+        "active": "2026-10-09 → 2026-11-02",
+        "retired": "2026-11-02",
+        "hypothesis": "Given the scanner's full picture every few hours, Claude choosing a few swing trades (or none) with its own stop and "
+                      "target beats the rules it reads from.",
+        "method": "A $500 paper book; Claude reviewed the market every few hours and could open at most a handful of positions, each "
+                  "validated for reward:risk and a written brief. Judged on the usual 40-trade verdict.",
+        "numbers": [
+            ("Live trades", "12 closed, 42% won", "−0.16R a trade, −$198 net (−40% of the book)"),
+            ("Pace", "12 trades in 24 days", "a verdict was two months away at best"),
+            ("Context", "signal-rebuild lab: the scanner's conviction carries no information", "Claude was reading the same inputs"),
+        ],
+        "why": [
+            "Retired in the 2026-11-02 consolidation, with the user: it was the smallest book, losing, slow to produce evidence, and "
+            "every other Claude-confirmed book (signals_claude, stocks_claude, futures_claude) had already been retired on the same "
+            "finding — the inputs it reads have no edge for it to add judgement to.",
+        ],
+        "kept": "The autotrader's scanner lane still uses Claude as a veto (its declines averaged −0.14R — the veto is right).",
+        "removed": "Nothing deleted — experiments/claude_swing.py and its reviews stay; the book is switched off for good and its $500 "
+                   "parked in the main wallet.",
+        "evidence": "trading/book_switches.RETIRED_BOOKS",
+    },
+    {
         "key": "stocks_trend",
         "score_inputs": {"result_r": -0.23, "result_note": "−0.23R a trade over its 40 closed trades (90% range −0.37 … −0.10)",
                          "t": 2.8, "t_note": "t ≈ −2.8", "n": 40, "n_note": "closed trades (paper)", "lost_pct": 3.7},

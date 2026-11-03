@@ -42,7 +42,17 @@ VARIANTS = {
     "target50+grade7": dict(min_target_bps=50, min_grade=7),
     "target50+rr1.5": dict(min_target_bps=50, min_rr=1.5),
     "target50+cont+grade7": dict(min_target_bps=50, cont_only=True, min_grade=7),
+    # The mentor's reading (2026-11-01): the best entry is the retest after confirmation; the best exit lets a runner run.
+    "retest": dict(entry="retest"),
+    "second_target": dict(target_mode="second"),
+    "trail": dict(trail=True),
+    "retest+second": dict(entry="retest", target_mode="second"),
+    "retest+trail": dict(entry="retest", trail=True),
+    "retest+second+trail": dict(entry="retest", target_mode="second", trail=True),
+    "retest+second+trail+grade7": dict(entry="retest", target_mode="second", trail=True, min_grade=7),
+    "second+trail+target50": dict(target_mode="second", trail=True, min_target_bps=50),
 }
+LOW_COST_BPS = 0.5                              # CME micro futures, the instrument the study was written for
 
 
 async def bars(symbol: str, days: int = 400) -> pd.DataFrame:
@@ -101,8 +111,10 @@ def run_variants(frames: dict[str, pd.DataFrame]) -> dict:
                 trades += AL.simulate(frames[sym], sym, **kw)
         trades.sort(key=lambda t: t.entry_ts)
         rep = AL.summarize(trades, COST_BPS)
+        low = AL.summarize(trades, LOW_COST_BPS)
         out[name] = {"params": kw, "trades": rep.get("trades", 0), "all": rep.get("all"), "first_half": rep.get("first_half"),
-                     "second_half": rep.get("second_half"), "by_exit": rep.get("by_exit")}
+                     "second_half": rep.get("second_half"), "by_exit": rep.get("by_exit"),
+                     "low_cost": {"all": low.get("all"), "first_half": low.get("first_half"), "second_half": low.get("second_half")}}
     return out
 
 
@@ -163,10 +175,12 @@ if __name__ == "__main__":
         hg = r["high_grade"]
         if hg.get("trades"):
             print(_line(f"grade ≥{PROMOTE_GRADE} all", hg["all"])); print(_line(f"grade ≥{PROMOTE_GRADE} 1st", hg["first_half"])); print(_line(f"grade ≥{PROMOTE_GRADE} 2nd", hg["second_half"]))
-    print("\n== variants (QQQ + NVDA + TSLA pooled, Binance costs)")
+    print("\n== variants (QQQ + NVDA + TSLA pooled) — Binance costs 8 bps/side | futures costs 0.5 bp/side")
     for name, v in rep["variants"].items():
         if v["trades"]:
-            print(_line(name, v["all"]) + f"   halves {v['first_half']['avg_net_pct']:+.3f} / {v['second_half']['avg_net_pct']:+.3f}")
+            lc = v["low_cost"]
+            print(_line(name, v["all"]) + f"   halves {v['first_half']['avg_net_pct']:+.3f} / {v['second_half']['avg_net_pct']:+.3f}"
+                  f"   | futures: avg {lc['all']['avg_net_pct']:+.3f}% win {lc['all']['win_pct']}% halves {lc['first_half']['avg_net_pct']:+.3f} / {lc['second_half']['avg_net_pct']:+.3f}")
         else:
             print(f"{name:22} no trades")
     print(f"\nVerdict: {rep['verdict']}\nVariants: {rep['variant_verdict']}\nWritten to {RESULTS}")

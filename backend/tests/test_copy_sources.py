@@ -122,7 +122,7 @@ def test_consensus_sizes_up(tmp_path, monkeypatch):
     out = asyncio.run(ct.mirror(NOW))
     assert len(out["opened"]) == 1                                                   # the same trade isn't copied twice per leader
     t = w.get_portfolio()["open_trades"][0]
-    assert t["consensus"] == 2 and t["notional_usd"] == pytest.approx(10_000 * ct.LEG_PCT / 100 * ct.CONSENSUS_X, rel=0.01)
+    assert t["consensus"] == 2 and t["notional_usd"] == pytest.approx(ct.leg_notional(10_000, ct.stop_pct(prof)) * ct.CONSENSUS_X, rel=0.01)
     assert kv.get_sync(ct._k("consensus")) == [{"symbol": "ETHUSDT", "side": "long", "leaders": 2}]
     st = ct.status()
     held = {L["id"]: L["positions"] for L in st["leaders"]}

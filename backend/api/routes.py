@@ -496,6 +496,32 @@ async def markets_trend_close_all(market: str, reason: str = Query("retired", ma
     return {"closed": out, "net": round(sum(x["pnl_usd"] for x in out), 2), "moved": moved}
 
 
+@router.get("/auction")
+async def auction_page():
+    """The mentor's system on its own page: the levels and context per instrument, where the book stands in the
+    acceptance sequence, its decisions, its record and the replay behind it."""
+    from experiments import auction
+    return await auction.snapshot()
+
+
+@router.get("/auction/chart/{symbol}")
+async def auction_chart(symbol: str, bars: int = Query(600, ge=100, le=2000)):
+    """One instrument's chart for the Mentor tab: bars, VWAP/EMAs, the levels, the study's signals and the book's trades."""
+    from experiments import auction
+    if symbol not in auction.SYMBOLS:
+        raise HTTPException(404, f"{symbol} is not one of the book's instruments")
+    return await auction.chart(symbol, bars)
+
+
+@router.post("/auction/tick")
+async def auction_tick_now():
+    """Run the book's sequence on the latest closed bars now (the loop does this every minute in the session)."""
+    from experiments import auction
+    out = await auction.tick()
+    auction._snap_cache["at"] = 0.0
+    return {"events": out, "snapshot": await auction.snapshot()}
+
+
 @router.post("/experiments/weekly-rs/resize")
 async def weekly_rs_resize():
     """Bring the weekly book's open legs to their target size now (the Monday rebalance also does this). Oversized
@@ -716,7 +742,7 @@ async def auto_pause(paused: bool = Query(...)):
 
 
 @router.delete("/auto/trade/{trade_id}")
-async def auto_close_trade(trade_id: str, reason: str = Query("manual", pattern="^(manual|dedup)$")):
+async def auto_close_trade(trade_id: str, reason: str = Query("manual", pattern="^(manual|dedup|resize|stale_mirror)$")):
     """Close an auto trade now. `reason` names why in the record: a hand close, or a de-duplication (the same signal
     held in another book)."""
     from live import swing as live_swing

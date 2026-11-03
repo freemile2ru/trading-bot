@@ -32,14 +32,25 @@ Mirroring (every POLL_S):
               too late (price)  already moved ≥ LATE_MOVE_FRAC of their median winning move in their favour
               already failing   moved against them by more than their median losing move
             skipped trades are recorded and their outcome filled in when the leader closes — the rule is audited
-  consensus several leaders (any venue) on the same side of a coin at once → size × CONSENSUS_X
-  size      LEG_PCT of equity notional, the leader's leverage capped at MAX_LEVERAGE, a DISASTER_PCT price stop
-  exit      the leader closes (or has closed ≥ half), MAX_HOLD_X × their median hold (at least a day, at most a week),
-            or the stop. A leader who drops off the daily selection is still followed out of the copies we hold
+              not worth the fees what is left of their median win (after the move so far) is under FEE_GATE_X × the
+                                round trip's costs — a quick BTC scalp pays its fees and little else
+  consensus several leaders (any venue) on the same side of a coin at once → recorded on the copy (CONSENSUS_X is 1.0
+            since 2026-11-02: at 1.5× it stacked on the risk budget, and two leaders in one name are one view)
+  size      the stop sits at STOP_X × THAT leader's median losing move (never tighter than STOP_PCT_MIN, never wider
+            than DISASTER_PCT) and the leg is sized so the stop costs RISK_PCT of the book (floor LEG_PCT, cap
+            MAX_LEG_PCT of equity); the leader's leverage capped at MAX_LEVERAGE
+  exit      the leader halves → we close REDUCE_FRAC and let the rest ride; the leader closes → we close; the stop;
+            or MAX_HOLD_H as a backstop. There is no shorter clock: a copy ends when the leader's position does.
+            A leader who drops off the daily selection is still followed out of the copies we hold
+
+Re-ruled 2026-11-02 after the first 20 base copies (−$46 net on −$11 gross): fees were a quarter of all gross
+movement, six copies were cut at a 24h clock while the leader still held (and they were the best ones), a halving
+leader took us out entirely, and one 4% stop cost more than the three best wins together.
 
 Variants (2026-10-30): after two days with nothing copied — every position the leaders held pre-dated tracking or
-was past a quarter of their hold — three alternatives run beside the base rule in every market, each in its own
-wallet so the verdicts stay separate (VARIANTS):
+was past a quarter of their hold — three alternatives run beside the base rule in every market. They had a $611
+wallet each until 2026-11-02; since then every rule of a market trades in that market's one book and is judged by
+the `variant` tag on its copies (one position still goes to exactly one rule — see route()) (VARIANTS):
   wide   the same bar, WIDE_N leaders a venue instead of LEADERS_N: more positions to see open
   fast   LEADERS_N leaders a venue chosen among those whose median hold is ≤ FAST_HOLD_H: they open more often
   late   the base leaders, but a position up to their whole median hold old is still copied at LATE_SIZE_X size
@@ -55,7 +66,7 @@ import statistics
 import time
 
 from storage import state as kv
-from trading import book_switches, monitor
+from trading import book_switches, monitor, tape
 
 logger = logging.getLogger("experiments.copy_trading")
 
@@ -72,16 +83,25 @@ HL_EQUITY = (50_000.0, 20_000_000.0)
 HL_MONTH_ROI = (0.05, 3.0)
 HL_TURNOVER = (2.0, 300.0)
 LT_TURNOVER = (2.0, 60.0)                # Lighter: above ~60× a month the board is market makers filling thousands of times a day
-LEG_PCT = float(os.getenv("COPY_LEG_PCT", "25"))                  # 25% of equity a copy since 2026-10-31 (15 from 10-29, 5 before): at the
-                                                                   # 8% stop a losing copy costs 2% of the book; the record so far is +0.39% of
-                                                                   # notional a copy, so $5k legs on a $20k book are ~$20 a copy
+# Sizing by risk (2026-11-01, "real-world P&L numbers"): a copy risks RISK_PCT of the book at its stop, so
+# notional = equity × RISK_PCT / stop%. Since 2026-11-02 the stop is STOP_X × the leader's median losing move
+# (DISASTER_PCT was the stop before, and at 4% a stop cost three typical wins): on a $20k book, a leader whose median
+# loss is 1% gets a 2% stop and a $20k leg, where their typical 1.3% win is ~$260 and the stop −$400.
+RISK_PCT = float(os.getenv("COPY_RISK_PCT", "2"))
+LEG_PCT = float(os.getenv("COPY_LEG_PCT", "25"))                  # floor: 25% of equity a copy (was the whole rule from 10-29 to 10-31)
+MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "100"))         # cap: a leg's notional never exceeds the book's equity
 MAX_LEVERAGE = int(os.getenv("COPY_MAX_LEVERAGE", "10"))          # 10× cap since 2026-10-29 (was 5)
-MAX_OPEN = int(os.getenv("COPY_MAX_OPEN", "12"))
+MAX_OPEN = int(os.getenv("COPY_MAX_OPEN", "6"))                   # 6 since 2026-11-01 (was 12): at 2% risk a copy, six copies put 12% of the book at risk
 LATE_AGE_FRAC, LATE_MOVE_FRAC, ADVERSE_FRAC = 0.25, 0.5, 1.0
-CONSENSUS_X = float(os.getenv("COPY_CONSENSUS_X", "1.5"))
-DISASTER_PCT = float(os.getenv("COPY_DISASTER_PCT", "8"))
-MAX_HOLD_X, MAX_HOLD_H = 3.0, 7 * 24
-MIN_HOLD_CAP_H = 24.0                    # a copy of a fast leader still gets a day: their hold is a median, not a limit
+CONSENSUS_X = float(os.getenv("COPY_CONSENSUS_X", "1"))           # 1.0 since 2026-11-02: at 1.5 a two-leader SK Hynix long risked 3% of the book and lost −$621 on
+                                                                  # its stop; two leaders on one venue in one name is one view, not two, so consensus is recorded, not sized
+MAX_LEG_PCT_BY_MARKET = {"stocks": 50.0, "futures": 50.0}         # a single stock or commodity perp never carries more than half the book: they gap at the home market's open
+DISASTER_PCT = float(os.getenv("COPY_DISASTER_PCT", "4"))         # the widest stop a copy gets (and the stop for a leader without a loss profile)
+STOP_X = float(os.getenv("COPY_STOP_X", "2"))                     # the stop: STOP_X × the leader's median losing move, bounded STOP_PCT_MIN..DISASTER_PCT
+STOP_PCT_MIN = 1.0
+FEE_GATE_X = float(os.getenv("COPY_FEE_GATE_X", "3"))             # what is left of the leader's median win must cover the round trip this many times
+REDUCE_FRAC = 0.5                                                 # the leader halves → we close this much and ride the rest to their close
+MAX_HOLD_H = 7 * 24                                               # the only clock, a backstop: the copy otherwise ends when the leader's position does
 SKIP_KEEP = 300
 WIDE_N = int(os.getenv("COPY_WIDE_N", "15"))                      # leaders a venue for the "wide" variant
 FAST_HOLD_H = float(os.getenv("COPY_FAST_HOLD_H", "24"))          # "fast" variant: leaders whose median hold is at most this
@@ -89,7 +109,7 @@ LATE_AGE_FRAC_LATE, LATE_SMALL_FRAC, LATE_SIZE_X = 1.0, 0.25, 0.5  # "late" vari
 MAX_CANDIDATES = {"binance": 45, "hyperliquid": 80, "lighter": 60}   # how far down each board the selection reads
 VARIANTS: dict[str, dict] = {
     "base": {"label": "Base rule", "note": f"{LEADERS_N} leaders a venue; copy within ¼ of their hold and before half their typical win."},
-    "wide": {"label": "More leaders", "note": f"The same bar, {WIDE_N} leaders a venue — more positions to catch opening."},
+    "wide": {"label": "More leaders", "note": f"The same bar, {WIDE_N} leaders a venue — more positions to catch opening. Since 2026-11-02 no leg against BTC's 24h VWAP tape.", "tape_gate": True},
     "fast": {"label": "Faster traders", "note": f"{LEADERS_N} leaders a venue chosen among those holding ≤ {FAST_HOLD_H:g}h — they open more often."},
     "late": {"label": "Late entries, half size", "note": f"Base leaders; a position up to their whole hold old is still copied at {LATE_SIZE_X:g}× size when it has moved ≤ {LATE_SMALL_FRAC:g} of their typical win."},
 }
@@ -480,7 +500,7 @@ def leaders_to_poll() -> list[dict]:
             if L["id"] not in have:
                 Ls.append(L)
                 have.add(L["id"])
-    for w in _all_wallets().values():
+    for w in _unique_wallets():
         for t in w.get_portfolio()["open_trades"]:
             lid = t.get("leader_id")
             if lid and lid not in have:
@@ -499,9 +519,25 @@ async def select_leaders_off_loop(now: float | None = None) -> list[dict]:
     return await asyncio.to_thread(lambda: asyncio.run(select_leaders(now)))
 
 
+def _merge_with_previous(fresh: dict[str, list[dict]], previous: list[dict], now: float) -> list[dict]:
+    """A venue whose board came back empty keeps its previous leaders (marked stale) — on 2026-11-03 every feed was
+    down for one selection and the pool was written empty, which silently stopped every copy book."""
+    out: list[dict] = []
+    for venue in VENUES:
+        if fresh.get(venue):
+            out += fresh[venue]
+            continue
+        kept = [L for L in previous if L.get("venue") == venue]
+        if kept:
+            logger.warning("Copy trading: %s selection returned nothing — keeping its %d previous leaders", venue, len(kept))
+            out += [{**L, "stale_since": L.get("stale_since") or now} for L in kept]
+    return out
+
+
 async def select_leaders(now: float | None = None) -> list[dict]:
     now = now or time.time()
-    chosen = await _select_binance(now) + await _select_hyperliquid(now) + await _select_lighter(now)
+    fresh = {"binance": await _select_binance(now), "hyperliquid": await _select_hyperliquid(now), "lighter": await _select_lighter(now)}
+    chosen = _merge_with_previous(fresh, (kv.get_sync(_k("leaders")) or {}).get("pool") or [], now)
     chosen.sort(key=lambda x: -x["score"])
     for L in chosen:
         remember(L)
@@ -539,12 +575,18 @@ def judge(pos: dict, profile: dict, mark: float, now: float, variant: str = "bas
     win_move, loss_move = profile.get("win_move_pct") or 1.0, profile.get("loss_move_pct") or 1.0
     if moved <= -ADVERSE_FRAC * loss_move:
         return False, f"already failing: {moved:+.2f}% against them (their median loss {loss_move:.2f}%)", moved, age_h, 0.0
+    left = win_move - max(moved, 0.0)                           # what their typical win leaves us after the move so far
+    fees = f"not worth the fees: {left:.2f}% of their median win left, the round trip costs {round_trip_pct():.2f}%"
     if age_h > LATE_AGE_FRAC * hold:
         if variant == "late" and age_h <= LATE_AGE_FRAC_LATE * hold and moved <= LATE_SMALL_FRAC * win_move:
+            if left < FEE_GATE_X * round_trip_pct():
+                return False, fees, moved, age_h, 0.0
             return True, f"late entry at {LATE_SIZE_X:g}× size: {age_h:.1f}h old (hold {hold:.0f}h), only {moved:+.2f}% moved", moved, age_h, LATE_SIZE_X
         return False, f"too late: {age_h:.1f}h old, leader's median hold {hold:.0f}h", moved, age_h, 0.0
     if moved >= LATE_MOVE_FRAC * win_move:
         return False, f"too late: already {moved:+.2f}% in their favour (their median win {win_move:.2f}%)", moved, age_h, 0.0
+    if left < FEE_GATE_X * round_trip_pct():
+        return False, fees, moved, age_h, 0.0
     return True, f"entered {moved:+.2f}% from the leader's price, {age_h:.1f}h after them", moved, age_h, 1.0
 
 
@@ -613,10 +655,17 @@ async def leader_rows(L: dict, now: float) -> list[dict]:
 # (TSLA, SK Hynix, Meta…) to copy_stocks and their commodity perps (gold, silver, oil…) to copy_futures — same
 # leaders, same too-late rule and exits, separate capital and verdicts.
 BOOKS_BY_MARKET = {"crypto": BOOK, "stocks": "copy_stocks", "futures": "copy_futures"}
+# copy_futures retired 2026-11-03 (with the user): zero copies in its week at $21.8k — the leaders' commodity positions
+# all pre-dated tracking and new ones are rare. Its capital went to the crypto and stock books. A leader's commodity
+# position is now recorded as a skip, not copied.
+RETIRED_MARKETS = {"futures"}
 
 
 def book_name(market: str, variant: str = "base") -> str:
-    return BOOKS_BY_MARKET[market] if variant == "base" else f"copy_{market}_{variant}"
+    """Every variant of a market trades in that market's one book (2026-11-02: the nine $611 variant wallets were folded
+    into the three market books — fewer books, faster verdicts; a copy carries its `variant` tag, and the per-variant
+    record is read from the tag). Tests map variants to separate wallets through ALL_BOOKS."""
+    return BOOKS_BY_MARKET[market]
 
 
 ALL_BOOKS = {(m, v): book_name(m, v) for m in MARKETS for v in VARIANTS}
@@ -641,12 +690,23 @@ def _wallet(market: str = "crypto", variant: str = "base"):
 
 
 def _wallets() -> dict[str, object]:
-    """The base book of each market."""
-    return {m: _wallet(m) for m in BOOKS_BY_MARKET}
+    """The book of each live market."""
+    return {m: _wallet(m) for m in BOOKS_BY_MARKET if m not in RETIRED_MARKETS}
 
 
 def _all_wallets() -> dict[tuple[str, str], object]:
-    return {(m, v): _wallet(m, v) for m, v in ALL_BOOKS}
+    from experiments import books
+    return {(m, v): books.WALLETS[ALL_BOOKS[(m, v)]] for m, v in ALL_BOOKS if m not in RETIRED_MARKETS}
+
+
+def _unique_wallets() -> list:
+    """The distinct wallets behind ALL_BOOKS (variants share a market's wallet)."""
+    seen, out = set(), []
+    for w in _all_wallets().values():
+        if id(w) not in seen:
+            seen.add(id(w))
+            out.append(w)
+    return out
 
 
 def _seen(leader_id: str) -> set[str]:
@@ -669,9 +729,9 @@ ROUTE_N, ROUTE_MIN = 20, 10                  # a book's record: its last ROUTE_N
 ROUTE_ORDER = ("base", "fast", "wide", "late")   # with no record to go on, the plainer rule takes the trade
 
 
-def record_r(w, n: int = ROUTE_N) -> tuple[int, float | None]:
-    """(copies counted, average net R of the book's last `n` closed copies) — R on the disaster stop's distance."""
-    closed = w.all_trades()["closed"][-n:]
+def record_r(w, variant: str = "base", n: int = ROUTE_N) -> tuple[int, float | None]:
+    """(copies counted, average net R of this rule's last `n` closed copies in the wallet) — R on the stop's distance."""
+    closed = [t for t in w.all_trades()["closed"] if (t.get("variant") or "base") == variant][-n:]
     rs = [t["pnl_usd"] / t["risk_usd"] for t in closed if t.get("risk_usd")]
     return len(rs), (round(sum(rs) / len(rs), 3) if rs else None)
 
@@ -684,7 +744,7 @@ def route(market: str, candidates: list[str], wallets: dict | None = None) -> tu
     wallets = wallets or _all_wallets()
     scored = []
     for v in candidates:
-        n, avg = record_r(wallets[(market, v)])
+        n, avg = record_r(wallets[(market, v)], v)
         if n >= ROUTE_MIN and avg is not None:
             scored.append((avg, n, v))
     if scored:
@@ -692,6 +752,29 @@ def route(market: str, candidates: list[str], wallets: dict | None = None) -> tu
         return v, f"best record here: {avg:+.2f}R over {n} copies"
     v = next((o for o in ROUTE_ORDER if o in candidates), candidates[0])
     return v, "no book has a record yet — the plainer rule takes it"
+
+
+def round_trip_pct() -> float:
+    """What a copy pays to get in and out, as % of notional: taker fee and slippage, both ways."""
+    from trading import futures
+    return 2 * (futures.TAKER_FEE + futures.SLIPPAGE) * 100
+
+
+def stop_pct(profile: dict | None) -> float:
+    """The stop for a copy of this leader: STOP_X × their median losing move, never tighter than STOP_PCT_MIN nor wider
+    than DISASTER_PCT; a leader without a loss profile gets the disaster stop."""
+    loss = (profile or {}).get("loss_move_pct")
+    if not loss:
+        return DISASTER_PCT
+    return min(max(STOP_X * loss, STOP_PCT_MIN), DISASTER_PCT)
+
+
+def leg_notional(equity: float, stop: float | None = None, market: str | None = None) -> float:
+    """What one copy puts on: the risk rule (RISK_PCT of equity lost at the stop), floored at LEG_PCT and capped at
+    MAX_LEG_PCT of equity (MAX_LEG_PCT_BY_MARKET for stock and commodity perps)."""
+    stop = stop or DISASTER_PCT
+    cap = MAX_LEG_PCT_BY_MARKET.get(market or "", MAX_LEG_PCT)
+    return min(max(equity * RISK_PCT / stop, equity * LEG_PCT / 100), equity * cap / 100)
 
 
 def consensus(rows_by_leader: dict[str, list[dict]]) -> dict[tuple[str, str], int]:
@@ -709,7 +792,7 @@ async def mirror(now: float | None = None) -> dict:
     now = now or time.time()
     opened, closed = [], []
     wallets = _all_wallets()
-    ours = {(t.get("leader_position_id"), t.get("variant") or "base"): (ww, t) for ww in wallets.values()
+    ours = {(t.get("leader_position_id"), t.get("variant") or "base"): (ww, t) for ww in _unique_wallets()
             for t in ww.get_portfolio()["open_trades"] if t.get("leader_position_id")}
     follows = {v: {L["id"] for L in leaders(v)} for v in VARIANTS}
     all_rows: dict[str, dict] = {}
@@ -724,6 +807,7 @@ async def mirror(now: float | None = None) -> dict:
             logger.debug("Positions for %s unavailable: %s", L["id"], e)
     agree = consensus(rows_by_leader)
     kv.set_sync(_k("consensus"), [{"symbol": s, "side": d, "leaders": n} for (s, d), n in agree.items() if n >= 2], 3600)
+    tape_ = await tape.btc_tape(now) if any(v.get("tape_gate") for v in VARIANTS.values()) else None
     for L in Ls:
         rows = rows_by_leader.get(L["id"])
         if rows is None:
@@ -739,6 +823,10 @@ async def mirror(now: float | None = None) -> dict:
             if r.get("untracked") or L.get("retired") or not books.ENABLED:
                 continue                                     # held before we were watching, or an ex-leader
             market = market_of(r["symbol"])
+            if market in RETIRED_MARKETS:
+                _record_skip(dict(ts=now, leader=name, venue=L.get("venue"), symbol=r["symbol"], side=r["side"], position_id=r["position_id"], variant="base",
+                                  reason=f"{market} copies retired 2026-11-03 — no book takes commodity perps", mark=None))
+                continue
             why_block = None
             if market == "stocks":
                 from ops import calendar
@@ -761,8 +849,9 @@ async def mirror(now: float | None = None) -> dict:
                     _record_skip({**skip, "reason": "no price feed", "mark": None})
                     continue
                 ok, why, moved, age_h, size_x = judge(r, L.get("profile") or {}, mark, now, variant)
-                if not ok or len(w.get_portfolio()["open_trades"]) >= MAX_OPEN:
-                    _record_skip({**skip, "reason": why if not ok else "book full", "mark": mark, "leader_entry": r["entry"],
+                fights = tape.against_tape(r["side"], tape_) if ok and VARIANTS[variant].get("tape_gate") else None
+                if not ok or fights or len(w.get_portfolio()["open_trades"]) >= MAX_OPEN:
+                    _record_skip({**skip, "reason": why if not ok else (fights or "book full"), "mark": mark, "leader_entry": r["entry"],
                                   "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
                     continue
                 candidates.append((variant, (why, moved, age_h, size_x)))
@@ -780,25 +869,25 @@ async def mirror(now: float | None = None) -> dict:
                 s = 1 if r["side"] == "long" else -1
                 equity = w.get_portfolio()["total_equity"]
                 size_x *= CONSENSUS_X if n_agree >= 2 else 1.0
-                t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * DISASTER_PCT / 100),
-                                 take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=equity * LEG_PCT / 100 * size_x,
+                stop = stop_pct(L.get("profile"))
+                t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * stop / 100),
+                                 take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=leg_notional(equity, stop, market) * size_x,
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
                                  extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
                                         "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
-                                        "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "entry_note": why})
+                                        "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why})
                 if t.get("error"):
                     logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])
                 else:
                     opened.append(t)
                     logger.info("Copied %s [%s] into %s: %s %s @ %.6g (%d leader(s) agree) — %s", name, L.get("venue"), book, r["side"], r["symbol"], mark, n_agree, why)
         _mark_seen(L["id"], seen)
-    # exits: the leader closed or halved, or we've held too long
+    # exits: the leader closed (we close), the leader halved (we close REDUCE_FRAC once and ride the rest), the backstop clock
     for (pid, _variant), (w, t) in ours.items():
         r = all_rows.get(pid)
         L = next((x for x in Ls if x["id"] == t.get("leader_id")), None)
-        hold = (L or {}).get("profile", {}).get("median_hold_h") or 24.0
         age_h = (now - _ts(t.get("opened_at"))) / 3600
         reason = None
         if L is None:
@@ -813,9 +902,16 @@ async def mirror(now: float | None = None) -> dict:
                 reason = "leader_closed"
             else:
                 kv.set_sync(_k("missing", pid, _variant), miss + 1, 3600)
-        elif r["closed_ts"] or r["remaining"] < 0.5:
-            reason = "leader_closed" if r["closed_ts"] or r["remaining"] == 0 else "leader_reduced"
-        elif age_h > min(max(MAX_HOLD_X * hold, MIN_HOLD_CAP_H), MAX_HOLD_H):
+        elif r["closed_ts"] or r["remaining"] <= 0:
+            reason = "leader_closed"
+        elif r["remaining"] < 0.5 and not t.get("reduced"):
+            # They took half off. Before 2026-11-02 this closed the whole copy — and leader_reduced exits averaged a
+            # +0.2% move: we left as they started taking profit. Now we take REDUCE_FRAC and the rest rides to their close.
+            px = await monitor.live_price(t["symbol"]) or t.get("current_price")
+            if px and (t.get("quantity") or 0) > 0 and w.split_close(t["id"], t["quantity"] * REDUCE_FRAC, px, "leader_reduced"):
+                w.annotate(t["id"], reduced=True, reduced_at=now, reduced_remaining=r["remaining"])
+                closed.append({**t, "quantity": t["quantity"] * REDUCE_FRAC, "close_reason": "leader_reduced", "partial": True})
+        elif age_h > MAX_HOLD_H:
             reason = "max_hold"
         if r is not None:
             kv.delete_sync(_k("missing", pid, _variant))
@@ -824,7 +920,7 @@ async def mirror(now: float | None = None) -> dict:
             if px and w.close_trade_manually(t["id"], px, reason):
                 closed.append({**t, "close_reason": reason})
     # what each leader holds right now, and what we did about it — for the Copy tab
-    ours_now = {t.get("leader_position_id") for ww in wallets.values() for t in ww.get_portfolio()["open_trades"] if t.get("leader_position_id")}
+    ours_now = {t.get("leader_position_id") for ww in _unique_wallets() for t in ww.get_portfolio()["open_trades"] if t.get("leader_position_id")}
     sk_by_pid = {e["position_id"]: e for e in skipped() if e.get("position_id") and (e.get("variant") or "base") == "base"}
     snapshot = {}
     for L in Ls:
@@ -901,28 +997,34 @@ async def tick(now: float | None = None) -> dict:
 
 # ── Reporting ──────────────────────────────────────────────────────────────────
 
-def _book_summary(w, market: str, variant: str = "base") -> dict:
+def _book_summary(w, market: str, variant: str | None = None) -> dict:
+    """A market's book (variant None: every rule together) or one rule's record within it (by the copies' `variant` tag)."""
     p = w.get_portfolio(closed_limit=40)
-    closed_all = w.all_trades()["closed"]
+    tag = lambda t: (t.get("variant") or "base")                                           # noqa: E731
+    closed_all = [t for t in w.all_trades()["closed"] if variant is None or tag(t) == variant]
+    open_ = [t for t in p["open_trades"] if variant is None or tag(t) == variant]
+    recent = [t for t in p["closed_trades"] if variant is None or tag(t) == variant]
     wins = [t for t in closed_all if (t.get("pnl_usd") or 0) > 0]
     week = [t for t in closed_all if _ts(t.get("closed_at")) > time.time() - 7 * 86400]
-    return {"market": market, "variant": variant, "book": book_name(market, variant), "label": VARIANTS[variant]["label"], "note": VARIANTS[variant]["note"],
-            "enabled": book_switches.enabled(book_name(market, variant)), "equity": p["total_equity"], "initial": p["initial_balance"],
+    v = variant or "base"
+    return {"market": market, "variant": v, "book": book_name(market, v), "label": VARIANTS[v]["label"], "note": VARIANTS[v]["note"],
+            "shared_wallet": variant is not None,
+            "enabled": book_switches.enabled(book_name(market, v)), "equity": p["total_equity"], "initial": p["initial_balance"],
             "per_day_7d": round(sum(t.get("pnl_usd") or 0 for t in week) / 7, 2), "trades_7d": len(week),
-            "open": len(p["open_trades"]), "closed": len(closed_all),
+            "open": len(open_), "closed": len(closed_all),
             "win_rate": round(100 * len(wins) / len(closed_all), 1) if closed_all else None,
             "net_pnl": round(sum(t.get("pnl_usd") or 0 for t in closed_all), 2),
             "recent": [{"symbol": t["symbol"], "direction": t["direction"], "leader": t.get("leader"), "venue": t.get("venue"), "pnl_usd": t.get("pnl_usd"),
                         "roe_pct": t.get("roe_pct"), "close_reason": t.get("close_reason"), "opened_at": t.get("opened_at"),
-                        "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in p["closed_trades"]]}
+                        "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in recent]}
 
 
 def status() -> dict:
     wallets = _wallets()
     all_w = _all_wallets()
     books_ = {m: _book_summary(ww, m) for m, ww in wallets.items()}
-    variants = {m: {v: _book_summary(all_w[(m, v)], m, v) for v in VARIANTS} for m in MARKETS}
-    open_ = [t for ww in all_w.values() for t in ww.get_portfolio()["open_trades"]]
+    variants = {m: {v: _book_summary(all_w[(m, v)], m, v) for v in VARIANTS} for m in MARKETS if m not in RETIRED_MARKETS}
+    open_ = [t for ww in _unique_wallets() for t in ww.get_portfolio()["open_trades"]]
     sk = skipped()
     judged = [e for e in sk if e.get("outcome_pct") is not None and (e.get("variant") or "base") == "base"]
     snap = kv.get_sync(_k("positions")) or {}
@@ -999,7 +1101,8 @@ def _why_not(by_leader: dict, open_: list[dict]) -> dict:
 
 
 def config() -> dict:
-    return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
-            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_x": MAX_HOLD_X, "consensus_x": CONSENSUS_X,
+    return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
+            "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
+            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X,
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,
                     "hl_equity": list(HL_EQUITY), "hl_month_roi": list(HL_MONTH_ROI), "hl_turnover": list(HL_TURNOVER)}}

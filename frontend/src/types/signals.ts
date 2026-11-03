@@ -269,8 +269,10 @@ export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_tra
   /** Lanes: the scanner path beside mirrors of the evidence books, each sized by its record in the current regime. */
   lanes?: {
     regime: string; regime_label: string | null; rule: string; cell_n: number; min_n: number; measure_x: number
+    net_cap_pct?: number; net_exposure_usd?: number
     lanes: { lane: string; label: string; mult: number; why: string; open: number; enabled?: boolean
-             all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell> }[]
+             all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell>
+             sides?: Record<'long' | 'short', { mult: number; all: LaneCell; regime: LaneCell }> }[]
   }
   updated_at: number
 }

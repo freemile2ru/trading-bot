@@ -62,8 +62,7 @@ async def monitor_all() -> None:
     from trading import monitor
     if not ENABLED:
         return
-    for name in ("signals_claude", "signals_rules", "claude_swing", "weekly_rs", "cascade", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction",
-                 *[f"copy_{m}_{v}" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")]):
+    for name in ("weekly_rs", "cascade", "copy_trading", "copy_stocks", "multi_factor", "auction"):
         try:
             await monitor.run(WALLETS[name])
         except Exception as e:

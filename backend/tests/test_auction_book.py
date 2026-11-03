@@ -22,7 +22,7 @@ def book(tmp_path, monkeypatch):
     monkeypatch.setattr(books, "ENABLED", True)
     monkeypatch.setattr(book_switches, "enabled", lambda name: True)
     monkeypatch.setattr(auction, "SYMBOLS", ("TESTUSDT",))
-    monkeypatch.setattr(auction, "VARIANT", {"min_target_bps": 0, "min_grade": 0})
+    monkeypatch.setattr(auction, "VARIANT", {"min_target_bps": 0, "min_grade": 0, "entry": "next_open", "target_mode": "next"})
     monkeypatch.setattr(auction, "gates", lambda sym, now: None)
     kv.delete_sync(auction._k("state", "TESTUSDT"), auction._k("log"))
     prices = {"px": 101.3}
@@ -85,3 +85,39 @@ def test_tick_only_acts_in_the_session_window():
     # a Saturday afternoon in New York: nothing happens, no feeds are called
     sat = pd.Timestamp("2026-06-06 14:00", tz="America/New_York").timestamp()
     assert asyncio.run(auction.tick(sat)) == []
+
+
+def test_snapshot_shows_levels_context_grades_and_the_book(book, monkeypatch):
+    w, prices = book
+    df = _frame()
+
+    async def fake_bars(sym, now):
+        return df
+    monkeypatch.setattr(auction, "bars", fake_bars)
+    auction._snap_cache.update(at=0.0, data=None)
+    snap = asyncio.run(auction.snapshot(float(df.index[-1].timestamp()) + 300))
+    inst = snap["instruments"][0]
+    assert inst["symbol"] == "TESTUSDT" and inst["price"] == 105.0 and inst["in_session"]
+    names = {l["name"] for l in inst["levels"]}
+    assert {"PDH", "PDL", "ONH", "ONL"} <= names and all("bps" in l for l in inst["levels"])
+    assert inst["levels"] == sorted(inst["levels"], key=lambda l: -l["price"])
+    assert 0 <= inst["grade_long"]["score"] <= 8 and isinstance(inst["grade_long"]["stand_down"], bool)
+    assert inst["next_above"]["price"] > inst["price"] > inst["next_below"]["price"]
+    assert snap["book"]["equity"] == 1_000 and snap["verdict"]["status"] == "collecting" and snap["config"]["symbols"] == ["TESTUSDT"]
+    assert asyncio.run(auction.snapshot(float(df.index[-1].timestamp()) + 301)) is snap            # cached for a minute
+
+
+def test_chart_returns_bars_levels_lines_signals_and_trades(book, monkeypatch):
+    w, prices = book
+    df = _frame()
+
+    async def fake_bars(sym, now):
+        return df
+    monkeypatch.setattr(auction, "bars", fake_bars)
+    out = asyncio.run(auction.chart("TESTUSDT", 400, float(df.index[-1].timestamp()) + 300))      # a window that reaches back past day 2's open
+    assert len(out["bars"]) == 400 and set(out["bars"][0]) == {"t", "o", "h", "l", "c", "v", "session"}
+    assert len(out["lines"]["vwap"]) == 400 and len(out["levels"]["PDH"]) == 400
+    assert any(v is not None for v in out["levels"]["PDH"]) and {"PDH", "PDL", "ONH", "ONL"} <= {l["name"] for l in out["current_levels"]}
+    kinds = {e["kind"] for e in out["study_events"]}
+    assert {"accept", "confirm", "entry"} <= kinds                       # the synthetic day's acceptance shows up as the study's signal
+    assert out["trades"] == []

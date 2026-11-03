@@ -306,7 +306,7 @@ const STATUS_STYLE: Record<AutoStatus, { label: string; cls: string }> = {
   watching: { label: 'no bias', cls: 'text-gray-500 bg-gray-800/60' },
 }
 
-const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket' }
+const LANE_LABEL: Record<string, string> = { ta: 'scanner', events: 'event short', unlocks: 'unlock short', weekly: 'weekly basket', cascade: 'cascade fade', factor: 'multi-factor', reversal: 'reversal score' }
 const LANE_CLS: Record<string, string> = {
   ta: 'bg-sky-900/40 text-sky-300', events: 'bg-orange-900/40 text-orange-300', unlocks: 'bg-red-900/40 text-red-300', weekly: 'bg-teal-900/40 text-teal-300',
 }
@@ -452,13 +452,21 @@ export function AutoTraderPanel({
         <section className="rounded-lg border border-gray-800 bg-gray-800/30 px-2.5 py-2 space-y-1.5" title={auto.lanes.rule}>
           <div className="flex items-baseline gap-2 text-[11px]">
             <span className="font-semibold text-gray-200">Lanes</span>
-            <span className="text-gray-500">regime now <span className="text-gray-300">{auto.lanes.regime_label ?? auto.lanes.regime}</span> · sized by each lane's last {auto.lanes.cell_n} trades here</span>
+            <span className="text-gray-500">regime now <span className="text-gray-300">{auto.lanes.regime_label ?? auto.lanes.regime}</span> · sized by each lane's last {auto.lanes.cell_n} trades here{auto.lanes.net_exposure_usd != null && <> · net <span className={clsx(Math.abs(auto.lanes.net_exposure_usd) > (auto.total_equity || 1) * ((auto.lanes.net_cap_pct ?? 25) / 100) ? 'text-amber-300' : 'text-gray-300')}>{auto.lanes.net_exposure_usd >= 0 ? 'long' : 'short'} ${Math.abs(auto.lanes.net_exposure_usd).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span> (cap {auto.lanes.net_cap_pct ?? 25}%)</>}</span>
           </div>
           {auto.lanes.lanes.map(l => (
             <div key={l.lane} className="grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem] items-center gap-2 text-[11px]">
               <div className="min-w-0">
                 <div className="text-gray-200 truncate">{l.label}{l.open > 0 && <span className="ml-1 text-gray-500">· {l.open} open</span>}</div>
                 <div className="text-[10px] text-gray-500 truncate" title={l.why}>{l.why}</div>
+                {l.sides && (l.sides.long.all.n > 0 || l.sides.short.all.n > 0) && (
+                  <div className="text-[10px] text-gray-600 truncate">
+                    {(['long', 'short'] as const).map(d => {
+                      const c = l.sides![d]
+                      return <span key={d} className="mr-2" title={`${c.all.n} ${d}s in all · ${c.regime.n} in this regime`}>{d}s <span className={clsx(c.mult >= 1 ? 'text-gray-400' : 'text-amber-300')}>{c.mult}×</span>{c.all.n ? ` ${c.all.avg_r != null && c.all.avg_r > 0 ? '+' : ''}${c.all.avg_r}R · ${c.all.n}` : ''}</span>
+                    })}
+                  </div>
+                )}
               </div>
               <span className={clsx('text-right font-semibold tabular-nums', l.enabled === false ? 'text-gray-600' : l.mult >= 1 ? 'text-emerald-300' : 'text-amber-300')}
                 title={l.enabled === false ? 'This lane is not mirrored here: its book holds the only position for each signal' : undefined}>

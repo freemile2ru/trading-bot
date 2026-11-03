@@ -11,6 +11,7 @@ import type { MarketSummary } from '../types/markets'
 import type { GuardsStatus } from '../types/guards'
 import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '../types/ops'
 import type { CopyStatus } from '../types/copy'
+import type { AuctionChartData, AuctionSnapshot } from '../types/auction'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
 
@@ -150,6 +151,11 @@ export const api = {
   copy: {
     status: () => get<CopyStatus>('/copy/leaders'),
     refresh: () => post<CopyStatus>('/copy/refresh'),
+  },
+  auction: {
+    status: () => get<AuctionSnapshot>('/auction'),
+    tick: () => post<{ events: unknown[]; snapshot: AuctionSnapshot }>('/auction/tick'),
+    chart: (symbol: string, bars = 600) => get<AuctionChartData>(`/auction/chart/${symbol}?bars=${bars}`),
   },
   portfolio: {
     overview: (includeRetired = false) => get<PortfolioOverview>(`/portfolio/overview${includeRetired ? '?include_retired=true' : ''}`),

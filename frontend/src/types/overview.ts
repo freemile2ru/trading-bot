@@ -247,7 +247,7 @@ export interface TargetBook {
 }
 export interface TargetReport {
   auto?: { on: boolean; hour_utc: number; last: { at: number; moves: { book: string; from: number; to: number; delta: number; why: string }[]; applied?: [string, number][]; note?: string; verdicts?: Record<string, string> } | null }
-  target: number; now: number; books: TargetBook[]
+  target: number; target_why?: string; goal?: number; gap_goal7?: number; now: number; books: TargetBook[]
   totals: { today: number; avg7: number; avg30: number; expected: number; equity: number; added: number }
   gap7: number; gap_expected: number; paused: { at: number; reason: string } | null; trip_avg7: number
   plan: Record<string, number>; plan_note?: { at: number; note: string } | null

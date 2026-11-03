@@ -25,8 +25,26 @@ from trading import capital
 
 logger = logging.getLogger("trading.target")
 
-TARGET = capital.TARGET_USD_DAY
-TRIP_AVG7 = -TARGET                       # 7-day average below this pauses the programme
+GOAL = capital.GOAL_USD_DAY               # the $200/day ambition — shown beside the target, never scored against
+TARGET_FLOOR = float(os.getenv("DAILY_TARGET_FLOOR_USD", "25"))
+TRIP_AVG7 = -GOAL                         # 7-day average below this pauses the programme (a loss limit, not the target)
+
+
+def evidence_target(books: list[dict], verdicts_: dict[str, dict] | None = None) -> tuple[float, str]:
+    """Today's target (2026-11-02, re-based with the user after the first full review): what the evidence supports —
+    the lab-expected $/day of the books with a measured rate, plus the measured 30-day $/day of any book whose
+    40-trade verdict says "edge" — never below TARGET_FLOOR. The ladder (trading/allocator.py) moves capital to the
+    books that earn a verdict, which raises their expected rate, which raises the target: it grows on evidence."""
+    expected = sum(r.get("expected") or 0.0 for r in books)
+    earned = sum(r.get("avg30") or 0.0 for r in books                                   # a book counts once: its lab rate, else its earned rate
+                 if not r.get("expected") and (verdicts_ or {}).get(r["book"], {}).get("status") == "edge" and (r.get("avg30") or 0) > 0)
+    target = max(TARGET_FLOOR, round(expected + earned, 2))
+    parts = [f"${expected:,.0f}/day expected from the books with a measured rate"]
+    if earned:
+        parts.append(f"${earned:,.0f}/day earned by books with an edge verdict")
+    if target == TARGET_FLOOR and expected + earned < TARGET_FLOOR:
+        parts.append(f"floor ${TARGET_FLOOR:,.0f}")
+    return target, "; ".join(parts)
 SUSPECT_DAY_FRAC = 0.30                   # a day moving more than this fraction of the book is an artefact, not a result
 EVIDENCE = {                              # expected return per unit, from the labs
     "weekly_rs": 0.0136 / 7,              # +1.36% a week on equity (research/signal_rebuild_lab.py)
@@ -179,7 +197,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
     today = _day(now)
     books, tot = [], {"today": 0.0, "avg7": 0.0, "avg30": 0.0, "expected": 0.0, "equity": 0.0, "added": 0.0}
     for name, m in pf["systems"].items():
-        if name in ("all", "everything") or name.endswith("_live") or name in overview.RETIRED_SYSTEMS:   # aggregates, not books
+        if name in ("all", "everything") or name.endswith("_live") or name in overview.RETIRED_SYSTEMS or name in overview.SIGNAL_SYSTEMS:   # aggregates / signal ledgers, not books
             continue
         pnl = daily_pnl(overview._equity_series(name), [d for d in deps if d["book"] == name])
         exp, why = expected(name, m["equity"], now)
@@ -194,7 +212,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
         tot["expected"] += exp or 0.0
     # Planned books that haven't traded yet aren't in the overview; they still belong on the board.
     for name in capital.plan():
-        if any(r["book"] == name for r in books):
+        if any(r["book"] == name for r in books) or name in overview.SIGNAL_SYSTEMS:
             continue
         eq = _ledger_equity(name)
         if eq is None:
@@ -209,8 +227,13 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
         tot["expected"] += exp or 0.0
     books.sort(key=lambda r: (r["expected"] is None, -(r["expected"] or 0), r["book"]))
     tot = {k: round(v, 2) for k, v in tot.items()}
-    out = {"target": TARGET, "now": now, "books": books, "totals": tot,
-           "gap7": round(TARGET - tot["avg7"], 2), "gap_expected": round(TARGET - tot["expected"], 2),
+    try:
+        verdicts_ = book_verdicts()
+    except Exception:
+        verdicts_ = {}
+    target, target_why = evidence_target(books, verdicts_)
+    out = {"target": target, "target_why": target_why, "goal": GOAL, "now": now, "books": books, "totals": tot,
+           "gap7": round(target - tot["avg7"], 2), "gap_expected": round(target - tot["expected"], 2), "gap_goal7": round(GOAL - tot["avg7"], 2),
            "paused": capital.paused(), "trip_avg7": TRIP_AVG7, "plan": capital.plan(), "plan_note": kv.get_sync(capital._k("plan_note")), "deposits": deps[-20:],
            "auto": {"on": AUTO, "hour_utc": AUTO_HOUR_UTC, "last": kv.get_sync(kv.key("capital", "auto", "last"))},
            "measuring_since": min((r["since"] for r in books if r["since"]), default=None)}

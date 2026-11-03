@@ -26,5 +26,5 @@ def test_books_catalog_carries_a_verdict():
     from trading import book_switches
     books = {b["name"]: b for b in book_switches.catalog()["books"]}
     assert books["main"]["verdict"] is None
-    assert books["claude_swing"]["verdict"]["status"] == "collecting"
+    assert books["weekly_rs"]["verdict"]["status"] == "collecting"
     assert books["carry"]["verdict"]["rule"] == "carry"
