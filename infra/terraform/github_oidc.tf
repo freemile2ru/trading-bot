@@ -5,6 +5,15 @@
 #
 # Add the role ARNs as repository variables AWS_DEPLOY_ROLE_ARN and AWS_TERRAFORM_ROLE_ARN (outputs).
 
+# GitHub's OIDC subject (2026): "repo:OWNER@OWNER_ID/REPO@REPO_ID:…" — the immutable form, which survives renames and
+# cannot be claimed by a recreated repository of the same name. The trust accepts that form and the classic one.
+locals {
+  repo_subjects = [
+    "repo:${var.github_repository}",
+    "repo:${split("/", var.github_repository)[0]}@${var.github_owner_id}/${split("/", var.github_repository)[1]}@${var.github_repository_id}",
+  ]
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -26,7 +35,7 @@ data "aws_iam_policy_document" "github_deploy_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/main", "repo:${var.github_repository}:environment:production"]
+      values   = flatten([for s in local.repo_subjects : ["${s}:ref:refs/heads/main", "${s}:environment:production"]])
     }
   }
 }
@@ -78,7 +87,7 @@ data "aws_iam_policy_document" "github_terraform_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:*"]
+      values   = [for s in local.repo_subjects : "${s}:*"]
     }
   }
 }

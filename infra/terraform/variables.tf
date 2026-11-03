@@ -45,6 +45,18 @@ variable "github_repository" {
   default     = "freemile2ru/trading-bot"
 }
 
+variable "github_owner_id" {
+  description = "The numeric id of the repository owner (gh api users/OWNER --jq .id) — part of GitHub's immutable OIDC subject."
+  type        = string
+  default     = "25608812"
+}
+
+variable "github_repository_id" {
+  description = "The numeric id of the repository (gh api repos/OWNER/REPO --jq .id)."
+  type        = string
+  default     = "1444562670"
+}
+
 variable "ssh_cidr" {
   description = "Leave empty: the instance is reached with SSM Session Manager, no SSH port is opened. Set a CIDR to open 22 to it."
   type        = string
