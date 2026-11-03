@@ -43,16 +43,14 @@ GitHub (main) ──deploy.yml──▶ GHCR images ──┐
    deploy / apply to wait for a click.
 6. **Check Binance answers from Tokyo** before trusting anything: `aws ssm start-session --target <instance id>`,
    then `cat /var/log/ai-trader-binance-check.log` — every URL should show `200`.
-7. **Push to `main`** → Deploy runs: tests → images → `deploy.sh` on the box → health check. First deploy starts the app empty.
-8. **Move the data** (one-off, from the Mac, while the Mac's backend is stopped):
-   ```
-   tar -C backend -czf /tmp/data.tgz --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.py' --exclude=__pycache__ data
-   aws s3 cp /tmp/data.tgz s3://<RELEASE_BUCKET>/release/manual/data.tgz
-   # on the box (session manager):
-   cd /srv/ai-trader && docker compose stop backend && aws s3 cp s3://<RELEASE_BUCKET>/release/manual/data.tgz /tmp/ \
-     && tar -xzf /tmp/data.tgz -C /srv/ai-trader --strip-components=1 && chown -R 1000:1000 data && docker compose start backend
-   ```
-   Stop the Mac's `./start.sh` for good at this point — two copies would trade the same account.
+7. **Push to `main`** → Deploy runs: tests → images → `deploy.sh` on the box → health check.
+
+**Production starts fresh.** Nothing is copied from the Mac: every book opens at its plan allocation (the capital
+tracker funds them on its first tick), the scanner, recorder and copy observation log build their own history, and
+the verdicts count from day one in Tokyo. The Mac keeps its data and `.env` as the research environment — the labs,
+replays and the research cache live there. Two rules keep the two apart: only production holds the Binance keys
+that may place orders (`LIVE_TRADING_ALLOWED=false` on the Mac), and research findings reach production as code,
+through a pull request, never as copied database files.
 
 ## The database
 
@@ -66,13 +64,9 @@ signals and scan labels, the pair books (carry, carry-q, events, unlocks, vol pr
 SQLite files (next stages, book by book): the copy-trading observation log, cascade, positioning, funding venues,
 the unlock snapshots, the research labs' read-only replays.
 
-**Moving the data** (one-off, after the first deploy, with the Mac's backend stopped — see step 8 for the files):
-```
-# on the box, with the data files in /srv/ai-trader/data:
-docker compose run --rm backend python scripts/sqlite_to_postgres.py --all
-```
-The script creates each schema from the SQLite DDL and copies rows in batches; it can be re-run to top up. The SQLite
-files stay on the volume for the books that haven't moved and as the fallback (`unset DATABASE_URL`).
+Production starts with empty schemas (see above); `scripts/sqlite_to_postgres.py` exists for moving a book's SQLite
+file into Postgres when a later stage migrates it in place, not for seeding production from the Mac. The SQLite files
+on the volume serve the books that haven't moved yet and are the fallback (`unset DATABASE_URL`).
 
 ## Day to day
 
