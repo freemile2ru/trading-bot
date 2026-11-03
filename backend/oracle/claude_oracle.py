@@ -8,7 +8,7 @@ _client: anthropic.AsyncAnthropic | None = None
 
 # One model for every Claude call in the app (scanner signals, autotrader confirmations,
 # Claude swing unless it sets its own). Override with CLAUDE_MODEL in .env.
-MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+MODEL = os.getenv("CLAUDE_MODEL", "claude-fable-5-1")        # Fable 5.1 since 2026-11-03 (was Opus 5.5)
 
 
 # Output budgets. Opus 5.5 thinks before answering and the thinking counts against max_tokens, so
