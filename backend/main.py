@@ -130,6 +130,12 @@ async def lifespan(app: FastAPI):
         # Durable state now lives in SQLite; bring over anything still in Redis/JSON first.
         from storage import migrate
         await migrate.run()
+        # Every book at its plan allocation before any book's first tick: on a fresh instance (2026-11-04) the carry
+        # books opened legs on the $10k seed and trimmed them to plan thirty seconds later, paying a day's fees for it.
+        from trading import capital
+        moved = await asyncio.to_thread(capital.apply_plan)
+        if moved:
+            logger.info("Capital plan applied at startup: %s", ", ".join(f"{m['book']} {m['amount']:+,.0f}" for m in moved))
         scheduler.start()
     else:
         logger.info("Scanner disabled via SCANNER_ENABLED=false")
