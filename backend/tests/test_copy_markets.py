@@ -187,14 +187,35 @@ def test_mirror_copies_a_position_into_exactly_one_book(tmp_path, monkeypatch):
 # ── Exits and sizing re-ruled 2026-11-02 ──────────────────────────────────────
 
 def test_stop_sits_on_the_leaders_typical_loss_and_the_leg_is_sized_to_it():
-    assert ct.stop_pct({"loss_move_pct": 1.0}) == 2.0                                  # 2× their median loss
-    assert ct.stop_pct({"loss_move_pct": 0.2}) == ct.STOP_PCT_MIN                      # never tighter than 1%
+    assert ct.stop_pct({"loss_move_pct": 1.5}) == 3.0                                  # 2× their median loss
+    assert ct.stop_pct({"loss_move_pct": 0.2}) == ct.STOP_PCT_MIN == 2.0               # never tighter than 2%: 1% was intraday noise (2026-11-04)
     assert ct.stop_pct({"loss_move_pct": 5.0}) == ct.DISASTER_PCT == ct.stop_pct(None)  # never wider than the disaster stop; no profile → disaster
-    assert ct.leg_notional(20_000, 2.0) == 20_000                                      # 2% risk at a 2% stop: the whole book, which is the cap
-    assert ct.leg_notional(20_000, 1.0) == 20_000 * ct.MAX_LEG_PCT / 100               # a 1% stop would ask for 2× equity: capped
-    assert ct.leg_notional(20_000, 4.0) == 10_000 and ct.leg_notional(500, 4.0) == 250     # the disaster stop: half the book
-    assert ct.leg_notional(20_000, 2.0, "stocks") == 10_000 and ct.leg_notional(20_000, 2.0, "crypto") == 20_000   # a stock perp: never more than half the book
+    assert ct.leg_notional(20_000, 2.0) == 5_000                                       # 0.5% risk at a 2% stop: a quarter of the book, which is the cap
+    assert ct.leg_notional(20_000, 1.0) == 20_000 * ct.MAX_LEG_PCT / 100 == 5_000      # a tighter stop would ask for half the book: capped at a quarter
+    assert ct.leg_notional(20_000, 4.0) == 2_500 and ct.leg_notional(500, 4.0) == 62.5    # the disaster stop: an eighth
+    assert ct.leg_notional(400, 4.0) == 50                                              # floor: a tenth of the book
+    assert ct.leg_notional(20_000, 2.0, "stocks") == 5_000 == ct.leg_notional(20_000, 2.0, "crypto")   # a stock perp: the same quarter
     assert ct.CONSENSUS_X == 1.0                                                           # consensus is recorded, never sized
+
+
+def test_a_book_stops_opening_when_full_over_the_gross_cap_or_down_three_percent_today(tmp_path):
+    from trading.paper_trader import PaperWallet
+    now = 1_793_800_000.0                                                                # 2026-11-04 ~13:47 UTC
+    w = PaperWallet(str(tmp_path / "w.db"), label="copy_test", initial_balance=10_000)
+    assert ct.book_room(w, now) is None
+    for i in range(3):                                                                   # three legs of half the book each: 150% on
+        w.open_trade(f"C{i}USDT", "long", 100, 98, 103, 105, notional_usd=5_000, timeframe="copy", leverage=5, extra={"strategy": "copy_test", "exit_policy": "manual"})
+    assert ct.book_room(w, now).startswith("gross cap")
+    w2 = PaperWallet(str(tmp_path / "w2.db"), label="copy_test2", initial_balance=10_000)
+    t = w2.open_trade("LOSSUSDT", "long", 100, 96, 103, 105, notional_usd=2_500, timeframe="copy", leverage=5, extra={"strategy": "copy_test2", "exit_policy": "manual"})
+    w2.close_trade_manually(t["id"], 87.0, "stop_loss")                                  # −13% on a quarter of the book: −3.25% today
+    assert ct.day_loss(w2.get_portfolio(), now) == pytest.approx(325 + t["fees_usd"], abs=20)
+    assert ct.book_room(w2, now).startswith("halted for the day")
+    assert ct.book_room(w2, now + 86400) is None                                         # tomorrow is a new day
+    w3 = PaperWallet(str(tmp_path / "w3.db"), label="copy_test3", initial_balance=10_000)
+    for i in range(ct.MAX_OPEN):
+        w3.open_trade(f"F{i}USDT", "long", 100, 98, 103, 105, notional_usd=100, timeframe="copy", leverage=1, extra={"strategy": "copy_test3", "exit_policy": "manual"})
+    assert ct.book_room(w3, now) == "book full"
 
 
 def test_a_copy_that_cannot_pay_its_fees_is_skipped():

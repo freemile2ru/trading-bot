@@ -47,6 +47,14 @@ Re-ruled 2026-11-02 after the first 20 base copies (−$46 net on −$11 gross):
 movement, six copies were cut at a 24h clock while the leader still held (and they were the best ones), a halving
 leader took us out entirely, and one 4% stop cost more than the three best wins together.
 
+Re-ruled 2026-11-04 after one afternoon cost the book 9% (2026-11-04 12:00–16:00 UTC, the same nine copies on the
+research machine and in production): the 2% risk rule at a 1% stop asked for 2× equity a leg, so the 100% cap made
+every leg the whole book with a stop one per cent away; six of those at once put the book 5× long and short, and
+the $100 profit lock on a $32k leg armed at +0.3% — winners left at +0.1R while the stops cost −1.1R each. Now a
+leg risks 0.5% of the book, is never more than a quarter of it, the stop is never tighter than 2%, a book never has
+more than 1.5× its equity on, a book that has lost 3% today opens nothing more until tomorrow, and the lock arms no
+earlier than one R.
+
 Variants (2026-10-30): after two days with nothing copied — every position the leaders held pre-dated tracking or
 was past a quarter of their hold — three alternatives run beside the base rule in every market. They had a $611
 wallet each until 2026-11-02; since then every rule of a market trades in that market's one book and is judged by
@@ -87,18 +95,20 @@ LT_TURNOVER = (2.0, 60.0)                # Lighter: above ~60× a month the boar
 # notional = equity × RISK_PCT / stop%. Since 2026-11-02 the stop is STOP_X × the leader's median losing move
 # (DISASTER_PCT was the stop before, and at 4% a stop cost three typical wins): on a $20k book, a leader whose median
 # loss is 1% gets a 2% stop and a $20k leg, where their typical 1.3% win is ~$260 and the stop −$400.
-RISK_PCT = float(os.getenv("COPY_RISK_PCT", "2"))
-LEG_PCT = float(os.getenv("COPY_LEG_PCT", "25"))                  # floor: 25% of equity a copy (was the whole rule from 10-29 to 10-31)
-MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "100"))         # cap: a leg's notional never exceeds the book's equity
+RISK_PCT = float(os.getenv("COPY_RISK_PCT", "0.5"))                # 0.5 since 2026-11-04 (was 2): see the re-rule note below
+LEG_PCT = float(os.getenv("COPY_LEG_PCT", "10"))                  # floor: 10% of equity a copy (25% was the whole rule from 10-29 to 10-31)
+MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "25"))          # cap: a leg is never more than a quarter of the book (was the whole book until 2026-11-04)
+MAX_GROSS_PCT = float(os.getenv("COPY_MAX_GROSS_PCT", "150"))     # everything open in a book together: never more than 1.5× its equity
+DAY_LOSS_HALT_PCT = float(os.getenv("COPY_DAY_LOSS_HALT_PCT", "3"))   # a book that has lost this much of itself today (closed) opens nothing more until the next UTC day
 MAX_LEVERAGE = int(os.getenv("COPY_MAX_LEVERAGE", "10"))          # 10× cap since 2026-10-29 (was 5)
 MAX_OPEN = int(os.getenv("COPY_MAX_OPEN", "6"))                   # 6 since 2026-11-01 (was 12): at 2% risk a copy, six copies put 12% of the book at risk
 LATE_AGE_FRAC, LATE_MOVE_FRAC, ADVERSE_FRAC = 0.25, 0.5, 1.0
 CONSENSUS_X = float(os.getenv("COPY_CONSENSUS_X", "1"))           # 1.0 since 2026-11-02: at 1.5 a two-leader SK Hynix long risked 3% of the book and lost −$621 on
                                                                   # its stop; two leaders on one venue in one name is one view, not two, so consensus is recorded, not sized
-MAX_LEG_PCT_BY_MARKET = {"stocks": 50.0, "futures": 50.0}         # a single stock or commodity perp never carries more than half the book: they gap at the home market's open
+MAX_LEG_PCT_BY_MARKET = {"stocks": 25.0, "futures": 25.0}         # a single stock or commodity perp: the same quarter (they gap at the home market's open), never above MAX_LEG_PCT
 DISASTER_PCT = float(os.getenv("COPY_DISASTER_PCT", "4"))         # the widest stop a copy gets (and the stop for a leader without a loss profile)
 STOP_X = float(os.getenv("COPY_STOP_X", "2"))                     # the stop: STOP_X × the leader's median losing move, bounded STOP_PCT_MIN..DISASTER_PCT
-STOP_PCT_MIN = 1.0
+STOP_PCT_MIN = 2.0                                                # 2 since 2026-11-04 (was 1): a 1% stop on a crypto perp is intraday noise
 FEE_GATE_X = float(os.getenv("COPY_FEE_GATE_X", "3"))             # what is left of the leader's median win must cover the round trip this many times
 REDUCE_FRAC = 0.5                                                 # the leader halves → we close this much and ride the rest to their close
 MAX_HOLD_H = 7 * 24                                               # the only clock, a backstop: the copy otherwise ends when the leader's position does
@@ -773,8 +783,33 @@ def leg_notional(equity: float, stop: float | None = None, market: str | None = 
     """What one copy puts on: the risk rule (RISK_PCT of equity lost at the stop), floored at LEG_PCT and capped at
     MAX_LEG_PCT of equity (MAX_LEG_PCT_BY_MARKET for stock and commodity perps)."""
     stop = stop or DISASTER_PCT
-    cap = MAX_LEG_PCT_BY_MARKET.get(market or "", MAX_LEG_PCT)
+    cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market or "", MAX_LEG_PCT))
     return min(max(equity * RISK_PCT / stop, equity * LEG_PCT / 100), equity * cap / 100)
+
+
+def day_loss(portfolio: dict, now: float) -> float:
+    """What the book has lost, closed, since 00:00 UTC today (0 when it is up on the day)."""
+    start = now - now % 86400
+    pnl = sum(t.get("pnl_usd") or 0 for t in portfolio.get("closed_trades", []) if t.get("closed_at") and _ts(t["closed_at"]) >= start)
+    return max(0.0, -pnl)
+
+
+def book_room(w, now: float) -> str | None:
+    """Why this book cannot take another copy right now: full, over the gross cap, or halted for the day. None when it can."""
+    p = w.get_portfolio(closed_limit=200)
+    open_ = p["open_trades"]
+    if len(open_) >= MAX_OPEN:
+        return "book full"
+    equity = p.get("total_equity") or 0
+    if not equity:
+        return None
+    gross = sum((t.get("quantity") or 0) * (t.get("entry_price") or 0) for t in open_)
+    if gross >= equity * MAX_GROSS_PCT / 100:
+        return f"gross cap ({gross / equity * 100:.0f}% of the book already on)"
+    lost = day_loss(p, now)
+    if lost >= equity * DAY_LOSS_HALT_PCT / 100:
+        return f"halted for the day (−${lost:,.0f} closed today, {lost / equity * 100:.1f}% of the book)"
+    return None
 
 
 def consensus(rows_by_leader: dict[str, list[dict]]) -> dict[tuple[str, str], int]:
@@ -850,8 +885,9 @@ async def mirror(now: float | None = None) -> dict:
                     continue
                 ok, why, moved, age_h, size_x = judge(r, L.get("profile") or {}, mark, now, variant)
                 fights = tape.against_tape(r["side"], tape_) if ok and VARIANTS[variant].get("tape_gate") else None
-                if not ok or fights or len(w.get_portfolio()["open_trades"]) >= MAX_OPEN:
-                    _record_skip({**skip, "reason": why if not ok else (fights or "book full"), "mark": mark, "leader_entry": r["entry"],
+                room = book_room(w, now) if ok and not fights else None
+                if not ok or fights or room:
+                    _record_skip({**skip, "reason": why if not ok else (fights or room), "mark": mark, "leader_entry": r["entry"],
                                   "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
                     continue
                 candidates.append((variant, (why, moved, age_h, size_x)))
@@ -1102,7 +1138,7 @@ def _why_not(by_leader: dict, open_: list[dict]) -> dict:
 
 def config() -> dict:
     return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
-            "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
+            "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
             "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X,
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,
                     "hl_equity": list(HL_EQUITY), "hl_month_roi": list(HL_MONTH_ROI), "hl_turnover": list(HL_TURNOVER)}}

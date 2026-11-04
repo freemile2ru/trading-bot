@@ -264,6 +264,16 @@ def test_manual_lock_keeps_half_of_the_peak_once_a_hundred_dollars_up(wallet):
     assert 90 < closed["pnl_usd"] < 110
 
 
+def test_manual_lock_arms_no_earlier_than_one_r(wallet):
+    """A $32k copy leg was $100 up after a 0.3% move (2026-11-04): the lock must wait for a full R, whichever is larger."""
+    t = wallet.open_trade("SOLUSDT", "long", 100, 98, 103, 105, risk_pct=4, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
+    assert t["risk_usd"] == pytest.approx(400, rel=0.05)
+    _walk(wallet, t, [(100, 101.5, 99.9, 101.4)])                                   # ≈ +$280 at the peak: over $100 but under 1R — not armed
+    assert wallet.get_portfolio()["open_trades"][0]["stop_loss"] == 98
+    _walk(wallet, t, [(101.4, 102.6, 101.3, 102.5)], skip=1)                        # ≈ +$500: past 1R — armed
+    assert wallet.get_portfolio()["open_trades"][0]["stop_loss"] > 98
+
+
 def test_manual_lock_never_expires_and_keeps_the_original_stop_until_armed(wallet):
     t = wallet.open_trade("SOLUSDT", "short", 100, 102, 97, 95, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
     assert t["expires_at"] - t["opened_ts"] >= 300 * 24 * 3600

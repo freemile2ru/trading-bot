@@ -72,6 +72,7 @@ class Policy:
     run_cap_h: float = 168.0
     lock_arm_usd: float | None = None     # dollar profit lock: arm once the open P&L has been this high…
     lock_keep: float = 0.5                # …and keep this share of the peak open P&L (the stop ratchets with the peak)
+    lock_arm_r: float = 1.0               # …but never before the trade is this many R up (2026-11-04: $100 on a $32k copy leg armed at +0.3%)
 
 
 POLICIES: dict[str, Policy] = {
@@ -291,7 +292,7 @@ def apply_bar(
     # 5b. Dollar profit lock: once the best open P&L has reached lock_arm_usd, keep lock_keep of it — effective from the next bar.
     if p.lock_arm_usd is not None and t.get("quantity", 0) > 0:
         peak_pnl = (t["peak_price"] - t["entry_price"]) * s * t["quantity"] - t.get("fees_usd", 0.0) - t.get("funding_usd", 0.0)
-        if peak_pnl >= p.lock_arm_usd:
+        if peak_pnl >= max(p.lock_arm_usd, p.lock_arm_r * (t.get("risk_usd") or 0.0)):
             keep = t["entry_price"] + s * (p.lock_keep * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
             # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
             # −$385) that "locked" a level above the market and the next tick stopped it out at the current price.
