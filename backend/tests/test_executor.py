@@ -10,6 +10,16 @@ from trading import capital, overview
 from trading.paper_trader import PaperWallet
 
 
+@pytest.fixture(autouse=True)
+def _no_coin_tape(monkeypatch):
+    """The per-coin entry gate reads Binance; tests see no tape (no gate) unless they set one."""
+    from trading import tape
+
+    async def none(symbol, now=None):
+        return None
+    monkeypatch.setattr(tape, "coin_tape", none)
+
+
 def test_lane_of_recognises_every_lane_marker():
     assert lanes.lane_of({"cascade_id": "x"}) == "cascade" and lanes.lane_of({"factor_id": "y"}) == "factor"
     assert lanes.lane_of({"reversal_id": "z"}) == "reversal" and lanes.lane_of({"weekly_id": "w"}) == "weekly"
@@ -160,3 +170,44 @@ def test_a_leg_never_opposes_a_position_another_system_holds():
 
 def test_the_scanner_lane_is_retired_by_default():
     assert engine.TA_LANE is False and "retired" in lanes.LANES["ta"]
+
+
+def test_a_mirror_leg_is_deferred_while_the_coin_is_being_dumped(tmp_path, monkeypatch):
+    """TRUMP, 2026-11-04 17:29 UTC: the factor basket bought a coin 5% down on the half hour on 5× volume and it fell
+    another 5% in the next five minutes. A leg is not opened into a move running against it; the next tick retries."""
+    from trading import tape
+    src = PaperWallet(str(tmp_path / "src.db"), label="cascade", initial_balance=500)
+    active = PaperWallet(str(tmp_path / "active.db"), label="auto", initial_balance=5_000)
+    monkeypatch.setitem(books.WALLETS, "cascade", src)
+    monkeypatch.setattr(books, "ENABLED", True)
+    monkeypatch.setattr(engine, "_active", lambda: active)
+    monkeypatch.setattr(engine, "_wallets", lambda: [active])
+    monkeypatch.setattr(capital, "PLAN", {"auto": 1_000.0, "cascade": 500.0})
+    kv.delete_sync(capital._k("plan"))
+
+    async def not_paused():
+        return False
+
+    async def no_regime():
+        return None
+
+    async def price(sym):
+        return 100.0
+    state = {"tape": {"move_pct": -5.1, "vol_x": 4.8}}
+
+    async def coin_tape(symbol, now=None):
+        return state["tape"]
+    monkeypatch.setattr(engine, "is_paused", not_paused)
+    monkeypatch.setattr(engine.regime, "current", no_regime)
+    monkeypatch.setattr(engine.monitor, "live_price", price)
+    monkeypatch.setattr(tape, "coin_tape", coin_tape)
+    asyncio.run(kv.delete(kv.key("auto", "cascade_mirror")))
+    asyncio.run(kv.set(kv.key("auto", "cascade_since"), {"at": 1.0}, 3600))
+    src.open_trade(symbol="TRUMPUSDT", direction="long", entry_price=100.0, stop_loss=70.0, take_profit_1=150.0, take_profit_2=190.0,
+                   notional_usd=50.0, timeframe="4h", leverage=3, extra={"exit_policy": "manual", "shadows": False, "strategy": "cascade"})
+    asyncio.run(engine._mirror_wallet_book("cascade", "cascade", True))
+    assert active.get_portfolio()["open_trades"] == []                                   # deferred, not opened
+    assert asyncio.run(kv.hgetall(kv.key("auto", "cascade_mirror"))) == {}               # and not recorded as mirrored
+    state["tape"] = {"move_pct": -0.4, "vol_x": 1.1}                                     # the dump is over: next tick takes it
+    asyncio.run(engine._mirror_wallet_book("cascade", "cascade", True))
+    assert [t["symbol"] for t in active.get_portfolio()["open_trades"]] == ["TRUMPUSDT"]

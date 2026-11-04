@@ -15,6 +15,16 @@ from trading.paper_trader import PaperWallet
 
 
 @pytest.fixture(autouse=True)
+def _no_coin_tape(monkeypatch):
+    """The per-coin entry gate reads Binance; tests see no tape (no gate) unless they set one."""
+    from trading import tape
+
+    async def none(symbol, now=None):
+        return None
+    monkeypatch.setattr(tape, "coin_tape", none)
+
+
+@pytest.fixture(autouse=True)
 def _scanner_lane_on(monkeypatch):
     """These tests exercise the scanner path itself; the lane is retired in production (engine.TA_LANE)."""
     monkeypatch.setattr(engine, "TA_LANE", True)

@@ -1062,6 +1062,13 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         if opp:
             logger.info("%s leg %s %s skipped: %s already holds the other side", lane, direction, symbol, opp.get("system") or lanes.lane_of(opp))
             return None
+        # Not into a move already running against the leg: the leg is tried again on the next tick (the mirror loop
+        # re-offers it while the book still holds the position; a reversal pick is simply passed over).
+        from trading import tape
+        into = tape.against_move(direction, await tape.coin_tape(symbol))
+        if into:
+            logger.info("%s leg %s %s deferred: %s", lane, direction, symbol, into)
+            return None
     lane_mult, lane_why = await _lane_mult(lane, symbol if not _is_hedge(extra) else None, direction)
     notional = min(max(equity * notional_pct / 100, equity * (risk_pct if risk_pct is not None else LANE_RISK_PCT) / max(stop_pct, 0.1)) * lane_mult,
                    equity * LANE_MAX_NOTIONAL_PCT / 100)

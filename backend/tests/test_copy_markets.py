@@ -295,3 +295,25 @@ def test_an_empty_venue_selection_keeps_that_venues_previous_leaders():
     assert [L["id"] for L in out] == ["b2", "h1", "l1"] and out[1]["stale_since"] == 1_000.0 and "stale_since" not in out[0]
     assert ct._merge_with_previous({"binance": [], "hyperliquid": [], "lighter": []}, prev, 2_000.0) == [{**L, "stale_since": 2_000.0} for L in prev]
     assert ct._merge_with_previous({"binance": [], "hyperliquid": [], "lighter": []}, [], 2_000.0) == []      # nothing before either
+
+
+def test_coin_tape_and_the_mid_dump_gate(monkeypatch):
+    from trading import tape
+    from data import binance_client
+
+    async def klines(symbol, interval="4h", limit=100):
+        assert symbol == "TRUMPUSDT" and interval == "5m" and limit == 288
+        quiet = [{"open": 1.39, "high": 1.4, "low": 1.38, "close": 1.39, "volume": 1.0} for _ in range(276)]
+        dump = [{"open": 1.39, "high": 1.39, "low": 1.25, "close": 1.39 - 0.0125 * (i + 1), "volume": 6.0} for i in range(12)]   # −10.8% in the hour, 6× volume
+        return quiet + dump
+    monkeypatch.setattr(binance_client, "fetch_futures_klines", klines)
+    tape._coin_cache.clear()
+    t = asyncio.run(tape.coin_tape("TRUMPUSDT", 1.0))
+    assert t["move_pct"] == pytest.approx(-10.79, abs=0.05) and t["vol_x"] == pytest.approx(4.97, abs=0.05)
+    assert tape.against_move("long", t).startswith("mid-dump")                     # buying into the dump: deferred
+    assert tape.against_move("short", t) is None                                     # selling it is not gated here
+    assert tape.against_move("short", {"move_pct": 4.0, "vol_x": 3.0}).startswith("mid-squeeze")
+    assert tape.against_move("long", {"move_pct": -4.0, "vol_x": 1.2}) is None       # a drift on normal volume is not a dump
+    assert tape.against_move("long", {"move_pct": -2.0, "vol_x": 5.0}) is None       # a small move, however busy
+    assert tape.against_move("long", None) is None                                   # feed down: no gate
+    tape._coin_cache.clear()
