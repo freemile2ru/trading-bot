@@ -203,6 +203,27 @@ async def _settle(p: dict, now: float) -> dict | None:
     return {**p, "status": "closed", "net": net, "payout": payout, "settle_price": settle}
 
 
+def close_at_mark(p: dict, reason: str, now: float | None = None) -> dict:
+    """Close a structure at its last mark (credit less the structure's current cost and fees) — a condor has no exit
+    of its own before expiry; used when the book cannot run on this instance (scripts/close_unpromoted.py)."""
+    now = now or time.time()
+    net = round(p.get("mark") or 0.0, 4)
+    _write("UPDATE vol_premium SET status='closed', closed_ts=?, net=?, close_reason=? WHERE id=?", (now, net, reason, p["id"]))
+    logger.info("Vol premium closed at mark: %s — %s, net $%.2f", p["coin"], reason, net)
+    return {**p, "status": "closed", "closed_ts": now, "net": net, "close_reason": reason}
+
+
+def erase_closed(reason: str) -> int:
+    """Remove closed rows with this close reason — for structures closed because the book cannot run on this instance,
+    never for trades the book actually took."""
+    with _lock:
+        con = _db()
+        n = con.execute("DELETE FROM vol_premium WHERE status='closed' AND close_reason=?", (reason,)).rowcount
+        con.commit()
+    logger.warning("Vol premium: erased %d closed rows with reason %r", n, reason)
+    return n
+
+
 async def tick(now: float | None = None) -> list[dict]:
     """Every few minutes: settle expired structures, mark open ones, open the next weekly where there is none."""
     from data.deribit_client import chain as fetch_chain

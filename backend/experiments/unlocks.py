@@ -207,6 +207,17 @@ async def close(p: dict, coin_px: float, btc_px: float, reason: str, now: float 
     return {**p, "status": "closed", "closed_ts": now, "close_reason": reason, "gross": gross, "fees": fees, "funding": funding, "net": net}
 
 
+def erase_closed(reason: str) -> int:
+    """Remove closed rows with this close reason — for positions closed because the book cannot run on this instance
+    (scripts/close_unpromoted.py), never for trades the book actually took."""
+    with _lock:
+        con = _db()
+        n = con.execute("DELETE FROM unlocks WHERE status='closed' AND close_reason=?", (reason,)).rowcount
+        con.commit()
+    logger.warning("Unlocks: erased %d closed rows with reason %r", n, reason)
+    return n
+
+
 _last_funding_check = {"at": 0.0}
 _last_refresh = {"at": 0.0}
 _perp_cache: dict = {"at": 0.0, "symbols": set()}

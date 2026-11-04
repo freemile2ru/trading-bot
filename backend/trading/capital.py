@@ -80,11 +80,16 @@ def _k(*parts: str) -> str:
 
 
 def plan() -> dict[str, float]:
-    """The plan in force: PLAN, or the last suggestion the user applied (trading/allocator.py), which keeps the total."""
+    """The plan in force: PLAN, or the last suggestion the user applied (trading/allocator.py), which keeps the total.
+    On a production instance only the promoted books are in it (trading/book_switches.promoted): the others hold no
+    capital there — their money is not reallocated, it is simply not on this instance (2026-11-04)."""
+    from trading import book_switches
     override = kv.get_sync(_k("plan"))
     if override and abs(sum(override.values()) - sum(PLAN.values())) < 1 and set(override) == set(PLAN):
-        return {k: float(v) for k, v in override.items()}
-    return dict(PLAN)
+        full = {k: float(v) for k, v in override.items()}
+    else:
+        full = dict(PLAN)
+    return {k: v for k, v in full.items() if book_switches.promoted(k)}
 
 
 def set_plan(new: dict[str, float], note: str) -> dict[str, float]:
@@ -173,7 +178,7 @@ def apply_plan(withdraw_only: bool = False) -> list[dict]:
     (trading/overview.SIGNAL_SYSTEMS) keep their plan entry as the autotrader lane's budget but hold no plan money."""
     from trading import overview
     out = []
-    for book in plan():
+    for book in plan():                                            # unpromoted books are not in the plan here
         if book in overview.SIGNAL_SYSTEMS:
             continue
         gap = shortfall(book)

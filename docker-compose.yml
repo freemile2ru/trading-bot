@@ -16,6 +16,9 @@ services:
       # The backend refuses writes (close, kill switch, mode changes) from any web origin it doesn't know;
       # the dashboard is served from the domain, so that is the one origin allowed to act.
       ALLOWED_ORIGINS: https://${DOMAIN}
+      # Experiments run on the local instance. Production runs only the books promoted to it; every other book is
+      # unavailable here (trading/book_switches.py). Promote a book by adding it, then redeploy.
+      PROMOTED_BOOKS: main,auto,auction,copy_trading,copy_stocks
     volumes:
       - ./data:/app/data
     depends_on:

@@ -12,9 +12,14 @@ Where each switch acts:
   hold72         Hold-72's new pairs
 Switch state lives in state.db, so it survives restarts. Live mode (real orders on the Binance
 account) is separate and set on the Live tab; the switch here covers a book in either mode.
+
+Promotion (2026-11-04): experiments run on the local instance; production runs only the books promoted to it
+(PROMOTED_BOOKS, default main, auto, the mentor's system and the copy books). On a production instance every
+other book is unavailable — off, not switchable, holding no plan money — until it is promoted here.
 """
 from __future__ import annotations
 
+import os
 import time
 
 from storage import state as kv
@@ -161,6 +166,9 @@ RETIRED_BOOKS = {
     "futures_claude": "Retired 2026-10-19 — never traded in 10 days: Claude's confidence topped out at 22–45%.",
 }
 RETIRED_BOOKS_ENFORCED = True                    # tests of the retired books' code turn this off
+PRODUCTION = os.getenv("APP_ENV") == "production"
+PROMOTED = {b.strip() for b in os.getenv("PROMOTED_BOOKS", "main,auto,auction,copy_trading,copy_stocks").split(",") if b.strip()}
+NOT_PROMOTED = "not promoted to production: it runs on the local instance until it is"
 _RETIRED_DEFS = {b["name"]: b for b in BOOKS if b["name"] in RETIRED_BOOKS}
 BOOKS = [b for b in BOOKS if b["name"] not in RETIRED_BOOKS]
 NAMES = {b["name"] for b in BOOKS}
@@ -176,9 +184,16 @@ def _key(name: str) -> str:
     return kv.key("book", "off", name)
 
 
+def promoted(name: str) -> bool:
+    """Whether a book may run on this instance: everything locally, only PROMOTED_BOOKS in production."""
+    return not PRODUCTION or name in PROMOTED
+
+
 def enabled(name: str) -> bool:
     """Whether a book may open new trades. Cheap and synchronous — called on every entry path."""
     if name in RETIRED_BOOKS and RETIRED_BOOKS_ENFORCED:
+        return False
+    if not promoted(name):
         return False
     if name == "auto":
         from autotrader.engine import PAUSED_KEY
@@ -187,7 +202,9 @@ def enabled(name: str) -> bool:
 
 
 def unavailable(name: str) -> str | None:
-    """Why a book can't be switched at all (turned off in .env), or None."""
+    """Why a book can't be switched at all (not promoted to this instance, or turned off in .env), or None."""
+    if not promoted(name):
+        return NOT_PROMOTED
     if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:

@@ -95,3 +95,22 @@ def test_retired_books_stay_off_and_cannot_be_switched(client):
         assert "hold72" not in trades["open_count"] and "signals_rules" not in trades["open_count"]
     finally:
         book_switches.RETIRED_BOOKS_ENFORCED = False
+
+
+def test_production_runs_only_its_promoted_books(client, monkeypatch):
+    """Experiments run locally; a production instance keeps unpromoted books off, unswitchable and unfunded."""
+    from trading import capital
+    monkeypatch.setattr(book_switches, "PRODUCTION", True)
+    monkeypatch.setattr(book_switches, "PROMOTED", {"main", "auto", "auction", "copy_trading", "copy_stocks"})
+    assert book_switches.promoted("copy_trading") and not book_switches.promoted("carry")
+    assert not book_switches.enabled("carry") and book_switches.unavailable("carry") == book_switches.NOT_PROMOTED
+    assert book_switches.enabled("main") and book_switches.unavailable("main") is None
+    d = client.get("/api/books").json()
+    carry = next(b for b in d["books"] if b["name"] == "carry")
+    assert not carry["enabled"] and "not promoted" in carry["unavailable"]
+    assert client.post("/api/books/carry", json={"enabled": True}).status_code == 409
+    assert "carry" not in capital.plan() and "copy_trading" in capital.plan() and capital.shortfall("carry") == 0.0
+    moved = capital.apply_plan()
+    assert not any(e["book"] == "carry" for e in moved) and capital.added("carry") == 0.0
+    monkeypatch.setattr(book_switches, "PRODUCTION", False)
+    assert book_switches.promoted("carry") and book_switches.unavailable("carry") != book_switches.NOT_PROMOTED

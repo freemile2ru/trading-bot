@@ -231,6 +231,17 @@ async def _funding(p: dict, until: float) -> tuple[float, float]:
     return round(paid, 4), worst
 
 
+def erase_closed(reason: str) -> int:
+    """Remove closed rows with this close reason — for positions closed because the book cannot run on this instance
+    (scripts/close_unpromoted.py), never for trades the book actually took."""
+    with _lock:
+        con = _db()
+        n = con.execute("DELETE FROM events WHERE status='closed' AND close_reason=?", (reason,)).rowcount
+        con.commit()
+    logger.warning("Events: erased %d closed rows with reason %r", n, reason)
+    return n
+
+
 async def close(p: dict, coin_px: float, btc_px: float, reason: str, now: float | None = None) -> dict:
     now = now or time.time()
     coin_exit, btc_exit = fill(coin_px, buying=True), fill(btc_px, buying=False)
