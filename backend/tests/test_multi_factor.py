@@ -83,3 +83,19 @@ def test_rebalance_opens_both_sides_once_a_day_and_keeps_positions_within_tolera
     out2 = asyncio.run(mf.rebalance(now=day1.replace(day=30)))
     assert out2 and out2["opened"] == [] and out2["closed"] == [] and len(out2["kept"]) == len(held)
     kv.delete_sync(kv.key("multi_factor", "done", "2026-10-29"), kv.key("multi_factor", "done", "2026-10-30"))
+
+
+def test_a_process_started_after_the_slot_waits_for_tomorrows(book, monkeypatch):
+    """A reset on 2026-11-04 restarted the process at 17:20 UTC and the basket went on at its first tick, 17:29, into
+    the afternoon's tape (TRUMP −5% in the next five minutes). Now it waits for the next 00:10 slot."""
+    boot = datetime(2026, 11, 4, 17, 20, tzinfo=timezone.utc)
+    monkeypatch.setattr(mf, "_BOOT_TS", boot.timestamp())
+    assert asyncio.run(mf.rebalance(now=boot.replace(minute=29))) is None                       # first tick: deferred
+    assert book.get_portfolio()["open_trades"] == []
+    assert kv.get_sync(kv.key("multi_factor", "done", "2026-11-04"))["deferred"]
+    out = asyncio.run(mf.rebalance(now=datetime(2026, 11, 5, 0, 12, tzinfo=timezone.utc)))        # tomorrow's slot
+    assert out and out["opened"]
+    boot2 = datetime(2026, 11, 6, 0, 4, tzinfo=timezone.utc)                                        # a restart just before the slot
+    monkeypatch.setattr(mf, "_BOOT_TS", boot2.timestamp())
+    assert asyncio.run(mf.rebalance(now=boot2.replace(minute=15))) is not None                   # runs in its slot
+    kv.delete_sync(*[kv.key("multi_factor", "done", d) for d in ("2026-11-04", "2026-11-05", "2026-11-06")])

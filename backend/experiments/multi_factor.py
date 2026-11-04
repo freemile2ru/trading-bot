@@ -59,6 +59,9 @@ def universe() -> list[str]:
         return list(weekly_rs.UNIVERSE)
 
 
+_BOOT_TS = time.time()      # when this process started: a restart after the slot waits for the next one (2026-11-04)
+
+
 def _done_key(day: str) -> str:
     return kv.key(BOOK, "done", day)
 
@@ -141,6 +144,13 @@ def _held_notional(t: dict) -> float:
     return float(t.get("notional_usd") or (t.get("quantity") or 0) * (t.get("entry_price") or 0))
 
 
+def _boot_missed_the_slot(now: datetime) -> bool:
+    """True when this process started today, after the 00:10 UTC slot, and has not rebalanced yet."""
+    boot = datetime.fromtimestamp(_BOOT_TS, timezone.utc)
+    slot = now.replace(hour=0, minute=10, second=0, microsecond=0)
+    return boot.date() == now.date() and boot > slot
+
+
 async def rebalance(force: bool = False, now: datetime | None = None) -> dict | None:
     """Once a day after 00:10 UTC: recompute the targets and trade the differences. Returns what changed."""
     from experiments import books
@@ -150,6 +160,12 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
         return None
     day = now.strftime("%Y-%m-%d")
     if not force and ((now.hour == 0 and now.minute < 10) or kv.get_sync(_done_key(day))):
+        return None
+    if not force and _boot_missed_the_slot(now):
+        # A process that starts after today's slot (a deploy, a reset) does not put the whole basket on at its first
+        # tick, into whatever the afternoon's tape is doing (TRUMP, 2026-11-04 17:29 UTC): it waits for tomorrow's slot.
+        kv.set_sync(_done_key(day), {"at": now.timestamp(), "deferred": "process started after the slot"}, 3 * 86400)
+        logger.info("Multi-factor: process started after today's 00:10 UTC slot — rebalance waits for tomorrow's")
         return None
     ts = now.timestamp()
     daily, funding = await panel(ts)
