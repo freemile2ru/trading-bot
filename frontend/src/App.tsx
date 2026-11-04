@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
+import HeaderClock from './components/ui/Clock'
 import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users, Crosshair } from 'lucide-react'
 import { AllSignals } from './components/AllSignals'
 import { OracleSignal } from './components/OracleSignal'
@@ -152,6 +153,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <HeaderClock />
             <MarketStateChip />
             <CalendarChip />
             {liveSystems.length > 0 && (
