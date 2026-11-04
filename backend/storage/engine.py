@@ -19,11 +19,14 @@ log, cascade, positioning, funding venues, the research labs) follow book by boo
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import sqlite3
 import threading
 from typing import Any, Iterable
+
+logger = logging.getLogger("storage.engine")
 
 DATABASE_URL = os.getenv("DATABASE_URL") or None
 DATA_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "data"))
@@ -223,10 +226,22 @@ class _Shared:
         if self.tx_schema is None or self.tx_schema != schema:
             raw.execute(f'SET search_path TO "{schema}"')
 
-    def run(self, schema: str, fn):
-        """fn(raw) under the lock, on this schema; a dropped connection is reopened and the call retried once."""
+    def in_error(self) -> bool:
+        """True while the connection sits in an aborted transaction (every statement fails until ROLLBACK)."""
+        from psycopg.pq import TransactionStatus
+        return self.raw is not None and not self.raw.closed and self.raw.info.transaction_status == TransactionStatus.INERROR
+
+    def run(self, schema: str, fn, what: str = ""):
+        """fn(raw) under the lock, on this schema; a dropped connection is reopened and the call retried once.
+
+        An aborted transaction that no `with con:` block owns is rolled back first: it would otherwise poison every
+        later statement on the shared connection (2026-11-04: one swallowed failure inside a wallet snapshot's
+        BEGIN…COMMIT took the whole app down with InFailedSqlTransaction until a restart)."""
         import psycopg
         with self.lock:
+            if self.tx_schema is None and self.in_error():
+                logger.warning("Postgres connection was left in an aborted transaction — rolling it back")
+                self.raw.execute("ROLLBACK")
             try:
                 self.use(schema)
                 return fn(self.connection())
@@ -236,6 +251,10 @@ class _Shared:
                 self.raw = None
                 self.use(schema)
                 return fn(self.connection())
+            except psycopg.Error as e:
+                if self.tx_schema is not None:
+                    logger.warning("Postgres statement failed inside a transaction on %s (%s): %s", schema, (what or "?")[:160], e)
+                raise
 
 
 _shared: dict[str, _Shared] = {}
@@ -262,6 +281,21 @@ class PgConnection:
 
     # ── the sqlite3 surface ──
     def execute(self, sql: str, params: Iterable[Any] = ()) -> PgCursor:
+        word = sql.strip().rstrip(";").upper()
+        if word in ("BEGIN", "BEGIN TRANSACTION", "BEGIN DEFERRED", "BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"):
+            # sqlite3's explicit transaction (a wallet's consistent snapshot) becomes the pool's: the lock is held for
+            # its whole span, so no other thread's statement can run — or fail — inside it.
+            if self._tx is None:
+                self.__enter__()
+            return PgCursor(self, None)
+        if word in ("COMMIT", "END", "END TRANSACTION", "COMMIT TRANSACTION"):
+            if self._tx is not None:
+                self.__exit__(None, None, None)
+            return PgCursor(self, None)
+        if word in ("ROLLBACK", "ROLLBACK TRANSACTION"):
+            if self._tx is not None:
+                self.__exit__(RuntimeError, RuntimeError("rollback"), None)
+            return PgCursor(self, None)
         stmt, params = self._prepare(sql, params)
         if stmt is None:
             return PgCursor(self, self._raw.cursor())
@@ -270,7 +304,7 @@ class PgConnection:
             cur = raw.cursor()
             cur.execute(stmt, _params(params))
             return PgCursor(self, cur)
-        return self._pool.run(self.schema, go)
+        return self._pool.run(self.schema, go, stmt)
 
     def executemany(self, sql: str, seq: Iterable[Iterable[Any]]) -> PgCursor:
         rows = [_params(p) for p in seq]
@@ -282,7 +316,7 @@ class PgConnection:
             cur = raw.cursor()
             cur.executemany(stmt, rows)
             return PgCursor(self, cur)
-        return self._pool.run(self.schema, go)
+        return self._pool.run(self.schema, go, stmt)
 
     def executescript(self, script: str) -> PgCursor:
         def go(raw):
@@ -293,7 +327,7 @@ class PgConnection:
                 cur.execute(translate_ddl(stmt))
             self._pool.tables = {k: v for k, v in self._pool.tables.items() if k[0] != self.schema}
             return PgCursor(self, cur)
-        return self._pool.run(self.schema, go)
+        return self._pool.run(self.schema, go, "script")
 
     def cursor(self) -> PgCursor:
         return PgCursor(self, self._raw.cursor())
@@ -321,10 +355,15 @@ class PgConnection:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
+            if exc_type is None and self._pool.in_error():
+                # a failure inside the block was caught there: the transaction is aborted, so this is a rollback
+                exc_type, exc = RuntimeError, RuntimeError("aborted transaction")
             self._tx.__exit__(exc_type, exc, tb)
         finally:
             self._tx = None
             self._pool.tx_schema = None
+            if self._pool.in_error():
+                self._pool.raw.execute("ROLLBACK")
             self._pool.lock.release()
 
     # ── translation ──

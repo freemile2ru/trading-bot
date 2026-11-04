@@ -84,3 +84,43 @@ def test_the_kv_store_and_a_paper_wallet_work_on_postgres(tmp_path):
     w.close_trade_manually(t["id"], 102.0, "test")
     p = w.get_portfolio()
     assert p["open_trades"] == [] and len(w.all_trades()["closed"]) == 1 and p["balance"] > 1_000
+
+
+@pg
+def test_a_failure_inside_a_transaction_never_poisons_the_shared_connection(tmp_path):
+    """2026-11-04 in production: one swallowed error inside a wallet snapshot's BEGIN…COMMIT left the process's one
+    connection in an aborted transaction, and every later statement (and every page) failed until a restart."""
+    import psycopg
+    from storage.db import connect
+    con = connect(str(tmp_path / "poison.db"))
+    con.executescript("CREATE TABLE t (k TEXT PRIMARY KEY, v INTEGER)")
+    con.execute("INSERT INTO t VALUES (?, ?)", ("a", 1))
+    # sqlite3-style explicit transaction, a statement fails inside it, the caller swallows and still says COMMIT
+    con.execute("BEGIN")
+    try:
+        con.execute("SELECT nope FROM t")
+    except psycopg.Error:
+        pass
+    con.execute("COMMIT")
+    assert con.execute("SELECT v FROM t WHERE k=?", ("a",)).fetchone()[0] == 1       # usable again
+    # the same inside a `with con:` block that catches its own error
+    with con:
+        try:
+            con.execute("INSERT INTO t VALUES (?, ?)", ("a", 2))                   # duplicate key
+        except psycopg.Error:
+            pass
+    assert con.execute("SELECT v FROM t WHERE k=?", ("a",)).fetchone()[0] == 1
+    # a write inside a transaction after a swallowed failure is rolled back, not half-committed
+    con.execute("BEGIN")
+    con.execute("INSERT INTO t VALUES (?, ?)", ("b", 3))
+    try:
+        con.execute("SELECT nope FROM t")
+    except psycopg.Error:
+        pass
+    con.execute("COMMIT")
+    assert con.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 1
+    # and a clean explicit transaction commits
+    con.execute("BEGIN")
+    con.execute("INSERT INTO t VALUES (?, ?)", ("c", 4))
+    con.execute("COMMIT")
+    assert con.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
