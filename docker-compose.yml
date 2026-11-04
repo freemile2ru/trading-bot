@@ -13,6 +13,9 @@ services:
       HOST: 0.0.0.0
       PORT: "8000"
       REDIS_URL: redis://redis:6379
+      # The backend refuses writes (close, kill switch, mode changes) from any web origin it doesn't know;
+      # the dashboard is served from the domain, so that is the one origin allowed to act.
+      ALLOWED_ORIGINS: https://${DOMAIN}
     volumes:
       - ./data:/app/data
     depends_on:
