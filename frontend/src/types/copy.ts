@@ -1,4 +1,6 @@
 export interface CopyLeader {
+  record?: { n: number; avg_r: number; last_closed: number } | null   // their last 20 copies with us, R on the stop
+  probation?: string | null                                           // why they are not copied right now
   id: string; venue?: 'binance' | 'hyperliquid' | 'lighter'; retired?: boolean; turnover?: number | null; nickname: string; nickname_en: string | null; roi: number; mdd: number; win_rate: number; copiers: number; aum: number
   copier_pnl: number; score: number; days_running: number; leverage_tier: string | null; badge: string | null
   profile: { n: number; median_hold_h: number | null; win_move_pct: number | null; loss_move_pct: number | null; win_rate: number | null; trades_per_day?: number }
@@ -39,5 +41,5 @@ export interface CopyStatus {
   skipped: { ts: number; leader: string; venue?: string | null; symbol: string; market?: string; variant?: string; side: string; reason: string; mark: number | null; moved_pct?: number; age_h?: number; outcome_pct?: number; leader_roi?: number }[]
   skip_rule: { judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null }
   config: { leaders_n: number; wide_n?: number; fast_hold_h?: number; late_size_x?: number; venues?: string[]; consensus_x?: number; leg_pct: number; max_leverage: number; max_open: number; disaster_pct: number; late_age_frac: number; late_move_frac: number
-            adverse_frac: number; max_hold_h?: number; stop_x?: number; stop_pct_min?: number; max_leg_pct?: number; max_gross_pct?: number; day_loss_halt_pct?: number; fee_gate_x?: number; round_trip_pct?: number; reduce_frac?: number; risk_pct?: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
+            adverse_frac: number; max_hold_h?: number; stop_x?: number; stop_pct_min?: number; max_leg_pct?: number; max_gross_pct?: number; day_loss_halt_pct?: number; leader_probation_n?: number; leader_probation_days?: number; venue_measure_n?: number; venue_measure_x?: number; fee_gate_x?: number; round_trip_pct?: number; reduce_frac?: number; risk_pct?: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
 }

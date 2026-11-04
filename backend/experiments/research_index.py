@@ -315,6 +315,17 @@ RESEARCH: list[dict] = [
     {"key": "positioning", "title": "Top-trader positioning ratios", "script": "(to write)", "file": None,
      "question": "Do Binance's top-account long/short and taker-flow ratios predict anything over hours to days?",
      "finding": "waits for ~60 days of the hourly log (data/positioning.db)", "decision": "pending", "book": None},
+    {"key": "news_fade", "title": "Fade the headline (coins in the news over the next day)", "script": "research/news_fade_lab.py", "file": "news_fade_results.json",
+     "question": "Coins in the news underperformed over the next 24 hours in the reaction log (−0.25% on average, worse for upgrades and partnerships): does shorting after an item, or fading the called direction, pay after costs?",
+     "finding": lambda d: f"{d.get('n_items', 0)} coin-day items; " + "; ".join(
+         f"{rule} @ {h}: {v[h]['all'].get('avg_pct', 0):+.2f}% a trade after costs, second half {v[h]['second'].get('avg_pct', 0):+.2f}% (95% {v[h]['second'].get('ci95_sum')})"
+         for rule, v in (d.get("rules") or {}).items() for h in ("r_24h",)),
+     "decision": "rejected (2026-11-04) — no rule's held-out interval clears zero: shorting every coin in the news earns +0.05% a trade on the second half with an interval of ±700; fading Claude's called direction is the one arrangement that leans positive (+0.9% a trade on 52 held-out items, interval −20 … +120) and is re-run once 200 strongly-called items exist. Nothing is built", "book": None},
+    {"key": "continuation", "title": "One-hour continuation (the scanner's one positive input)", "script": "research/continuation_lab.py", "file": "continuation_results.json",
+     "question": "ret_1h was the only scanner input with a positive coefficient against the 4-hour forward move (IC +0.12, t 6.2 over 145,000 readings): does buying the hour's strongest coins and selling its weakest pay after costs?",
+     "finding": lambda d: f"{d.get('readings', 0):,} readings in {d.get('slots', 0)} 4h slots; deciles of ret_1h run from {d['deciles'][0]['fwd_4h_bps']:+.0f} to {d['deciles'][-1]['fwd_4h_bps']:+.0f} bps over the next 4h (monotonic) — but the top-{d.get('top_k')}/bottom-{d.get('top_k')} rule earned " + "; ".join(
+         f"{k}: {v['all'].get('avg_leg_pct', 0):+.2f}% a leg, second half {v['second'].get('avg_leg_pct', 0):+.2f}% (95% {v['second'].get('ci95_sum')})" for k, v in (d.get("rules") or {}).items() if k in ("top_bottom_raw", "top_long_raw", "bottom_short_raw")),
+     "decision": "rejected (2026-11-04) — the signal is real in the deciles (−89 bps for the weakest tenth, +56 bps for the strongest, monotonic in between) but the tradeable extremes are not the deciles: the three strongest coins of a sweep are spikes that give it back, and every rule lost after the 16 bps round trip, the long/short pair conclusively (held-out interval −173 … −64). The moderate deciles (8–9, +6 … +21 bps) are below costs. Nothing is built", "book": None},
     {"key": "funding_venues", "title": "Cross-venue funding arbitrage (Binance vs Hyperliquid)", "script": "(to write)", "file": None,
      "question": "Does the funding gap between the two venues on the same coin clear a delta-neutral round trip, and how long does it last?",
      "finding": "waits for ~4 weeks of the hourly log (data/funding_venues.db, started 2026-10-29)", "decision": "pending", "book": "carry"},

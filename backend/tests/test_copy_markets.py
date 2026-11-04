@@ -317,3 +317,35 @@ def test_coin_tape_and_the_mid_dump_gate(monkeypatch):
     assert tape.against_move("long", {"move_pct": -2.0, "vol_x": 5.0}) is None       # a small move, however busy
     assert tape.against_move("long", None) is None                                   # feed down: no gate
     tape._coin_cache.clear()
+
+
+def test_leaders_and_venues_are_sized_by_their_record_with_us(tmp_path, monkeypatch):
+    """2026-11-04: one Hyperliquid wallet cost −$1,789 over 7 copies and the venue −$2,704 over 13 while Lighter's 43
+    copies lost a fifth of that — a leader at ≤ 0R over 5 copies sits out a week, a venue at ≤ 0R over 10 copies
+    is copied at measuring size."""
+    from trading.paper_trader import PaperWallet
+    w = PaperWallet(str(tmp_path / "rec.db"), label="copy_trading", initial_balance=20_000)
+    monkeypatch.setattr(ct, "_unique_wallets", lambda: [w])
+    now = 1_793_900_000.0
+
+    def copy(leader, venue, pnl, i):
+        t = w.open_trade(f"C{i}USDT", "long", 100, 98, 103, 105, notional_usd=1_000, timeframe="copy", leverage=3,
+                         extra={"strategy": "copy_trading", "exit_policy": "manual", "leader_id": leader, "venue": venue, "leader": leader})
+        w.close_trade_manually(t["id"], 100 + pnl / 10, "leader_closed")                  # $1,000 notional: $1 a 0.1%
+    for i in range(5):
+        copy("bad", "hyperliquid", -8, i)                                                  # five copies, every one a loser
+    for i in range(10, 13):
+        copy("good", "lighter", 6, i)
+    rec = ct.records()
+    assert rec["leaders"]["bad"]["n"] == 5 and rec["leaders"]["bad"]["avg_r"] < 0
+    assert rec["leaders"]["good"]["avg_r"] > 0
+    assert ct.leader_probation(rec, "bad", rec["leaders"]["bad"]["last_closed"] + 3600).startswith("leader on probation")
+    assert ct.leader_probation(rec, "bad", rec["leaders"]["bad"]["last_closed"] + 8 * 86400) is None     # a week later: one more chance
+    assert ct.leader_probation(rec, "good", now) is None and ct.leader_probation(rec, "unknown", now) is None
+    assert ct.venue_multiplier(rec, "hyperliquid") == (1.0, "hyperliquid: " + f"{rec['venues']['hyperliquid']['avg_r']:+.2f}R over 5 copies")   # under 10 copies: full size
+    for i in range(20, 26):
+        copy("other", "hyperliquid", -3, i)                                                # eleven losing copies on the venue
+    rec = ct.records()
+    x, why = ct.venue_multiplier(rec, "hyperliquid")
+    assert x == ct.VENUE_MEASURE_X and why.startswith("hyperliquid at measuring size")
+    assert ct.venue_multiplier(rec, "lighter")[0] == 1.0 and ct.venue_multiplier(rec, "binance") == (1.0, "binance: no record yet")
