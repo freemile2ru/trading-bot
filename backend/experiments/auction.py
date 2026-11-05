@@ -63,8 +63,15 @@ def _m(hm: tuple[int, int]) -> int:
 SESSION_END = _hm(os.getenv("AUCTION_SESSION_END", "16:00"))
 ENTRY_CUTOFF = _hm(os.getenv("AUCTION_ENTRY_CUTOFF", "14:00"))
 MAX_PAST_BPS = float(os.getenv("AUCTION_MAX_PAST_BPS", "15"))
-SKIP_LEVELS = {x.strip() for x in os.getenv("AUCTION_SKIP_LEVELS", "WKH,WKL").split(",") if x.strip()}
+SKIP_LEVELS = {x.strip() for x in os.getenv("AUCTION_SKIP_LEVELS", "WKH,WKL,IBH,IBL").split(",") if x.strip()}
 FIRST_HOUR_END = (10, 30)
+# 2026-11-05, after the second production trade: an 11:05 ET NVDA short at the initial-balance low with the stock already
+# 8% down on the morning and a 73 bps stop on a day of 1% bars (0.7 ATR) — stopped in four minutes. The replay (250
+# trades): a stop under 1 ATR lost (−0.05%, 60% stopped) and one of 1 ATR or more made +0.04%; an acceptance with price
+# already more than 2% from the session open in the trade's direction lost in both halves (−0.16%); the initial-balance
+# high and low were the worst level family (−0.14%, both halves) — they stay as targets, not as levels to accept.
+MIN_STOP_ATR = float(os.getenv("AUCTION_MIN_STOP_ATR", "1.0"))        # the stop must sit at least this many 14-bar ATRs from the entry
+MAX_FROM_OPEN_PCT = float(os.getenv("AUCTION_MAX_FROM_OPEN_PCT", "2.0"))   # no acceptance once price is this far from the session open, the trade's way
 HISTORY_DAYS = 10                      # enough closed 30-minute candles for the HTF ATR and a prior week for its levels
 BAR_S = 300
 LOG_KEEP = 60
@@ -121,8 +128,20 @@ def _size(equity: float, entry: float, stop: float) -> tuple[float, int]:
     return round(notional, 2), lev
 
 
+def _session_open(d: pd.DataFrame, i: int) -> float | None:
+    """The session's opening price on the bar's day (the 09:30 ET bar's open), or None before the open."""
+    day = d["et"].iloc[i].date()
+    for j in range(i, max(-1, i - 120), -1):
+        if d["et"].iloc[j].date() != day:
+            break
+        if d["in_session"].iloc[j] and not (j > 0 and d["in_session"].iloc[j - 1] and d["et"].iloc[j - 1].date() == day):
+            return float(d["open"].iloc[j])
+    return None
+
+
 async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
     """Apply the study's sequence to the latest closed bar of one symbol. Returns what happened, or None."""
+    import numpy as np
     from experiments import books
     if len(df) < 300:
         return None
@@ -182,8 +201,13 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                 sd = 1 if entering["direction"] == "long" else -1
                 good = (entering["stop"] < px < entering["target"]) if sd > 0 else (entering["target"] < px < entering["stop"])
                 ran = (px / float(r["close"]) - 1) * 1e4 * sd                    # how far the live price has run on past the bar's close
+                atr = float(r["atr"]) if r.get("atr") is not None and np.isfinite(r["atr"]) else 0.0
+                stop_atr = abs(px - entering["stop"]) / atr if atr > 0 else None
                 if ran > MAX_PAST_BPS:
                     _log({"ts": now, "sym": sym, "event": "skipped", "why": f"price ran {ran:.0f} bps past the bar's close (limit {MAX_PAST_BPS:.0f})",
+                          "level": entering["level_name"]})
+                elif stop_atr is not None and stop_atr < MIN_STOP_ATR:
+                    _log({"ts": now, "sym": sym, "event": "skipped", "why": f"stop only {stop_atr:.1f} ATR away (floor {MIN_STOP_ATR:g}; ATR {atr / px * 100:.2f}%)",
                           "level": entering["level_name"]})
                 elif notional >= 10 and good:
                     from ops import calendar
@@ -234,12 +258,19 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
         return out
     # 4. acceptance on this bar — in the session, before the entry cutoff, at a level the book trades
     if r["in_session"] and minute < _m(ENTRY_CUTOFF):
-        import numpy as np
         buf = r["close"] * AL.BUFFER_BPS / 1e4
         prev_c = float(d["close"].iloc[i - 1])
         ups = [(r[n], n) for n in AL.UP_LEVELS if n not in SKIP_LEVELS and np.isfinite(r[n]) and r["close"] > r[n] + buf and prev_c <= r[n] + buf]
         dns = [(r[n], n) for n in AL.DOWN_LEVELS if n not in SKIP_LEVELS and np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
         if ups or dns:
+            sd = 1 if ups else -1
+            open_px = _session_open(d, i)
+            moved = (float(r["close"]) / open_px - 1) * 100 * sd if open_px else 0.0
+            if moved > MAX_FROM_OPEN_PCT:
+                _log({"ts": now, "sym": sym, "event": "skipped", "why": f"price already {moved:.1f}% from the open the trade's way (limit {MAX_FROM_OPEN_PCT:g}%)",
+                      "level": (max(ups) if ups else min(dns))[1]})
+                _set_state(sym, st)
+                return None
             up_lv, dn_lv = AL.second_levels(r) if VARIANT.get("target_mode") == "second" else AL.next_levels(r)
             off = r["close"] * AL.STOP_OFFSET_BPS / 1e4
             if ups:
@@ -395,6 +426,7 @@ async def snapshot(now: float | None = None) -> dict:
             "config": {"symbols": list(SYMBOLS), "variant": VARIANT, "risk_pct": RISK_PCT, "max_gross": MAX_GROSS, "max_open": MAX_OPEN, "max_leverage": MAX_LEVERAGE,
                        "session": "09:30–%02d:%02d ET, entries until %02d:%02d" % (*SESSION_END, *ENTRY_CUTOFF),
                        "entry_cutoff": "%02d:%02d" % ENTRY_CUTOFF, "max_past_bps": MAX_PAST_BPS, "skip_levels": sorted(SKIP_LEVELS),
+                       "min_stop_atr": MIN_STOP_ATR, "max_from_open_pct": MAX_FROM_OPEN_PCT,
                        "buffer_bps": AL.BUFFER_BPS, "stop_offset_bps": AL.STOP_OFFSET_BPS, "retest_bars": AL.RETEST_BARS},
             "instruments": views, "log": list(reversed(kv.get_sync(_k("log")) or []))[:40], "replay": replay_summary,
             "level_labels": LEVEL_LABELS}
@@ -456,7 +488,7 @@ async def chart(sym: str, bars_n: int = 600, now: float | None = None) -> dict:
         if t["symbol"] != sym:
             continue
         mine.append({"id": t["id"], "direction": t["direction"], "entry_ts": _ts_of(t.get("opened_at")), "exit_ts": _ts_of(t.get("closed_at")),
-                     "entry": t["entry_price"], "exit": t.get("current_price") if t.get("status") == "open" else t.get("exit_price") or t.get("current_price"),
+                     "entry": t["entry_price"], "exit": t.get("current_price") if t.get("status") == "open" else t.get("exit_price") or t.get("exit_trigger_price") or t.get("current_price"),
                      "stop": t.get("stop_loss"), "target": t.get("take_profit_1"), "level": t.get("level_name"), "target_name": t.get("target_name"),
                      "grade": t.get("grade"), "reason": t.get("close_reason"), "pnl_usd": t.get("pnl_usd"), "status": t.get("status")})
     out["trades"] = mine

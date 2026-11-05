@@ -25,7 +25,7 @@ export interface AuctionSnapshot {
   verdict: { status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive'; trades: number; needed: number; expectancy_usd: number | null; ci: [number | null, number | null]
              slices?: Record<string, { trades: number; wins: number; net_pnl: number; avg_r: number | null }> }
   config: { symbols: string[]; variant: Record<string, string | number>; risk_pct: number; max_gross: number; max_open: number; max_leverage: number; session: string
-            entry_cutoff?: string; max_past_bps?: number; skip_levels?: string[]
+            entry_cutoff?: string; max_past_bps?: number; skip_levels?: string[]; min_stop_atr?: number; max_from_open_pct?: number
             buffer_bps: number; stop_offset_bps: number; retest_bars: number }
   instruments: AuctionInstrument[]
   log: AuctionLog[]

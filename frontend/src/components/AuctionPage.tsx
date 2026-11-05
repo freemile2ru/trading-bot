@@ -11,6 +11,14 @@ import { AuctionChart } from './AuctionChart'
 const tone = (v: number | null | undefined) => v == null ? 'text-gray-500' : v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-gray-300'
 const pct = (v: number | null | undefined, d = 2) => v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(d)}%`
 const when = (ts: number) => new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+/** A hold time in minutes as "4m", "1h 25m" or "2d 3h". */
+const held = (min: number | null | undefined) => {
+  if (min == null) return '—'
+  const m = Math.round(min)
+  if (m < 60) return `${m}m`
+  if (m < 1440) return `${Math.floor(m / 60)}h ${m % 60}m`
+  return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`
+}
 const px = (v: number) => v >= 1000 ? v.toFixed(1) : v >= 10 ? v.toFixed(2) : v.toPrecision(4)
 const dir = (d: number) => d > 0 ? 'UP' : d < 0 ? 'DOWN' : 'RANGE'
 const dirTone = (d: number) => d > 0 ? 'text-emerald-300' : d < 0 ? 'text-rose-300' : 'text-amber-300'
@@ -100,10 +108,10 @@ const extra = (t: UnifiedTrade) => t as unknown as Record<string, unknown>
 
 /** The book's trades, open and closed, sortable — level accepted, target level, grade, exit, R and net. */
 function TradesTable({ rows }: { rows: UnifiedTrade[] }) {
-  const sorted = useSort(rows, { opened: t => t.opened_ts, closed: t => t.closed_ts, symbol: t => t.symbol, level: t => String(extra(t).level_name ?? ''), grade: t => Number(extra(t).grade ?? 0),
+  const sorted = useSort(rows, { opened: t => t.opened_ts, closed: t => t.closed_ts, held: t => t.hold_min, symbol: t => t.symbol, level: t => String(extra(t).level_name ?? ''), grade: t => Number(extra(t).grade ?? 0),
     entry: t => t.entry_price, notional: t => t.notional, r: t => t.r, net: t => t.net_pnl, exit: t => t.exit_reason })
   if (!rows.length) return <div className="text-xs text-gray-500">No trades yet — the book trades in the New York cash session, 09:30–16:00 ET, entering until 14:00.</div>
-  const cols = [['opened', 'Opened', false], ['closed', 'Closed', false], ['symbol', 'Trade', false], ['level', 'Level → target', false], ['grade', 'Grade', true], ['entry', 'Entry → exit', true], ['notional', 'Notional', true], ['exit', 'Exit', false], ['r', 'R', true], ['net', 'Net', true]] as const
+  const cols = [['opened', 'Opened', false], ['closed', 'Closed', false], ['held', 'Held', true], ['symbol', 'Trade', false], ['level', 'Level → target', false], ['grade', 'Grade', true], ['entry', 'Entry → exit', true], ['notional', 'Notional', true], ['exit', 'Exit', false], ['r', 'R', true], ['net', 'Net', true]] as const
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs min-w-[56rem]">
@@ -115,6 +123,7 @@ function TradesTable({ rows }: { rows: UnifiedTrade[] }) {
             <tr key={t.id} className={clsx('border-t border-gray-800/70', t.status === 'open' && 'bg-amber-950/10')}>
               <td className="py-1 pr-2 text-gray-500 whitespace-nowrap">{t.opened_ts ? when(t.opened_ts) : '—'}</td>
               <td className="py-1 pr-2 text-gray-500 whitespace-nowrap">{t.closed_ts ? when(t.closed_ts) : <span className="text-amber-300">open</span>}</td>
+              <td className={clsx('py-1 pr-2 text-right font-mono whitespace-nowrap', t.status === 'open' ? 'text-amber-200' : 'text-gray-400')} title={t.status === 'open' ? 'open so far' : 'entry to exit'}>{held(t.hold_min)}</td>
               <td className="py-1 pr-2"><span className={clsx('font-semibold', t.direction === 'long' ? 'text-emerald-300' : 'text-rose-300')}>{t.direction}</span> <span className="font-mono text-gray-200">{t.symbol.replace('USDT', '')}</span></td>
               <td className="py-1 pr-2 text-gray-400">{String(extra(t).level_name ?? '—')} → {String(extra(t).target_name ?? '—')}</td>
               <td className="py-1 pr-2 text-right text-gray-300">{extra(t).grade != null ? `${String(extra(t).grade)}/8` : '—'}</td>
@@ -199,7 +208,7 @@ export function AuctionPage() {
             </div>
           )}</div>
         <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">$/day vs goal</div><div className={clsx('text-xl font-black tabular-nums mt-1', tone(d.daily.today))}>{fmtUsdSigned(d.daily.today, 0)}<span className="text-sm text-gray-500 font-normal"> today</span></div><div className="text-xs text-gray-400">7-day avg <span className={tone(d.daily.avg7)}>{fmtUsdSigned(d.daily.avg7, 0)}</span> · goal {fmtUsd(d.daily.goal[0], 0)}–{fmtUsd(d.daily.goal[1], 0)} a day · {b.open.length} open</div></div>
-        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Rules</div><div className="text-xs text-gray-300 mt-1">{d.config.session} · entry {String(d.config.variant.entry)}{d.config.max_past_bps != null ? `, not more than ${d.config.max_past_bps} bps past the bar's close` : ''} · target {String(d.config.variant.target_mode)} level · grade ≥ {String(d.config.variant.min_grade)} · target ≥ {String(d.config.variant.min_target_bps)} bps{d.config.skip_levels?.length ? ` · no ${d.config.skip_levels.join('/')} levels` : ''} · risk {d.config.risk_pct}% a trade · calendar gates</div></div>
+        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Rules</div><div className="text-xs text-gray-300 mt-1">{d.config.session} · entry {String(d.config.variant.entry)}{d.config.max_past_bps != null ? `, not more than ${d.config.max_past_bps} bps past the bar's close` : ''} · target {String(d.config.variant.target_mode)} level · grade ≥ {String(d.config.variant.min_grade)} · target ≥ {String(d.config.variant.min_target_bps)} bps{d.config.skip_levels?.length ? ` · no ${d.config.skip_levels.join('/')} levels` : ''}{d.config.min_stop_atr != null ? ` · stop ≥ ${d.config.min_stop_atr} ATR` : ''}{d.config.max_from_open_pct != null ? ` · not after a ${d.config.max_from_open_pct}% move from the open` : ''} · risk {d.config.risk_pct}% a trade · calendar gates</div></div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

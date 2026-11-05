@@ -62,7 +62,10 @@ export function AuctionChart({ symbols, symbol, onSymbol }: { symbols: string[];
       for (const t of d.trades) {
         if (!t.entry_ts) continue
         const a = snap(t.entry_ts, step), b = t.exit_ts ? snap(t.exit_ts, step) : lastT
-        ms.push({ time: a, position: t.direction === 'long' ? 'belowBar' : 'aboveBar', color: '#f59e0b', shape: t.direction === 'long' ? 'arrowUp' : 'arrowDown', text: `BOOK ${t.direction} ${t.level ?? ''}` })
+        const pnl = t.pnl_usd ?? 0
+        ms.push({ time: a, position: t.direction === 'long' ? 'belowBar' : 'aboveBar', color: '#f59e0b', shape: t.direction === 'long' ? 'arrowUp' : 'arrowDown', text: `BOOK ${t.direction.toUpperCase()} ${t.level ?? ''} @ ${t.entry.toFixed(precision)}` })
+        if (t.exit_ts && t.exit != null) ms.push({ time: b, position: t.direction === 'long' ? 'aboveBar' : 'belowBar', color: pnl >= 0 ? '#34d399' : '#f87171', shape: 'square',
+          text: `BOOK OUT ${(t.reason ?? '').replace(/_/g, ' ')} @ ${t.exit.toFixed(precision)} ${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl).toFixed(0)}` })
         if (b > a) {
           sg.push({ a: { time: a, price: t.entry }, b: { time: b, price: t.exit ?? t.entry }, color: (t.pnl_usd ?? 0) >= 0 ? '#34d399' : '#f87171', width: 2 })
           if (t.stop != null) sg.push({ a: { time: a, price: t.stop }, b: { time: b, price: t.stop }, color: '#f87171', dashed: true })
@@ -71,7 +74,9 @@ export function AuctionChart({ symbols, symbol, onSymbol }: { symbols: string[];
       }
     }
     return { markers: ms, segments: sg }
-  }, [d, showStudy, showTrades])
+  }, [d, showStudy, showTrades, precision])
+  const bookTrades = useMemo(() => (d?.trades ?? []).filter(t => t.entry_ts).sort((x, y) => (y.entry_ts ?? 0) - (x.entry_ts ?? 0)), [d])
+  const firstT = d?.bars[0]?.t ?? 0
 
   return (
     <div className="space-y-2">
@@ -99,7 +104,25 @@ export function AuctionChart({ symbols, symbol, onSymbol }: { symbols: string[];
           <TradeChart candles={candles} live={null} indicators={ind} levels={levels} precision={precision} tool="cursor" drawings={[]} onDraw={() => {}} markers={markers} segments={segments} />
         ) : <div className="h-full flex items-center justify-center text-sm text-gray-500">{err ?? 'Loading the chart…'}</div>}
       </div>
-      <p className="text-[10px] text-gray-600">Levels are drawn as price lines with their value on the axis, so a far-away level never squashes the candles — scroll and zoom as on the Trade tab. Markers: acceptance (arrow), confirmation (yellow dot with the grade), the retest entry (orange square; grey when the book's gates would have skipped it), the exit (magenta). Amber arrows and the green/red legs are this book's real trades with their stop (red dotted) and target (green dotted).</p>
+      {showTrades && bookTrades.length > 0 && (
+        <div className="card py-2 text-[11px]">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">This book's trades on {symbol.replace('USDT', '')} — amber arrow in, square out, the leg between them</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {bookTrades.map(t => {
+              const pnl = t.pnl_usd ?? 0
+              const inWindow = (t.entry_ts ?? 0) >= firstT
+              const mins = t.entry_ts ? Math.round(((t.exit_ts ?? Date.now() / 1000) - t.entry_ts) / 60) : null
+              return (
+                <span key={t.id} className={clsx('whitespace-nowrap', !inWindow && 'text-gray-600')} title={inWindow ? 'drawn on the chart' : 'before the chart window — widen the span to see it'}>
+                  <span className={t.direction === 'long' ? 'text-emerald-300' : 'text-rose-300'}>{t.direction}</span> {t.level ?? '—'} → {t.target_name ?? '—'} · {t.entry_ts ? new Date(t.entry_ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}
+                  {mins != null ? ` · ${mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`}` : ''} · {t.status === 'open' ? <span className="text-amber-300">open</span> : (t.reason ?? '').replace(/_/g, ' ')} · <span className={pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(0)}</span>{!inWindow && ' · off-screen'}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      <p className="text-[10px] text-gray-600">Levels are drawn as price lines with their value on the axis, so a far-away level never squashes the candles — scroll and zoom as on the Trade tab. Markers: acceptance (arrow), confirmation (yellow dot with the grade), the retest entry (orange square; grey when the book's gates would have skipped it), the exit (magenta). Amber arrows and the green/red legs are this book's real trades, the square marks the exit with its reason and P&L, with the stop (red dotted) and target (green dotted) alongside.</p>
     </div>
   )
 }

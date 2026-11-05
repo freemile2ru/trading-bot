@@ -182,3 +182,29 @@ def test_a_fill_that_ran_past_the_close_is_skipped_and_weekly_levels_are_not_tra
     monkeypatch.setattr(auction, "SKIP_LEVELS", {"WKH", "WKL", "PDH", "ONH"})
     assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now)) is None
     assert "WKL" in auction.SKIP_LEVELS and "WKH" in auction.SKIP_LEVELS
+
+
+def test_a_stop_inside_one_atr_and_a_chase_from_the_open_are_refused_and_ib_levels_are_not_accepted(book, monkeypatch):
+    """2026-11-05: the stop must sit ≥ 1 ATR from the entry, nothing is accepted once price is > 2% from the session open the
+    trade's way, and the initial-balance high/low are targets only."""
+    w, prices = book
+    assert {"IBH", "IBL", "WKH", "WKL"} <= auction.SKIP_LEVELS
+    df = _frame()
+    k = len(df) - 13
+    now = float(df.index[k + 2].timestamp()) + 300
+    # the frame's bars are ±0.05% wide, so a 14-bar ATR is tiny and the default floor passes; raise the floor and the entry is refused
+    monkeypatch.setattr(auction, "MIN_STOP_ATR", 1000.0)
+    for n, dt in ((3, 0), (4, 300), (5, 600)):
+        asyncio.run(auction.step("TESTUSDT", df.iloc[:k + n], now + dt))
+    assert w.get_portfolio()["open_trades"] == []
+    assert auction.status()["log"][0]["event"] == "skipped" and "ATR away" in auction.status()["log"][0]["why"]
+    monkeypatch.setattr(auction, "MIN_STOP_ATR", 1.0)
+    # the breakout bar closes 0.2% above the 09:30 open: with the chase limit under that, nothing is accepted
+    kv.delete_sync(auction._k("state", "TESTUSDT"))
+    monkeypatch.setattr(auction, "MAX_FROM_OPEN_PCT", 0.1)
+    assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now)) is None
+    assert not auction._state("TESTUSDT").get("pending")
+    assert auction.status()["log"][0]["event"] == "skipped" and "from the open" in auction.status()["log"][0]["why"]
+    monkeypatch.setattr(auction, "MAX_FROM_OPEN_PCT", 2.0)
+    kv.delete_sync(auction._k("state", "TESTUSDT"))
+    assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now))["event"] == "accepted"
