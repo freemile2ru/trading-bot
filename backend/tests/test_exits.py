@@ -274,6 +274,35 @@ def test_manual_lock_arms_no_earlier_than_one_r(wallet):
     assert wallet.get_portfolio()["open_trades"][0]["stop_loss"] > 98
 
 
+def test_manual_lock_arms_at_three_percent_of_the_notional_when_one_r_is_further(wallet):
+    """Two reversal legs with 10% disaster stops peaked +$330 and +$340 at 0.66R (2026-11-05) and the lock never armed."""
+    t = wallet.open_trade("SOLUSDT", "long", 100, 90, 110, 120, risk_pct=5, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
+    assert t["risk_usd"] == pytest.approx(500, rel=0.05) and t["notional_usd"] == pytest.approx(5000, rel=0.05)
+    assert exits.lock_arm_usd(t, exits.POLICIES["manual_lock"]) == pytest.approx(150, rel=0.05)      # 3% of $5k, not 1R = $500
+    _walk(wallet, t, [(100, 103.5, 99.9, 103.4)])                                   # ≈ +$170 at the peak: armed
+    live = wallet.get_portfolio()["open_trades"][0]
+    assert live["stop_loss"] > 100 and live["locked_usd"] == pytest.approx(85, abs=5)
+    ev = _walk(wallet, t, [(103.4, 103.5, 100.2, 100.5)], skip=1)                   # gives it back: out with half the peak
+    closed = ev[-1]["trade"]
+    assert closed["close_reason"] == "trailing_stop" and 70 < closed["pnl_usd"] < 90
+
+
+def test_a_running_manual_trade_adopts_the_lock_once_it_is_live_on_its_book(wallet, monkeypatch):
+    """The policy is stamped at entry: the two legs open when the lock deployed (2026-11-05) kept the old rule."""
+    monkeypatch.setattr(exits, "LOCK_MODE", "shadow")
+    t = wallet.open_trade("SOLUSDT", "long", 100, 90, 110, 120, risk_pct=5, timeframe="1d",
+                          extra={"exit_policy": "manual", "shadows": False, "strategy": "weekly_rs"})
+    assert t["exit_policy"] == "manual"
+    _walk(wallet, t, [(100, 103.5, 99.9, 103.4)])                                   # peaks +$170 under the old rule
+    live = wallet.get_portfolio()["open_trades"][0]
+    assert live["exit_policy"] == "manual" and live["stop_loss"] == 90               # a shadow-mode book: nothing changes
+    monkeypatch.setattr(exits, "LOCK_MODE", "live")                                  # the deploy lands
+    _walk(wallet, t, [(103.4, 103.5, 103.0, 103.2)], skip=1)
+    live = wallet.get_portfolio()["open_trades"][0]
+    assert live["exit_policy"] == "manual_lock" and live["lock_adopted_ts"] and live["peak_price"] == 103.5
+    assert live["stop_loss"] > 100                                                   # the peak it already had is what the lock keeps
+
+
 def test_manual_lock_never_expires_and_keeps_the_original_stop_until_armed(wallet):
     t = wallet.open_trade("SOLUSDT", "short", 100, 102, 97, 95, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
     assert t["expires_at"] - t["opened_ts"] >= 300 * 24 * 3600

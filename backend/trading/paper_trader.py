@@ -448,6 +448,7 @@ class PaperWallet:
                 if not price:
                     continue
                 _refresh(trade, price)
+                exits.adopt_lock(trade, self.label)
                 hit = _evaluate_bar(trade, price, price, price, price, now)
                 if hit:
                     closed.append(self._close_open(state, trade, hit[1], hit[0]))
@@ -756,6 +757,8 @@ class PaperWallet:
 
                 order = next((o for o in state["orders"] if o["symbol"] == symbol), None)
                 trade = next((t for t in state["open"] if t["symbol"] == symbol), None)
+                if trade:
+                    exits.adopt_lock(trade, self.label)
 
                 if trade and "checked_from_ms" not in trade:
                     # Market entries: first full minute after opening.

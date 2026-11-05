@@ -477,6 +477,7 @@ class LiveWallet(PaperWallet):
             for trade in list(state["open"]):
                 if not trade.get("notional_usd") and trade.get("quantity"):
                     _set_leverage(trade, trade["leverage"])   # entries booked before notional was recomputed
+                exits.adopt_lock(trade, self.label)
                 path = paths.get(trade["symbol"]) or {}
                 bars = sorted(path.get("bars") or [], key=lambda b: b["open_time"])
                 stop_before = trade["stop_loss"]

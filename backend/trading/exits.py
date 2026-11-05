@@ -26,8 +26,14 @@ Policies:
                    before policies existed.
   hold           — baseline: original stop or TP2 only, until max hold.
   manual_lock    — manual (the book decides the exit, no clock) plus a DOLLAR profit lock (2026-11-02, the user's
-                   rule "secure profits over $100"): once the open P&L has reached LOCK_ARM_USD, the stop sits where
-                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. Live on every book in production
+                   rule "secure profits over $100"): once the open P&L has reached the arm level, the stop sits where
+                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. The arm level is LOCK_ARM_USD or,
+                   if higher, the smaller of 1R and LOCK_ARM_PCT of the notional (2026-11-05: measured against a 10%
+                   disaster stop, 1R made the lock inert — two reversal legs peaked +$330 and +$340 at 0.66R and gave
+                   back $400 between them; against the notional a $5k leg arms at $150 while a $32k copy leg still
+                   needs $960, so the 0.3% noise that armed HYPE on 2026-11-04 still does not). A running "manual"
+                   trade on a book where the lock is live adopts it on its next bar (adopt_lock), so a deploy never
+                   leaves an open trade on the old rule again. Live on every book in production
                    (2026-11-05: the mentor's system and the main wallet included). Locally, live on the copy books and
                    on every autotrader trade (its lane legs open under "manual"; its scanner picks already trail under
                    "protect") and a shadow on every other manual-policy book (the weekly basket's lab and the reversal
@@ -75,7 +81,8 @@ class Policy:
     run_cap_h: float = 168.0
     lock_arm_usd: float | None = None     # dollar profit lock: arm once the open P&L has been this high…
     lock_keep: float = 0.5                # …and keep this share of the peak open P&L (the stop ratchets with the peak)
-    lock_arm_r: float = 1.0               # …but never before the trade is this many R up (2026-11-04: $100 on a $32k copy leg armed at +0.3%)
+    lock_arm_r: float = 1.0               # …but never before the trade is this many R up (2026-11-04: $100 on a $32k copy leg armed at +0.3%)…
+    lock_arm_pct: float | None = None     # …or this share of the notional, whichever of the two is smaller (2026-11-05: 1R of a 10% stop never came)
 
 
 POLICIES: dict[str, Policy] = {
@@ -95,7 +102,8 @@ POLICIES: dict[str, Policy] = {
     # nothing else — no breakeven moves, trailing, stale cut or expiry.
     "manual": Policy("manual", breakeven=None, stale=False),
     "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
-                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "100")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5"))),
+                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "100")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5")),
+                          lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
     # run forward on every new entry. Rule, set now: after 60 entries opened from 2026-10-20, adopt one as
@@ -135,6 +143,28 @@ def lock_policy_for(label: str | None, policy_name: str | None) -> str | None:
     if LOCK_MODE == "live" or (label and any(label == b or label.startswith(b) for b in LOCK_BOOKS)):
         return "manual_lock"
     return policy_name
+
+
+def lock_arm_usd(t: dict, p: Policy) -> float | None:
+    """The open P&L at which this trade's lock arms (None: no lock on its policy)."""
+    if p.lock_arm_usd is None:
+        return None
+    by_r = p.lock_arm_r * (t.get("risk_usd") or 0.0)
+    if p.lock_arm_pct:
+        notional = t.get("notional_usd") or (t.get("entry_price") or 0.0) * (t.get("quantity") or 0.0)
+        by_r = min(by_r, p.lock_arm_pct * notional)
+    return max(p.lock_arm_usd, by_r)
+
+
+def adopt_lock(t: dict, label: str | None) -> bool:
+    """A running "manual" trade on a book where the lock is live takes the lock (2026-11-05: the two reversal legs that
+    were open when the lock deployed kept their old rule, since the policy is stamped at entry, and gave back $400 of
+    their peaks). Its peak has been tracked since entry, so the lock knows what there is to keep."""
+    if t.get("exit_policy") == "manual" and lock_policy_for(label, "manual") == "manual_lock":
+        t["exit_policy"] = "manual_lock"
+        t["lock_adopted_ts"] = time.time()
+        return True
+    return False
 
 # (stale deadline, max hold) by the trade's timeframe. Winners are allowed to run far past
 # the stale deadline; only trades going nowhere are cut there.
@@ -297,7 +327,7 @@ def apply_bar(
     # 5b. Dollar profit lock: once the best open P&L has reached lock_arm_usd, keep lock_keep of it — effective from the next bar.
     if p.lock_arm_usd is not None and t.get("quantity", 0) > 0:
         peak_pnl = (t["peak_price"] - t["entry_price"]) * s * t["quantity"] - t.get("fees_usd", 0.0) - t.get("funding_usd", 0.0)
-        if peak_pnl >= max(p.lock_arm_usd, p.lock_arm_r * (t.get("risk_usd") or 0.0)):
+        if peak_pnl >= lock_arm_usd(t, p):
             keep = t["entry_price"] + s * (p.lock_keep * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
             # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
             # −$385) that "locked" a level above the market and the next tick stopped it out at the current price.
