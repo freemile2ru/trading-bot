@@ -4,7 +4,7 @@ Why (2026-10-31): the replay (research/auction_lab.py) was breakeven before cost
 with the filters built around its weaknesses — but the user wants it tested forward, with fundamentals considered, so
 it runs at measuring size and is judged like every book, on its own 40 trades.
 
-The book (books.WALLETS["auction"]), every closed 5-minute bar in the New York session (09:30–17:00 ET):
+The book (books.WALLETS["auction"]), every closed 5-minute bar in the New York cash session (09:30–16:00 ET):
   setup     the study's acceptance → confirmation → entry sequence (VARIANT: target ≥ MIN_TARGET_BPS away, grade ≥ MIN_GRADE)
   gates     calendar first — nothing inside a macro-release blackout (FOMC, CPI, NFP…) or an earnings window for the
             name (ops/calendar); the trade is tagged with any nearby release for the exit-reason record
@@ -42,6 +42,29 @@ MAX_GROSS = float(os.getenv("AUCTION_MAX_GROSS", "2.0"))         # a trade is at
 MAX_LEVERAGE = int(os.getenv("AUCTION_MAX_LEVERAGE", "5"))
 MAX_OPEN = int(os.getenv("AUCTION_MAX_OPEN", "3"))               # 3 at once (was 4): at 2× each, three fill the book's margin at 5×
 DAILY_GOAL = (float(os.getenv("AUCTION_GOAL_LOW", "200")), float(os.getenv("AUCTION_GOAL_HIGH", "500")))   # the user's $/day goal on $30k
+
+
+def _hm(s: str) -> tuple[int, int]:
+    h, m = s.split(":")
+    return int(h), int(m)
+
+
+def _m(hm: tuple[int, int]) -> int:
+    return hm[0] * 60 + hm[1]
+
+
+# 2026-11-05, after the first production trade: a 15:55 ET short into NVDA's closing auction, filled 45 bps past the level
+# (the replay enters at the next open, a median 4–10 bps past it), exited on after-hours prints. These are stock and ETF
+# perps, so the session ends at the cash close (the study's 17:00 is NQ futures time); nothing is accepted or entered from
+# the entry cutoff on (the replay: every slot after 14:00 ET lost — 44 trades, 11% won); a fill that has already run past
+# the bar's close by more than MAX_PAST_BPS is not taken; the weekly levels are left out (13 replayed trades, 1 win). The
+# size stays real-world (the user's call — the book is paper). The replay's only positive slot is the first hour, so each
+# trade is tagged with its slot and the verdict shows the first hour on its own.
+SESSION_END = _hm(os.getenv("AUCTION_SESSION_END", "16:00"))
+ENTRY_CUTOFF = _hm(os.getenv("AUCTION_ENTRY_CUTOFF", "14:00"))
+MAX_PAST_BPS = float(os.getenv("AUCTION_MAX_PAST_BPS", "15"))
+SKIP_LEVELS = {x.strip() for x in os.getenv("AUCTION_SKIP_LEVELS", "WKH,WKL").split(",") if x.strip()}
+FIRST_HOUR_END = (10, 30)
 HISTORY_DAYS = 10                      # enough closed 30-minute candles for the HTF ATR and a prior week for its levels
 BAR_S = 300
 LOG_KEEP = 60
@@ -103,9 +126,10 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
     from experiments import books
     if len(df) < 300:
         return None
-    d = AL.session_frame(df)
+    d = AL.session_frame(df, session_end=SESSION_END)
     i = len(d) - 1
     r = d.iloc[i]
+    minute = _m((r["et"].hour, r["et"].minute))
     ts = d.index[i]
     bar_key = int(ts.timestamp())
     st = _state(sym)
@@ -119,7 +143,7 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
     # 1. an open trade: the study's exit back through the level (stop, target and session end are on the wallet)
     if mine:
         level, s = mine.get("level_px"), 1 if mine["direction"] == "long" else -1
-        if level and ((s > 0 and r["close"] < level) or (s < 0 and r["close"] > level)):
+        if level and r["in_session"] and ((s > 0 and r["close"] < level) or (s < 0 and r["close"] > level)):
             px = await monitor.live_price(sym) or float(r["close"])
             if w.close_trade_manually(mine["id"], px, "exit_through_level"):
                 out = {"sym": sym, "event": "exit_through_level", "price": px}
@@ -148,7 +172,7 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                 _log({"ts": now, "sym": sym, "event": "no_retest", "level": entering["level_name"]})
         st["entering"] = None
         if take and r["in_session"] and len(open_trades) < MAX_OPEN and book_switches.enabled(BOOK) and books.ENABLED:
-            why = gates(sym, now)
+            why = "after the %02d:%02d ET entry cutoff" % ENTRY_CUTOFF if minute >= _m(ENTRY_CUTOFF) else gates(sym, now)
             if why:
                 _log({"ts": now, "sym": sym, "event": "gated", "why": why, "level": entering["level_name"]})
             else:
@@ -157,17 +181,22 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                 notional, lev = _size(equity, px, entering["stop"])
                 sd = 1 if entering["direction"] == "long" else -1
                 good = (entering["stop"] < px < entering["target"]) if sd > 0 else (entering["target"] < px < entering["stop"])
-                if notional >= 10 and good:
+                ran = (px / float(r["close"]) - 1) * 1e4 * sd                    # how far the live price has run on past the bar's close
+                if ran > MAX_PAST_BPS:
+                    _log({"ts": now, "sym": sym, "event": "skipped", "why": f"price ran {ran:.0f} bps past the bar's close (limit {MAX_PAST_BPS:.0f})",
+                          "level": entering["level_name"]})
+                elif notional >= 10 and good:
                     from ops import calendar
-                    end_et = datetime.fromtimestamp(now, ET).replace(hour=AL.SESSION_END[0], minute=AL.SESSION_END[1], second=0, microsecond=0)
+                    end_et = datetime.fromtimestamp(now, ET).replace(hour=SESSION_END[0], minute=SESSION_END[1], second=0, microsecond=0)
                     t = w.open_trade(symbol=sym, direction=entering["direction"], entry_price=px, stop_loss=entering["stop"],
                                      take_profit_1=entering["target"], take_profit_2=entering["target"], notional_usd=notional, timeframe="5m",
                                      leverage=lev, oracle_confidence=0,
                                      oracle_reasoning=f"auction: accepted {entering['level_name']} @ {entering['level']:.4g}, grade {entering['grade']}/8, "
                                                       f"target {entering['target_name']} @ {entering['target']:.4g} ({entering['target_bps']:.0f} bps)",
-                                     hold_duration="to the next level, the stop or 17:00 ET",
+                                     hold_duration="to the next level, the stop or %02d:%02d ET" % SESSION_END,
                                      extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market",
                                             "level_name": entering["level_name"], "level_px": entering["level"], "target_name": entering["target_name"],
+                                            "entry_slot": "first_hour" if minute < _m(FIRST_HOUR_END) else "later",
                                             "grade": entering["grade"], "context": entering["context"], "near_event": calendar.near_event(sym, now),
                                             "variant": VARIANT})
                     if t.get("error"):
@@ -203,13 +232,13 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
             _log({"ts": now, "sym": sym, "event": "not_confirmed", "level": pending["level_name"]})
         _set_state(sym, st)
         return out
-    # 4. acceptance on this bar
-    if r["in_session"]:
+    # 4. acceptance on this bar — in the session, before the entry cutoff, at a level the book trades
+    if r["in_session"] and minute < _m(ENTRY_CUTOFF):
         import numpy as np
         buf = r["close"] * AL.BUFFER_BPS / 1e4
         prev_c = float(d["close"].iloc[i - 1])
-        ups = [(r[n], n) for n in AL.UP_LEVELS if np.isfinite(r[n]) and r["close"] > r[n] + buf and prev_c <= r[n] + buf]
-        dns = [(r[n], n) for n in AL.DOWN_LEVELS if np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
+        ups = [(r[n], n) for n in AL.UP_LEVELS if n not in SKIP_LEVELS and np.isfinite(r[n]) and r["close"] > r[n] + buf and prev_c <= r[n] + buf]
+        dns = [(r[n], n) for n in AL.DOWN_LEVELS if n not in SKIP_LEVELS and np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
         if ups or dns:
             up_lv, dn_lv = AL.second_levels(r) if VARIANT.get("target_mode") == "second" else AL.next_levels(r)
             off = r["close"] * AL.STOP_OFFSET_BPS / 1e4
@@ -234,7 +263,7 @@ async def tick(now: float | None = None) -> list[dict]:
         return []
     et = datetime.fromtimestamp(now, ET)
     hm = (et.hour, et.minute)
-    if not (AL.SESSION_OPEN <= hm < (AL.SESSION_END[0], AL.SESSION_END[1] + 5)) or et.weekday() >= 5:
+    if not (AL.SESSION_OPEN <= hm < (SESSION_END[0], SESSION_END[1] + 5)) or et.weekday() >= 5:
         return []
     if int(now) % BAR_S > 90:
         return []                                                 # act in the first 90 seconds after a bar closes
@@ -309,7 +338,7 @@ async def snapshot(now: float | None = None) -> dict:
             if len(df) < 300:
                 views.append({"symbol": sym, "error": "not enough history yet"})
                 continue
-            views.append(_symbol_view(sym, AL.session_frame(df), now))
+            views.append(_symbol_view(sym, AL.session_frame(df, session_end=SESSION_END), now))
         except Exception as e:
             views.append({"symbol": sym, "error": str(e)})
     w = books.WALLETS[BOOK]
@@ -320,6 +349,20 @@ async def snapshot(now: float | None = None) -> dict:
     conf = trade_analytics._confidence(closed, random.Random(3)) if closed else {"trades": 0, "enough": False}
     lo, hi = (conf.get("expectancy_ci") or (None, None))
     verdict = ("collecting" if len(closed) < 40 else "edge" if lo is not None and lo > 0 else "no_edge" if hi is not None and hi < 0 else "inconclusive")
+    # The record by entry slot: the replay's only positive slot was the first hour, so the forward test judges it on its own.
+    slices = {}
+    for t in w.all_trades()["closed"]:
+        slot = t.get("entry_slot") or "later"
+        sl = slices.setdefault(slot, {"trades": 0, "wins": 0, "net_pnl": 0.0, "r_sum": 0.0, "r_n": 0})
+        pnl = t.get("pnl_usd") or 0.0
+        sl["trades"] += 1
+        sl["wins"] += pnl > 0
+        sl["net_pnl"] += pnl
+        if t.get("risk_usd"):
+            sl["r_sum"] += pnl / t["risk_usd"]
+            sl["r_n"] += 1
+    slices = {k: {"trades": v["trades"], "wins": v["wins"], "net_pnl": round(v["net_pnl"], 2), "avg_r": round(v["r_sum"] / v["r_n"], 3) if v["r_n"] else None}
+              for k, v in slices.items()}
     try:
         import json as _json
         replay = _json.load(open(os.path.join(os.path.dirname(__file__), "..", "data", "research_cache", "auction_results.json")))
@@ -348,9 +391,11 @@ async def snapshot(now: float | None = None) -> dict:
                                 "net_pnl": round(sum(r.get("net_pnl") or 0 for r in closed), 2),
                                 "avg_r": round(sum(r["r"] for r in closed if r.get("r") is not None) / max(1, sum(1 for r in closed if r.get("r") is not None)), 3) if closed else None,
                                 "enabled": book_switches.enabled(BOOK), "equity_history": p.get("equity_history", [])[-300:]},
-            "verdict": {"status": verdict, "trades": len(closed), "needed": 40, "expectancy_usd": conf.get("expectancy_usd"), "ci": [lo, hi]},
+            "verdict": {"status": verdict, "trades": len(closed), "needed": 40, "expectancy_usd": conf.get("expectancy_usd"), "ci": [lo, hi], "slices": slices},
             "config": {"symbols": list(SYMBOLS), "variant": VARIANT, "risk_pct": RISK_PCT, "max_gross": MAX_GROSS, "max_open": MAX_OPEN, "max_leverage": MAX_LEVERAGE,
-                       "session": "09:30–17:00 ET", "buffer_bps": AL.BUFFER_BPS, "stop_offset_bps": AL.STOP_OFFSET_BPS, "retest_bars": AL.RETEST_BARS},
+                       "session": "09:30–%02d:%02d ET, entries until %02d:%02d" % (*SESSION_END, *ENTRY_CUTOFF),
+                       "entry_cutoff": "%02d:%02d" % ENTRY_CUTOFF, "max_past_bps": MAX_PAST_BPS, "skip_levels": sorted(SKIP_LEVELS),
+                       "buffer_bps": AL.BUFFER_BPS, "stop_offset_bps": AL.STOP_OFFSET_BPS, "retest_bars": AL.RETEST_BARS},
             "instruments": views, "log": list(reversed(kv.get_sync(_k("log")) or []))[:40], "replay": replay_summary,
             "level_labels": LEVEL_LABELS}
     _snap_cache.update(at=now, data=data)
@@ -370,7 +415,7 @@ async def chart(sym: str, bars_n: int = 600, now: float | None = None) -> dict:
     df = await bars(sym, now)
     if len(df) < 300:
         return {"symbol": sym, "error": "not enough history yet"}
-    d = AL.session_frame(df)
+    d = AL.session_frame(df, session_end=SESSION_END)
     tail = d.iloc[-bars_n:]
     ts = [int(t.timestamp()) for t in tail.index]
 

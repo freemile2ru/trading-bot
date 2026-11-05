@@ -22,8 +22,10 @@ export interface AuctionSnapshot {
   daily: { goal: [number, number]; today: number; avg7: number; days: Record<string, number> }
   book: { equity: number; initial: number; balance: number; return_pct: number | null; open: (PaperTrade & Record<string, unknown>)[]; closed: number; wins: number
           net_pnl: number; avg_r: number | null; enabled: boolean; equity_history: { ts: number; equity: number }[] }
-  verdict: { status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive'; trades: number; needed: number; expectancy_usd: number | null; ci: [number | null, number | null] }
+  verdict: { status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive'; trades: number; needed: number; expectancy_usd: number | null; ci: [number | null, number | null]
+             slices?: Record<string, { trades: number; wins: number; net_pnl: number; avg_r: number | null }> }
   config: { symbols: string[]; variant: Record<string, string | number>; risk_pct: number; max_gross: number; max_open: number; max_leverage: number; session: string
+            entry_cutoff?: string; max_past_bps?: number; skip_levels?: string[]
             buffer_bps: number; stop_offset_bps: number; retest_bars: number }
   instruments: AuctionInstrument[]
   log: AuctionLog[]

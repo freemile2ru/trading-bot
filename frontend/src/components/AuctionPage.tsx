@@ -102,7 +102,7 @@ const extra = (t: UnifiedTrade) => t as unknown as Record<string, unknown>
 function TradesTable({ rows }: { rows: UnifiedTrade[] }) {
   const sorted = useSort(rows, { opened: t => t.opened_ts, closed: t => t.closed_ts, symbol: t => t.symbol, level: t => String(extra(t).level_name ?? ''), grade: t => Number(extra(t).grade ?? 0),
     entry: t => t.entry_price, notional: t => t.notional, r: t => t.r, net: t => t.net_pnl, exit: t => t.exit_reason })
-  if (!rows.length) return <div className="text-xs text-gray-500">No trades yet — the book trades in the New York session, 09:30–17:00 ET.</div>
+  if (!rows.length) return <div className="text-xs text-gray-500">No trades yet — the book trades in the New York cash session, 09:30–16:00 ET, entering until 14:00.</div>
   const cols = [['opened', 'Opened', false], ['closed', 'Closed', false], ['symbol', 'Trade', false], ['level', 'Level → target', false], ['grade', 'Grade', true], ['entry', 'Entry → exit', true], ['notional', 'Notional', true], ['exit', 'Exit', false], ['r', 'R', true], ['net', 'Net', true]] as const
   return (
     <div className="overflow-x-auto">
@@ -189,9 +189,17 @@ export function AuctionPage() {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Book</div><div className="text-xl font-black text-white tabular-nums mt-1">{fmtUsd(b.equity, 0)}</div><div className={clsx('text-xs', tone(b.return_pct))}>{pct(b.return_pct)} since start · {b.enabled ? 'on' : 'off'}</div></div>
         <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Record</div><div className="text-xl font-black text-white tabular-nums mt-1">{b.closed} closed</div><div className="text-xs text-gray-400">{b.wins} won · avg {b.avg_r == null ? '—' : `${b.avg_r > 0 ? '+' : ''}${b.avg_r}R`} · <span className={tone(b.net_pnl)}>{fmtUsdSigned(b.net_pnl, 0)}</span></div></div>
-        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Verdict</div><div className={clsx('text-xl font-black tabular-nums mt-1', vTone)}>{vLabel}</div><div className="text-xs text-gray-400">{v.expectancy_usd != null ? `${fmtUsdSigned(v.expectancy_usd)} a trade (95% ${v.ci[0]} … ${v.ci[1]})` : 'judged on its own 40 trades'}</div></div>
+        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Verdict</div><div className={clsx('text-xl font-black tabular-nums mt-1', vTone)}>{vLabel}</div><div className="text-xs text-gray-400">{v.expectancy_usd != null ? `${fmtUsdSigned(v.expectancy_usd)} a trade (95% ${v.ci[0]} … ${v.ci[1]})` : 'judged on its own 40 trades'}</div>
+          {v.slices && Object.keys(v.slices).length > 0 && (
+            <div className="text-[11px] text-gray-500 mt-1">
+              {(['first_hour', 'later'] as const).filter(k => v.slices?.[k]).map(k => { const s = v.slices![k]; return (
+                <span key={k} className="mr-3">{k === 'first_hour' ? 'first hour (09:30–10:30)' : 'later'}: {s.trades} trade{s.trades === 1 ? '' : 's'}, {s.wins} won, <span className={s.net_pnl > 0 ? 'text-emerald-400' : s.net_pnl < 0 ? 'text-red-400' : ''}>{fmtUsdSigned(s.net_pnl)}</span>{s.avg_r != null ? ` (${s.avg_r > 0 ? '+' : ''}${s.avg_r.toFixed(2)}R)` : ''}</span>
+              ) })}
+              <span className="text-gray-600">· the replay's only positive slot was the first hour; it is judged on its own</span>
+            </div>
+          )}</div>
         <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">$/day vs goal</div><div className={clsx('text-xl font-black tabular-nums mt-1', tone(d.daily.today))}>{fmtUsdSigned(d.daily.today, 0)}<span className="text-sm text-gray-500 font-normal"> today</span></div><div className="text-xs text-gray-400">7-day avg <span className={tone(d.daily.avg7)}>{fmtUsdSigned(d.daily.avg7, 0)}</span> · goal {fmtUsd(d.daily.goal[0], 0)}–{fmtUsd(d.daily.goal[1], 0)} a day · {b.open.length} open</div></div>
-        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Rules</div><div className="text-xs text-gray-300 mt-1">{d.config.session} · entry {String(d.config.variant.entry)} · target {String(d.config.variant.target_mode)} level · grade ≥ {String(d.config.variant.min_grade)} · target ≥ {String(d.config.variant.min_target_bps)} bps · risk {d.config.risk_pct}% a trade · calendar gates</div></div>
+        <div className="card"><div className="text-[10px] uppercase tracking-wider text-gray-500">Rules</div><div className="text-xs text-gray-300 mt-1">{d.config.session} · entry {String(d.config.variant.entry)}{d.config.max_past_bps != null ? `, not more than ${d.config.max_past_bps} bps past the bar's close` : ''} · target {String(d.config.variant.target_mode)} level · grade ≥ {String(d.config.variant.min_grade)} · target ≥ {String(d.config.variant.min_target_bps)} bps{d.config.skip_levels?.length ? ` · no ${d.config.skip_levels.join('/')} levels` : ''} · risk {d.config.risk_pct}% a trade · calendar gates</div></div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

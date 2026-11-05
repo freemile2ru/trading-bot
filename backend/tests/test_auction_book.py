@@ -121,3 +121,64 @@ def test_chart_returns_bars_levels_lines_signals_and_trades(book, monkeypatch):
     kinds = {e["kind"] for e in out["study_events"]}
     assert {"accept", "confirm", "entry"} <= kinds                       # the synthetic day's acceptance shows up as the study's signal
     assert out["trades"] == []
+
+
+def test_stock_perps_trade_the_cash_session_and_tag_the_entry_slot(book):
+    """2026-11-05: the session ends at the cash close (16:00 ET, not the study's 17:00), the trade expires there, and each
+    trade carries the slot it was entered in — the first hour is judged on its own."""
+    from trading import auction_levels as AL
+    w, prices = book
+    df = _frame()
+    k = len(df) - 13
+    now = float(df.index[k + 2].timestamp()) + 300
+    for n, dt in ((3, 0), (4, 300), (5, 600)):
+        asyncio.run(auction.step("TESTUSDT", df.iloc[:k + n], now + dt))
+    t = w.get_portfolio()["open_trades"][0]
+    end = pd.Timestamp(t["expires_at"], unit="s", tz="UTC").tz_convert("America/New_York")
+    assert (end.hour, end.minute) == auction.SESSION_END == (16, 0) and t["entry_slot"] == "first_hour"
+    assert "16:00 ET" in t["hold_duration"]
+    fr = AL.session_frame(_bars([100.0] * 120, start="2026-06-01 19:00"), session_end=auction.SESSION_END)      # 15:00 → 01:00 ET
+    hm = fr["et"].dt.hour * 60 + fr["et"].dt.minute
+    assert fr["in_session"][(hm >= 15 * 60) & (hm < 16 * 60)].all() and not fr["in_session"][(hm >= 16 * 60) | (hm < 9 * 60)].any()
+    assert AL.session_frame(_bars([100.0] * 120, start="2026-06-01 19:00"))["in_session"][hm == 16 * 60 + 30].all()  # the study's own frame keeps 17:00
+
+
+def test_nothing_is_accepted_or_entered_after_the_entry_cutoff(book, monkeypatch):
+    w, prices = book
+    df = _frame()
+    k = len(df) - 13
+    now = float(df.index[k + 2].timestamp()) + 300
+    monkeypatch.setattr(auction, "ENTRY_CUTOFF", (9, 40))                       # the breakout bar (09:40) is at the cutoff
+    assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now)) is None
+    assert w.get_portfolio()["open_trades"] == [] and not auction._state("TESTUSDT").get("pending")
+    # accepted and confirmed before the cutoff, the entry bar lands on it: gated, logged
+    kv.delete_sync(auction._k("state", "TESTUSDT"))
+    monkeypatch.setattr(auction, "ENTRY_CUTOFF", (9, 50))
+    for n, dt in ((3, 0), (4, 300), (5, 600)):
+        asyncio.run(auction.step("TESTUSDT", df.iloc[:k + n], now + dt))
+    assert w.get_portfolio()["open_trades"] == []
+    assert auction.status()["log"][0]["event"] == "gated" and "entry cutoff" in auction.status()["log"][0]["why"]
+
+
+def test_a_fill_that_ran_past_the_close_is_skipped_and_weekly_levels_are_not_traded(book, monkeypatch):
+    w, prices = book
+    df = _frame()
+    k = len(df) - 13
+    now = float(df.index[k + 2].timestamp()) + 300
+    prices["px"] = 101.3 * 1.004                                                  # 40 bps above the bar's close (limit 15)
+    for n, dt in ((3, 0), (4, 300), (5, 600)):
+        asyncio.run(auction.step("TESTUSDT", df.iloc[:k + n], now + dt))
+    assert w.get_portfolio()["open_trades"] == []
+    assert auction.status()["log"][0]["event"] == "skipped" and "past the bar's close" in auction.status()["log"][0]["why"]
+    # a better price than the close is fine
+    kv.delete_sync(auction._k("state", "TESTUSDT"))
+    prices["px"] = 101.3 * 0.999
+    for n, dt in ((3, 0), (4, 300), (5, 600)):
+        asyncio.run(auction.step("TESTUSDT", df.iloc[:k + n], now + dt))
+    assert len(w.get_portfolio()["open_trades"]) == 1
+    # the level the frame breaks here is PDH/ONH; declared skipped, nothing is accepted
+    w.close_trade_manually(w.get_portfolio()["open_trades"][0]["id"], 101.3, "test")
+    kv.delete_sync(auction._k("state", "TESTUSDT"))
+    monkeypatch.setattr(auction, "SKIP_LEVELS", {"WKH", "WKL", "PDH", "ONH"})
+    assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now)) is None
+    assert "WKL" in auction.SKIP_LEVELS and "WKH" in auction.SKIP_LEVELS

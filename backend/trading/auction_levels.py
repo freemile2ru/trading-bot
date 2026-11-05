@@ -129,14 +129,15 @@ def _htf(df: pd.DataFrame, rule: str, atr_len: int) -> pd.DataFrame:
     return k
 
 
-def session_frame(df5: pd.DataFrame) -> pd.DataFrame:
-    """Everything the decisions need, per closed 5-minute bar. `df5` has UTC-indexed open/high/low/close/volume."""
+def session_frame(df5: pd.DataFrame, session_end: tuple[int, int] | None = None) -> pd.DataFrame:
+    """Everything the decisions need, per closed 5-minute bar. `df5` has UTC-indexed open/high/low/close/volume.
+    `session_end` overrides the study's 17:00 (NQ futures): the book passes the cash close for stock and ETF perps."""
     d = df5.copy()
     d = d[~d.index.duplicated()].sort_index()
     et = d.index.tz_convert(ET)
     d["et"] = et
     hm = np.array([h * 60 + m for h, m in zip(et.hour, et.minute)])
-    so, se, oe, ie, os_ = [h * 60 + m for h, m in (SESSION_OPEN, SESSION_END, ORB_END, IB_END, OVERNIGHT_START)]
+    so, se, oe, ie, os_ = [h * 60 + m for h, m in (SESSION_OPEN, session_end or SESSION_END, ORB_END, IB_END, OVERNIGHT_START)]
     d["in_session"] = (hm >= so) & (hm < se)
     d["in_orb"] = (hm >= so) & (hm < oe)
     d["in_ib"] = (hm >= so) & (hm < ie)
