@@ -200,7 +200,8 @@ def test_stop_sits_on_the_leaders_typical_loss_and_the_leg_is_sized_to_it():
 
 def test_a_book_stops_opening_when_full_over_the_gross_cap_or_down_three_percent_today(tmp_path):
     from trading.paper_trader import PaperWallet
-    now = 1_793_800_000.0                                                                # 2026-11-04 ~13:47 UTC
+    import time
+    now = time.time()                            # the closes below are stamped with the real clock: "today" must be their day
     w = PaperWallet(str(tmp_path / "w.db"), label="copy_test", initial_balance=10_000)
     assert ct.book_room(w, now) is None
     for i in range(3):                                                                   # three legs of half the book each: 150% on

@@ -285,8 +285,11 @@ def test_the_lock_is_live_on_the_copy_books_and_a_shadow_elsewhere(wallet, monke
     monkeypatch.setattr(exits, "LOCK_MODE", "shadow")
     assert exits.lock_policy_for("copy_trading", "manual") == exits.lock_policy_for("copy_stocks_wide", "manual") == "manual_lock"
     assert exits.lock_policy_for("weekly_rs", "manual") == "manual" and exits.lock_policy_for("auto", "protect") == "protect"
-    monkeypatch.setattr(exits, "LOCK_MODE", "live")
-    assert exits.lock_policy_for("weekly_rs", "manual") == "manual_lock"
+    # Every autotrader trade (2026-11-05): its lane legs open under "manual" and get the lock, on paper and on the live ledger.
+    assert exits.lock_policy_for("auto", "manual") == exits.lock_policy_for("auto_live", "manual") == "manual_lock"
+    assert exits.lock_policy_for("auction", "manual") == "manual"
+    monkeypatch.setattr(exits, "LOCK_MODE", "live")                                        # production's default
+    assert exits.lock_policy_for("weekly_rs", "manual") == exits.lock_policy_for("auction", "manual") == exits.lock_policy_for("manual", "manual") == "manual_lock"
     monkeypatch.setattr(exits, "LOCK_MODE", "shadow")
     t = wallet.open_trade("ETHUSDT", "long", 100, 70, 150, 160, risk_pct=1, timeframe="1d", extra={"exit_policy": "manual", "shadows": False, "strategy": "weekly_rs"})
     assert t["exit_policy"] == "manual"

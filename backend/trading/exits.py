@@ -27,9 +27,12 @@ Policies:
   hold           — baseline: original stop or TP2 only, until max hold.
   manual_lock    — manual (the book decides the exit, no clock) plus a DOLLAR profit lock (2026-11-02, the user's
                    rule "secure profits over $100"): once the open P&L has reached LOCK_ARM_USD, the stop sits where
-                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. Live on the copy books; a shadow
-                   on every other manual-policy book (the weekly basket's lab and the reversal legs' paths both said
-                   trailing exits earn less than holding, so those keep their rule until their own shadows disagree).
+                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. Live on every book in production
+                   (2026-11-05: the mentor's system and the main wallet included). Locally, live on the copy books and
+                   on every autotrader trade (its lane legs open under "manual"; its scanner picks already trail under
+                   "protect") and a shadow on every other manual-policy book (the weekly basket's lab and the reversal
+                   legs' paths both said trailing exits earn less than holding, so those keep their rule until their
+                   own shadows disagree).
   protect_quick, protect_cut6, protect_trim — shadow-only candidates (see each one's note).
 
 The replay covers one week of mostly-long signals in a rising market; the shadow book
@@ -118,9 +121,11 @@ DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
 SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock"))).split(",")
                    if p in POLICIES]
 # The profit lock on the books that hold to their own rule: "live" stamps manual_lock on every manual trade (the
-# user's "all our trades" switch), "shadow" (default) runs it beside each such trade and scores it in the shadow book.
-LOCK_MODE = os.getenv("EXIT_LOCK_MODE", "shadow")
-LOCK_BOOKS = set(os.getenv("EXIT_LOCK_BOOKS", "copy").split(","))     # labels (or prefixes) where the lock is live regardless
+# user's "all our trades" switch), "shadow" runs it beside each such trade and scores it in the shadow book.
+# Production runs it live on every book — the mentor's system and the main wallet included (2026-11-05); the local
+# instance keeps the exit experiments: shadow there, live on the copy books and the autotrader (LOCK_BOOKS).
+LOCK_MODE = os.getenv("EXIT_LOCK_MODE", "live" if os.getenv("APP_ENV") == "production" else "shadow")
+LOCK_BOOKS = set(os.getenv("EXIT_LOCK_BOOKS", "copy,auto").split(","))     # labels (or prefixes) where the lock is live regardless: the copy books, the autotrader
 
 
 def lock_policy_for(label: str | None, policy_name: str | None) -> str | None:

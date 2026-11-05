@@ -336,7 +336,7 @@ def test_autotrader_mirrors_the_event_book_and_closes_with_it(auto, monkeypatch)
     assert set(held) == {"ABCUSDT", "BTCUSDT"}
     coin, hedge = held["ABCUSDT"], held["BTCUSDT"]
     assert coin["direction"] == "short" and hedge["direction"] == "long"
-    assert coin["event_id"] == row["id"] and coin["exit_policy"] == "manual" and coin["expires_at"] == pytest.approx(row["deadline_ts"] + 3600)
+    assert coin["event_id"] == row["id"] and coin["exit_policy"] == "manual_lock" and coin["expires_at"] == pytest.approx(row["deadline_ts"] + 3600)
     from experiments import events as events_book
     expected = engine._lane_budget("events", 10_000) * events_book.LEG_PCT / 100          # the event lane's budget share × the book's leg share
     assert coin["stop_loss"] == pytest.approx(100.0 * 1.25) and coin["notional_usd"] == pytest.approx(expected, rel=0.01)
