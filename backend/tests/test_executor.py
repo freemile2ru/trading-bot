@@ -211,3 +211,50 @@ def test_a_mirror_leg_is_deferred_while_the_coin_is_being_dumped(tmp_path, monke
     state["tape"] = {"move_pct": -0.4, "vol_x": 1.1}                                     # the dump is over: next tick takes it
     asyncio.run(engine._mirror_wallet_book("cascade", "cascade", True))
     assert [t["symbol"] for t in active.get_portfolio()["open_trades"]] == ["TRUMPUSDT"]
+
+
+def _reversal_setup(tmp_path, monkeypatch, equity=50_000):
+    from trading import coin_lock
+    active = PaperWallet(str(tmp_path / "active.db"), label="auto", initial_balance=equity)
+    monkeypatch.setattr(engine, "_active", lambda: active)
+    monkeypatch.setattr(engine, "_wallets", lambda: [active])
+    monkeypatch.setattr(engine, "_holdings_elsewhere", lambda include_books=True: [])
+
+    async def no_regime():
+        return None
+
+    async def price(sym):
+        return 1248.0
+    monkeypatch.setattr(engine.regime, "current", no_regime)
+    monkeypatch.setattr(engine.monitor, "live_price", price)
+    kv.delete_sync(coin_lock._stop_key("ZECUSDT", "short"))
+    return active
+
+
+def _reversal_leg(active):
+    equity = active.get_portfolio()["total_equity"]
+    notional_pct = engine.ENTRY_BUDGET_USD / engine.REVERSAL_K / equity * 100
+    return asyncio.run(engine._open_mirror_leg(
+        active, "ZECUSDT", "short", engine.REVERSAL_STOP_PCT, notional_pct, "reversal score -0.2", "24h", None,
+        {"lane": "reversal", "reversal_id": "1:ZECUSDT", "reversal_score": -0.2}, risk_pct=engine.REVERSAL_RISK_PCT))
+
+
+def test_a_reversal_leg_stays_at_measuring_size_on_a_large_ledger(tmp_path, monkeypatch):
+    """ZEC, 2026-11-06: with $50k on the prod ledger the 1% risk floor made a $5k leg at a 10% stop — $507 at risk on a
+    lane whose five wins had made $516 together. A leg now risks 0.2% of the ledger: $1k notional, $100 at risk."""
+    active = _reversal_setup(tmp_path, monkeypatch)
+    t = _reversal_leg(active)
+    assert t and not t.get("error")
+    assert t["notional_usd"] == pytest.approx(1_000.0, rel=0.01)
+    assert t["risk_usd"] == pytest.approx(100.0, rel=0.02)
+    assert t["stop_loss"] == pytest.approx(1248.0 * 1.10, rel=1e-6)
+
+
+def test_a_leg_waits_out_the_cooldown_after_a_stop_on_the_same_side(tmp_path, monkeypatch):
+    from trading import coin_lock
+    active = _reversal_setup(tmp_path, monkeypatch)
+    coin_lock.record_stop_out("copy_trading", {"symbol": "ZECUSDT", "direction": "short", "close_reason": "stop_loss", "current_price": 1382.0, "pnl_usd": -546.0})
+    assert _reversal_leg(active) is None
+    assert active.get_portfolio()["open_trades"] == []
+    kv.delete_sync(coin_lock._stop_key("ZECUSDT", "short"))
+    assert _reversal_leg(active)["symbol"] == "ZECUSDT"

@@ -79,7 +79,7 @@ import statistics
 import time
 
 from storage import state as kv
-from trading import book_switches, monitor, tape
+from trading import book_switches, coin_lock, monitor, tape
 
 logger = logging.getLogger("experiments.copy_trading")
 
@@ -915,7 +915,7 @@ async def mirror(now: float | None = None) -> dict:
                 _record_skip(dict(ts=now, leader=name, venue=L.get("venue"), symbol=r["symbol"], side=r["side"], position_id=r["position_id"], variant="base",
                                   reason=f"{market} copies retired 2026-11-03 — no book takes commodity perps", mark=None))
                 continue
-            why_block = probation
+            why_block = probation or coin_lock.recent_stop_out(r["symbol"], r["side"])
             if market == "stocks" and not why_block:
                 from ops import calendar
                 why_block = calendar.earnings_block(r["symbol"])

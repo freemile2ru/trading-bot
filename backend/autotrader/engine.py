@@ -123,7 +123,11 @@ REVERSAL_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_REVERSAL", "false").lower()
 # conviction no longer opens trades here. Set AUTOTRADER_TA_LANE=true to bring it back.
 TA_LANE = os.getenv("AUTOTRADER_TA_LANE", "false").lower() == "true"
 REVERSAL_K = int(os.getenv("AUTOTRADER_REVERSAL_K", "2"))          # names a side every 4h
-REVERSAL_RISK_PCT = float(os.getenv("AUTOTRADER_REVERSAL_RISK_PCT", "1"))   # a reversal leg risks 1% of the ledger (4 legs a slot, 24h holds overlap)
+# A reversal leg risks 0.2% of the ledger (was 1 until 2026-11-06). The lane is at measuring size — ENTRY_BUDGET_USD
+# over its picks — but a leg is sized by the LARGER of that share and the risk floor, and after the 2026-11-04 re-plan
+# put $50k on the prod ledger the 1% floor made every leg $5k at a 10% stop: the ZEC short lost $546 on a lane whose
+# five wins had made $516 together. At 0.2% the floor equals the measuring share on a $50k ledger ($1k a leg, $100 at risk).
+REVERSAL_RISK_PCT = float(os.getenv("AUTOTRADER_REVERSAL_RISK_PCT", "0.2"))
 REVERSAL_MAX_OPEN = int(os.getenv("AUTOTRADER_REVERSAL_MAX_OPEN", "12"))
 # Short side only (2026-11-02): on the lab's 190 slots (09-27 → 11-01) shorting the top of the score earned +1.7%/slot vs BTC
 # after costs (t 4.9, both halves positive, 68% of slots) while buying the bottom LOST −0.4%/slot in both halves and under
@@ -134,7 +138,7 @@ REVERSAL_SIDES = tuple(s.strip() for s in os.getenv("AUTOTRADER_REVERSAL_SIDES",
 LANE_RISK_PCT = float(os.getenv("AUTOTRADER_LANE_RISK_PCT", "2"))    # 2% (set 3 for a day on 2026-11-01): the weekly and factor baskets mirror 9–17 legs at once
 LANE_MAX_NOTIONAL_PCT = float(os.getenv("AUTOTRADER_LANE_MAX_NOTIONAL_PCT", "50"))
 REVERSAL_HOLD_H = 24.0
-REVERSAL_STOP_PCT = 10.0
+REVERSAL_STOP_PCT = float(os.getenv("AUTOTRADER_REVERSAL_STOP_PCT", "10"))   # a disaster stop: the lab measured plain 24h returns, no stop
 UNLOCK_STOP_PCT = 25.0
 UNLOCK_HEDGE_STOP_PCT = 40.0
 
@@ -451,6 +455,10 @@ async def _enter(
         busy = [{"system": "other systems", "mode": "unreadable"}]
     if busy:
         logger.info("Auto-entry %s skipped — now in trade with %s", scan["symbol"], coin_lock.describe(busy))
+        return None
+    waited = await asyncio.to_thread(coin_lock.recent_stop_out, scan["symbol"], direction)
+    if waited:
+        logger.info("Auto-entry %s skipped — %s", scan["symbol"], waited)
         return None
     _, fast = strategy.fast_tf(scan)
     atr_levels = strategy.build_levels(direction, price, scan, fast)
@@ -1061,6 +1069,10 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         opp = opposite_holding(symbol, direction, await asyncio.to_thread(_holdings_elsewhere, not own_book))
         if opp:
             logger.info("%s leg %s %s skipped: %s already holds the other side", lane, direction, symbol, opp.get("system") or lanes.lane_of(opp))
+            return None
+        waited = await asyncio.to_thread(coin_lock.recent_stop_out, symbol, direction)
+        if waited:
+            logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, waited)
             return None
         # Not into a move already running against the leg: the leg is tried again on the next tick (the mirror loop
         # re-offers it while the book still holds the position; a reversal pick is simply passed over).

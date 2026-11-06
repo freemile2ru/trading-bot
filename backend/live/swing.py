@@ -29,7 +29,7 @@ from live import control
 from live import config as LC
 from live.binance import BinanceError, client_id, summarize_fills
 from storage.db import SWING_DB
-from trading import exits
+from trading import coin_lock, exits
 from trading.paper_trader import PaperWallet, _new_trade, _refresh, _set_leverage, _sign, _validate_levels, main_wallet
 
 logger = logging.getLogger("live.swing")
@@ -195,6 +195,7 @@ class LiveWallet(PaperWallet):
         trade.update(exit_trigger_price=exit_price, closed_at=_now_iso(), status="closed", close_reason=reason)
         state["closed"].append(trade)
         state["balance"] = round(state["balance"] + trade["pnl_usd"], 2)
+        coin_lock.record_stop_out(self.label, trade)
         # The exchange balance already holds trims booked earlier; mirror it rather than let the
         # ledger count them twice until the next sync (the daily-loss guard reads this balance).
         self._sync_balance(state)

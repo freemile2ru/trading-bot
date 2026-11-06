@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from storage.db import SWING_DB, connect
-from trading import exits, futures, trade_alerts
+from trading import coin_lock, exits, futures, trade_alerts
 
 logger = logging.getLogger("trading.paper_trader")
 
@@ -585,6 +585,7 @@ class PaperWallet:
         state["closed"].append(trade)
         state["balance"] = round(state["balance"] + trade["pnl_usd"], 2)
         trade_alerts.closed(self.label, trade)
+        coin_lock.record_stop_out(self.label, trade)
         return trade
 
     # ── Funding ──────────────────────────────────────────────────────────────

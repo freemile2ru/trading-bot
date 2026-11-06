@@ -135,3 +135,44 @@ def test_leaderboard_parsing(monkeypatch):
     rows = asyncio.run(cc.leaderboard("90D", "ROI"))
     assert rows[0]["id"] == "123" and rows[0]["roi"] == 150.5 and rows[0]["copiers"] == 400 and rows[0]["tradfi"] and rows[0]["api"]
     assert rows[0]["curve"] == [(1790000000.0, 0.0), (1790086400.0, 1.5)]
+
+
+def test_a_leader_is_not_copied_into_a_side_just_stopped_out_elsewhere(tmp_path, monkeypatch):
+    """ZEC, 2026-11-06 14:42 UTC: two minutes after the auto ledger's short was stopped out by a spike, a Lighter leader
+    shorted ZEC at the spike's top and the copy book followed. The skip is recorded like any other, so it is judged."""
+    from experiments import books
+    from trading import book_switches, coin_lock, monitor
+    from trading.paper_trader import PaperWallet
+    w = PaperWallet(str(tmp_path / "c.db"), label="copy_trading", initial_balance=10_000)
+    monkeypatch.setitem(books.WALLETS, "copy_trading", w)
+    monkeypatch.setattr(books, "ENABLED", True)
+    monkeypatch.setattr(book_switches, "enabled", lambda name: True)
+    monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    monkeypatch.setattr(ct, "VARIANTS", {"base": ct.VARIANTS["base"]})
+    monkeypatch.setattr(ct, "ALL_BOOKS", {(m, "base"): ct.BOOKS_BY_MARKET[m] for m in ct.MARKETS})
+    for k in ("leaders", "skipped"):
+        kv.delete_sync(ct._k(k))
+    kv.delete_sync(ct._k("seen", "L1"))
+    kv.set_sync(ct._k("leaders"), {"at": NOW, "leaders": [{"id": "L1", "nickname": "x", "nickname_en": "Leader One",
+                                                           "profile": {"median_hold_h": 24.0, "win_move_pct": 2.0, "loss_move_pct": 1.0}}]})
+    rows = [{"position_id": "p1", "symbol": "ZECUSDT", "side": "short", "opened_ts": NOW - 60, "closed_ts": None, "entry": 1374.0,
+             "close_price": None, "pnl": 0.0, "roi": 0.0, "leverage": 6.0, "qty": 2.0, "closed_qty": 0.0, "remaining": 1.0, "status": "Open"}]
+
+    async def positions(pid, pages=1):
+        return rows
+
+    async def live_price(sym):
+        return 1372.0
+    monkeypatch.setattr(cc, "positions", positions)
+    monkeypatch.setattr(monitor, "live_price", live_price)
+    coin_lock.record_stop_out("auto", {"symbol": "ZECUSDT", "direction": "short", "close_reason": "stop_loss", "current_price": 1382.0, "pnl_usd": -546.0})
+    try:
+        assert asyncio.run(ct.mirror(NOW))["opened"] == []
+        sk = ct.skipped()
+        assert len(sk) == 1 and sk[0]["symbol"] == "ZECUSDT" and "stopped out on auto" in sk[0]["reason"]
+        assert w.get_portfolio()["open_trades"] == []
+    finally:
+        kv.delete_sync(coin_lock._stop_key("ZECUSDT", "short"))
+        for k in ("leaders", "skipped"):
+            kv.delete_sync(ct._k(k))
+        kv.delete_sync(ct._k("seen", "L1"))
