@@ -31,6 +31,7 @@ export const SYSTEM_COLOR: Record<SystemKey, string> = {
   copy_stocks: '#2fb3c9', copy_futures: '#2fb3c9',
   weekly_rs: '#2bb3a3',
   cascade: '#d65a8c',
+  burst_up: '#c04bd6', burst_dip: '#c04bd6',
   carry_q: '#c9a227',
   // Carry shares Claude swing's slot, told apart by its dash pattern.
   carry: '#e66767',

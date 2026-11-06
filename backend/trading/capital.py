@@ -42,7 +42,7 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "185500"))      # $50k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01)
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "195500"))      # $50k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06)
 TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "200"))    # $200/day since 2026-10-29 (0.4% of the $50k a day)
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
@@ -50,7 +50,10 @@ PLAN: dict[str, float] = {
     "unlocks": 4_000.0, "vol_premium": 3_000.0,
     "auto": 50_000.0, "copy_trading": 32_750.0, "copy_stocks": 32_750.0,
     "weekly_rs": 1_000.0, "multi_factor": 1_000.0, "cascade": 500.0, "main": 1_000.0, "auction": 30_000.0,
+    "burst_up": 5_000.0, "burst_dip": 5_000.0,
 }
+# 2026-11-06: the two burst books join at $5,000 each (new money) — the spike lab's post-hoc rules on a forward test;
+# local only until a verdict.
 # 2026-11-02 (consolidation, the user's call after the first full review): claude_swing retired (12 trades, −0.16R,
 # 24 days) — its $500 parked in main; the nine $611.11 copy-variant wallets folded into the three market books
 # (+$1,833.33 each) so the variants are judged as rules on one wallet instead of nine books with 0–15 trades each.

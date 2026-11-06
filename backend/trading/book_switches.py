@@ -127,6 +127,16 @@ BOOKS = [
                     "BTC implied vol ran 3 points above realised on 69% of days; the condor made ≈ +1.8% of notional a month. "
                     "The premium thinned in the second year, hence a paper test.",
      "off_means": "No new structures; open ones run to their expiry (the loss is capped by the wings)."},
+    {"name": "burst_up", "label": "Burst · ride the up-burst (+15m, 4h)", "kind": "experiment",
+     "description": "After a ≥5% five-minute up-burst (≥4σ, 3× volume) on one of the 40 most-traded crypto perps, long 15 minutes "
+                    "later for 4 hours with a 15% disaster stop. The spike lab's post-hoc line (+165 bps a trade, negative median: "
+                    "a few runners carry it) — a forward test from 2026-11-06, judged on its own 40 trades.",
+     "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
+    {"name": "burst_dip", "label": "Burst · buy the dip (+60m, 4h)", "kind": "experiment",
+     "description": "After a ≥5% five-minute down-burst (same filter), long 60 minutes later for 4 hours with a 15% disaster stop. "
+                    "The spike lab's healthiest line (+112 bps a trade, median +44, both halves positive) and the cascade book's rule "
+                    "on a wider universe — a forward test from 2026-11-06, judged on its own 40 trades.",
+     "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
     {"name": "fade24", "label": "Fade the scanner (24h vs BTC)", "kind": "experiment",
      "description": "Trades AGAINST strong scanner conviction (|conviction| ≥ 0.30) for 24h, hedged with an opposite "
                     "BTC position. Since 2026-10-24: conviction has pointed the wrong way for weeks (IC −0.26 at 24h); "
@@ -205,7 +215,7 @@ def unavailable(name: str) -> str | None:
     """Why a book can't be switched at all (not promoted to this instance, or turned off in .env), or None."""
     if not promoted(name):
         return NOT_PROMOTED
-    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction") or name.startswith("copy_"):
+    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:
             return "EXPERIMENTS_ENABLED=false in .env"

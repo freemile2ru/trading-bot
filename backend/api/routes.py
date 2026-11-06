@@ -370,7 +370,7 @@ async def trade_history(
 
 
 # Every system the Trades page can filter on — the trading books and the Lab's experiment books.
-SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|(stocks|futures)_(trend|rules|claude))$"
+SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|burst_up|burst_dip|(stocks|futures)_(trend|rules|claude))$"
 
 
 @router.get("/trades/all")

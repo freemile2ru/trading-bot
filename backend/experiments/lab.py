@@ -43,6 +43,14 @@ DESCRIPTIONS = {
                     "same rules as the crypto copy book. Judged on its own 40 trades.",
     **{f"copy_{m}_{v}": f"Copy trading on {ml}, variant '{v}' (since 2026-10-30): {d}. Same exits and stop as the base book; judged on its own 40 trades."
        for m, ml in (("crypto", "crypto perps"), ("stocks", "stock perps"), ("futures", "commodity perps")) for v, d in _COPY_VARIANT_DESC.items()},
+    "burst_up": "After a ≥5% five-minute UP-burst (≥4σ of the day's 5-minute moves, on 3× volume) on one of the 40 most-traded "
+                "crypto perps: long 15 minutes later, held 4 hours, a 15% disaster stop only. research/spike_lab.py (45 days, "
+                "219 such bursts): +165 bps a trade after costs but a −42 bps median and 48% winners — a few runners carry it. "
+                "Chosen after looking at that data, so a forward test from 2026-11-06, judged on its own 40 trades.",
+    "burst_dip": "After a ≥5% five-minute DOWN-burst (same filter): long 60 minutes later, held 4 hours, a 15% disaster stop only. "
+                 "The lab's healthiest line (+112 bps a trade, median +44, 54% winners, both halves positive) and the cascade book's "
+                 "rule on a wider, price-triggered universe. Chosen after looking at the data, so a forward test from 2026-11-06, "
+                 "judged on its own 40 trades.",
     "auction": "The mentor's NQ auction-level system on QQQ, NVDA, TSLA and AMD perps, 5-minute bars, New York session: accept beyond a "
                "session level, confirm, enter, stop under the acceptance bar, target the next level ≥ 50 bps away, grade ≥ 7 only, no trade "
                "near a macro release or earnings. Replay (research/auction_lab.py): −0.13% a trade at our costs — a forward test the user asked "

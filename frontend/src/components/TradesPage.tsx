@@ -32,6 +32,8 @@ const SYSTEM_TONE: Record<SystemKey, string> = {
   events: 'bg-orange-950/60 text-orange-300 border-orange-800 border-dashed',
   weekly_rs: 'bg-teal-950/60 text-teal-300 border-teal-800 border-dashed',
   cascade: 'bg-pink-950/60 text-pink-300 border-pink-800 border-dashed',
+  burst_up: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-800 border-dashed',
+  burst_dip: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-800 border-dashed',
   carry_q: 'bg-yellow-950/60 text-yellow-300 border-yellow-800 border-dashed',
   unlocks: 'bg-red-950/60 text-red-300 border-red-800 border-dashed',
   vol_premium: 'bg-indigo-950/60 text-indigo-300 border-indigo-800 border-dashed',

@@ -14,7 +14,7 @@ from trading import book_switches
 LABEL = "Crypto"
 # The crypto books with a paper wallet, in display order; the pair-ledger books (carry, events, unlocks, vol premium)
 # have their own panels on the Lab tab.
-BOOKS = ("auto", "main", "claude_swing", "weekly_rs", "cascade", "multi_factor", "copy_trading")
+BOOKS = ("auto", "main", "claude_swing", "weekly_rs", "cascade", "multi_factor", "copy_trading", "burst_up", "burst_dip")
 
 
 def _wallet(name: str):
