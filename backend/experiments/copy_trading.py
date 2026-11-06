@@ -60,6 +60,20 @@ LEADER_PROBATION_DAYS after their last copy closed; a venue with VENUE_MEASURE_N
 copied at VENUE_MEASURE_X size until its record turns. Review rule, set the same day: stops, consensus and the
 variants stay as they are until the crypto book has 40 closed copies under the 2026-11-04 sizing.
 
+Sized by pattern (2026-11-06, the user's call after prod's first eight copies, overriding the 40-copy review rule): the
+eight split along lines the larger samples had already shown — four of five winners were shorts, both big losers
+followed 15–20× leaders, no loser ever reached +0.25R, and one Lighter leader's ZEC shorts were the whole result. So:
+  cap       a position whose leader runs above MAX_LEADER_LEVERAGE is not copied; one leader never has more than
+            MAX_PER_LEADER copies open across the copy books
+  pattern   our own record, the last RECORD_N closed copies per cell, sizes a copy once a cell has PATTERN_N copies:
+            the side (long/short), the leader's leverage bucket (≤10× / >10×) and the leader each multiply the leg by
+            PATTERN_UP when their average R is above zero and PATTERN_DOWN when it is not (the leader's losing cell is
+            probation, a block); the product is bounded and the leg never exceeds the MAX_LEG_PCT cap
+  week      the leader's OWN closes this week, as their feed reports them (every closed position we see, kept
+            WEEK_DAYS days): WEEK_N or more closes winning ≥ 60% with a positive sum → PATTERN_UP; a losing sum or
+            ≤ 40% winners → PATTERN_DOWN; fewer closes or a mixed week → 1. A thin start: on-chain leaders' closes are
+            only seen from the moment we track them
+
 Variants (2026-10-30): after two days with nothing copied — every position the leaders held pre-dated tracking or
 was past a quarter of their hold — three alternatives run beside the base rule in every market. They had a $611
 wallet each until 2026-11-02; since then every rule of a market trades in that market's one book and is judged by
@@ -112,6 +126,12 @@ LEADER_PROBATION_DAYS = float(os.getenv("COPY_LEADER_PROBATION_DAYS", "7"))   # 
 VENUE_MEASURE_N = int(os.getenv("COPY_VENUE_MEASURE_N", "10"))           # a venue with this many closed copies and average R ≤ 0 copies at…
 VENUE_MEASURE_X = float(os.getenv("COPY_VENUE_MEASURE_X", "0.25"))       # …this fraction of size until its record turns
 RECORD_N = 20                                                             # the record is the last this-many closed copies
+MAX_LEADER_LEVERAGE = float(os.getenv("COPY_MAX_LEADER_LEVERAGE", "10"))   # 2026-11-06: the 15× and 20× leaders were prod's two big losers
+MAX_PER_LEADER = int(os.getenv("COPY_MAX_PER_LEADER", "2"))               # open copies of one leader across the copy books
+PATTERN_N = int(os.getenv("COPY_PATTERN_N", "8"))                         # a cell sizes once it has this many closed copies
+PATTERN_UP, PATTERN_DOWN = 1.25, 0.5                                      # a cell with average R > 0 / ≤ 0
+PATTERN_X_RANGE = (0.25, 2.0)
+WEEK_N, WEEK_DAYS = 3, 7.0                                                # the leader's own week: closes needed, and how long a close counts
 MAX_LEVERAGE = int(os.getenv("COPY_MAX_LEVERAGE", "10"))          # 10× cap since 2026-10-29 (was 5)
 MAX_OPEN = int(os.getenv("COPY_MAX_OPEN", "6"))                   # 6 since 2026-11-01 (was 12): at 2% risk a copy, six copies put 12% of the book at risk
 LATE_AGE_FRAC, LATE_MOVE_FRAC, ADVERSE_FRAC = 0.25, 0.5, 1.0
@@ -806,17 +826,23 @@ def day_loss(portfolio: dict, now: float) -> float:
     return max(0.0, -pnl)
 
 
+def leverage_bucket(leverage: float | None) -> str:
+    return f"≤{MAX_LEADER_LEVERAGE:g}x" if (leverage or 1) <= MAX_LEADER_LEVERAGE else f">{MAX_LEADER_LEVERAGE:g}x"
+
+
 def records() -> dict:
-    """The record of every leader and venue we have copied: {"leaders": {id: {n, avg_r, last_closed}}, "venues": {venue: {n, avg_r}}},
-    each over its last RECORD_N closed copies across the copy books, R on the stop's distance."""
+    """The record of every leader, venue, side and leader-leverage bucket we have copied: {"leaders": {id: {n, avg_r,
+    last_closed}}, "venues": {...}, "sides": {...}, "leverage": {...}}, each over its last RECORD_N closed copies across
+    the copy books, R on the stop's distance."""
     closed = [t for w in _unique_wallets() for t in w.all_trades()["closed"] if t.get("leader_id") and t.get("risk_usd")]
     closed.sort(key=lambda t: _ts(t.get("closed_at")) if t.get("closed_at") else 0)
-    out = {"leaders": {}, "venues": {}}
-    for key, field in (("leaders", "leader_id"), ("venues", "venue")):
+    out = {"leaders": {}, "venues": {}, "sides": {}, "leverage": {}}
+    for key, field in (("leaders", lambda t: t.get("leader_id")), ("venues", lambda t: t.get("venue")), ("sides", lambda t: t.get("direction")),
+                       ("leverage", lambda t: leverage_bucket(t.get("leader_leverage")))):
         groups: dict[str, list] = {}
         for t in closed:
-            if t.get(field):
-                groups.setdefault(t[field], []).append(t)
+            if field(t):
+                groups.setdefault(field(t), []).append(t)
         for k, ts in groups.items():
             ts = ts[-RECORD_N:]
             rs = [t["pnl_usd"] / t["risk_usd"] for t in ts]
@@ -843,6 +869,76 @@ def venue_multiplier(rec: dict, venue: str | None) -> tuple[float, str]:
     if r and r["n"] >= VENUE_MEASURE_N and r["avg_r"] <= 0:
         return VENUE_MEASURE_X, f"{venue} at measuring size: {r['avg_r']:+.2f}R over its last {r['n']} copies"
     return 1.0, f"{venue}: {r['avg_r']:+.2f}R over {r['n']} copies" if r else f"{venue}: no record yet"
+
+
+def pattern_multiplier(rec: dict, side: str, leader_leverage: float | None, leader_id: str) -> tuple[float, str]:
+    """The size multiplier from our own record: the side's cell, the leader-leverage bucket's cell and the leader's cell
+    each PATTERN_UP (average R > 0) or PATTERN_DOWN (≤ 0) once they hold PATTERN_N copies; the product, bounded."""
+    x, why = 1.0, []
+    for cell, label in (((rec.get("sides") or {}).get(side), f"{side}s"),
+                        ((rec.get("leverage") or {}).get(leverage_bucket(leader_leverage)), f"{leverage_bucket(leader_leverage)} leaders"),
+                        ((rec.get("leaders") or {}).get(leader_id), "this leader")):
+        if not cell or cell["n"] < PATTERN_N:
+            continue
+        if cell["avg_r"] > 0:
+            x *= PATTERN_UP
+            why.append(f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_UP:g}")
+        elif label != "this leader":                       # the leader's losing cell is probation (a block), not a size
+            x *= PATTERN_DOWN
+            why.append(f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_DOWN:g}")
+    x = min(max(x, PATTERN_X_RANGE[0]), PATTERN_X_RANGE[1])
+    return x, "; ".join(why) if why else f"no cell has {PATTERN_N} copies yet"
+
+
+def _week_key(leader_id: str) -> str:
+    return _k("week", leader_id)
+
+
+def note_close(leader_id: str, row: dict, now: float) -> None:
+    """A closed position in the leader's feed goes on their week: the move as a price % (ROE over leverage), kept WEEK_DAYS."""
+    if not row.get("closed_ts") or row.get("position_id") is None:
+        return
+    rows = [x for x in (kv.get_sync(_week_key(leader_id)) or []) if now - x["closed_ts"] <= WEEK_DAYS * 86400]
+    if any(x["pid"] == row["position_id"] for x in rows):
+        return
+    roi = float(row.get("roi") or 0.0)
+    lev = float(row.get("leverage") or 1.0) or 1.0
+    rows.append({"pid": row["position_id"], "closed_ts": float(row["closed_ts"]), "symbol": row.get("symbol"), "side": row.get("side"),
+                 "move_pct": round(roi / lev * 100, 3), "roi": round(roi, 4)})
+    kv.set_sync(_week_key(leader_id), rows[-100:], (WEEK_DAYS + 1) * 86400)
+
+
+def leader_week(leader_id: str, now: float) -> dict:
+    """The leader's own closes over the last WEEK_DAYS as their feed reported them: count, winners, sum of moves."""
+    rows = [x for x in (kv.get_sync(_week_key(leader_id)) or []) if now - x["closed_ts"] <= WEEK_DAYS * 86400]
+    wins = sum(1 for x in rows if x["move_pct"] > 0)
+    return {"n": len(rows), "wins": wins, "win_pct": round(100 * wins / len(rows), 0) if rows else None,
+            "sum_move_pct": round(sum(x["move_pct"] for x in rows), 2), "closes": rows[-10:]}
+
+
+def week_multiplier(leader_id: str, now: float) -> tuple[float, str]:
+    """PATTERN_UP on a strong week (WEEK_N+ closes, ≥ 60% winners, positive sum), PATTERN_DOWN on a losing one (a negative
+    sum or ≤ 40% winners), else 1."""
+    wk = leader_week(leader_id, now)
+    if wk["n"] < WEEK_N:
+        return 1.0, f"their week: {wk['n']} close(s) seen, under {WEEK_N}"
+    desc = f"their week: {wk['wins']}/{wk['n']} won, {wk['sum_move_pct']:+.1f}% summed"
+    if wk["win_pct"] >= 60 and wk["sum_move_pct"] > 0:
+        return PATTERN_UP, f"{desc} → ×{PATTERN_UP:g}"
+    if wk["sum_move_pct"] < 0 or wk["win_pct"] <= 40:
+        return PATTERN_DOWN, f"{desc} → ×{PATTERN_DOWN:g}"
+    return 1.0, desc
+
+
+def leader_room(leader_id: str, open_copies: list[dict]) -> str | None:
+    """Why another copy of this leader is refused: MAX_PER_LEADER of theirs already open across the copy books."""
+    n = sum(1 for t in open_copies if t.get("leader_id") == leader_id)
+    return f"leader already has {n} copies open (cap {MAX_PER_LEADER})" if n >= MAX_PER_LEADER else None
+
+
+def leverage_block(row: dict) -> str | None:
+    lev = row.get("leverage") or 0
+    return f"leader at {lev:g}× — above the {MAX_LEADER_LEVERAGE:g}× leader-leverage cap" if lev > MAX_LEADER_LEVERAGE else None
 
 
 def book_room(w, now: float) -> str | None:
@@ -902,6 +998,8 @@ async def mirror(now: float | None = None) -> dict:
         probation = leader_probation(rec, L["id"], now)
         for r in rows:
             all_rows[r["position_id"]] = {**r, "leader_id": L["id"]}
+            if r.get("closed_ts"):
+                note_close(L["id"], r, now)
         seen = _seen(L["id"])
         name = L.get("nickname_en") or L["nickname"]
         for r in rows:
@@ -915,7 +1013,8 @@ async def mirror(now: float | None = None) -> dict:
                 _record_skip(dict(ts=now, leader=name, venue=L.get("venue"), symbol=r["symbol"], side=r["side"], position_id=r["position_id"], variant="base",
                                   reason=f"{market} copies retired 2026-11-03 — no book takes commodity perps", mark=None))
                 continue
-            why_block = probation or coin_lock.recent_stop_out(r["symbol"], r["side"])
+            why_block = (probation or coin_lock.recent_stop_out(r["symbol"], r["side"]) or leverage_block(r)
+                         or leader_room(L["id"], [t for _, t in ours.values()] + opened))
             if market == "stocks" and not why_block:
                 from ops import calendar
                 why_block = calendar.earnings_block(r["symbol"])
@@ -959,17 +1058,22 @@ async def mirror(now: float | None = None) -> dict:
                 equity = w.get_portfolio()["total_equity"]
                 size_x *= CONSENSUS_X if n_agree >= 2 else 1.0
                 venue_x, venue_why = venue_multiplier(rec, L.get("venue"))
-                size_x *= venue_x
+                pattern_x, pattern_why = pattern_multiplier(rec, r["side"], r.get("leverage"), L["id"])
+                week_x, week_why = week_multiplier(L["id"], now)
+                size_x *= venue_x * pattern_x * week_x
                 stop = stop_pct(L.get("profile"))
+                cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
+                notional = min(leg_notional(equity, stop, market) * size_x, equity * cap / 100)       # sized up, never past the cap
                 t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * stop / 100),
-                                 take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=leg_notional(equity, stop, market) * size_x,
+                                 take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=notional,
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
                                  extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
                                         "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
                                         "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,
-                                        "venue_x": venue_x, "venue_why": venue_why})
+                                        "venue_x": venue_x, "venue_why": venue_why, "pattern_x": pattern_x, "pattern_why": pattern_why,
+                                        "week_x": week_x, "week_why": week_why})
                 if t.get("error"):
                     logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])
                 else:
@@ -1126,7 +1230,9 @@ def status() -> dict:
     return {"leaders": [{**{k: L.get(k) for k in ("id", "venue", "nickname", "nickname_en", "roi", "mdd", "win_rate", "copiers", "aum", "copier_pnl",
                                                     "score", "days_running", "leverage_tier", "badge", "profile", "stats", "curve", "turnover", "retired", "markets")},
                          "variants": variants_of(L["id"], follows), "positions": by_leader.get(L["id"], []),
-                         "record": rec["leaders"].get(L["id"]), "probation": leader_probation(rec, L["id"], now_)} for L in leaders_to_poll()],
+                         "record": rec["leaders"].get(L["id"]), "probation": leader_probation(rec, L["id"], now_),
+                         "week": leader_week(L["id"], now_), "week_x": week_multiplier(L["id"], now_)[0]} for L in leaders_to_poll()],
+            "records": {"sides": rec["sides"], "leverage": rec["leverage"], "venues": rec["venues"]},
             "variants": variants, "variant_info": {v: {"label": d["label"], "note": d["note"]} for v, d in VARIANTS.items()},
             "pool": len(pool()),
             "positions_at": snap.get("at"),
@@ -1195,7 +1301,8 @@ def _why_not(by_leader: dict, open_: list[dict]) -> dict:
 
 
 def config() -> dict:
-    return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
+    return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "max_leader_leverage": MAX_LEADER_LEVERAGE, "max_per_leader": MAX_PER_LEADER, "pattern_n": PATTERN_N,
+            "pattern_up": PATTERN_UP, "pattern_down": PATTERN_DOWN, "week_n": WEEK_N, "week_days": WEEK_DAYS, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
             "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT,
             "leader_probation_n": LEADER_PROBATION_N, "leader_probation_days": LEADER_PROBATION_DAYS, "venue_measure_n": VENUE_MEASURE_N, "venue_measure_x": VENUE_MEASURE_X, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
             "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X,

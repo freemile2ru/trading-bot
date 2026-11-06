@@ -79,7 +79,7 @@ def test_mirror_enters_follows_and_exits(tmp_path, monkeypatch):
     feed = {"rows": [{"position_id": "p1", "symbol": "ETHUSDT", "side": "long", "opened_ts": NOW - 1800, "closed_ts": None, "entry": 3000.0,
                       "close_price": None, "pnl": 0.0, "roi": 0.0, "leverage": 10.0, "qty": 2.0, "closed_qty": 0.0, "remaining": 1.0, "status": "Open"},
                      {"position_id": "p2", "symbol": "SOLUSDT", "side": "short", "opened_ts": NOW - 1800, "closed_ts": None, "entry": 200.0,
-                      "close_price": None, "pnl": 0.0, "roi": 0.0, "leverage": 20.0, "qty": 10.0, "closed_qty": 0.0, "remaining": 1.0, "status": "Open"}]}
+                      "close_price": None, "pnl": 0.0, "roi": 0.0, "leverage": 10.0, "qty": 10.0, "closed_qty": 0.0, "remaining": 1.0, "status": "Open"}]}   # 10×: inside the leader-leverage cap, so the too-late rule is what skips it
     prices = {"ETHUSDT": 3005.0, "SOLUSDT": 196.0}        # SOL already −2% in the leader's favour: too late
 
     async def positions(pid, pages=1):
@@ -173,6 +173,100 @@ def test_a_leader_is_not_copied_into_a_side_just_stopped_out_elsewhere(tmp_path,
         assert w.get_portfolio()["open_trades"] == []
     finally:
         kv.delete_sync(coin_lock._stop_key("ZECUSDT", "short"))
+        for k in ("leaders", "skipped"):
+            kv.delete_sync(ct._k(k))
+        kv.delete_sync(ct._k("seen", "L1"))
+
+
+def _closed_copy(w, side, leader, lev, win):
+    s = 1 if side == "long" else -1
+    t = w.open_trade(symbol="ETHUSDT", direction=side, entry_price=100.0, stop_loss=100.0 * (1 - s * 0.02), take_profit_1=150.0, take_profit_2=160.0,
+                     notional_usd=1_000.0, timeframe="copy", leverage=5,
+                     extra={"strategy": "copy_trading", "leader_id": leader, "venue": "lighter", "leader_leverage": lev, "exit_policy": "manual", "shadows": False})
+    w.close_trade_manually(t["id"], 100.0 * (1 + s * (0.03 if win else -0.02)), "leader_closed")
+
+
+def test_our_record_sizes_copies_by_side_leverage_bucket_and_leader(tmp_path, monkeypatch):
+    """Prod's first eight copies (2026-11-06): shorts won, the 15–20× leaders lost. Each cell sizes once it has PATTERN_N copies."""
+    from trading.paper_trader import PaperWallet
+    w = PaperWallet(str(tmp_path / "r.db"), label="copy_trading", initial_balance=10_000)
+    monkeypatch.setattr(ct, "_unique_wallets", lambda: [w])
+    for _ in range(ct.PATTERN_N):
+        _closed_copy(w, "short", "L1", 5.0, True)
+        _closed_copy(w, "long", "L2", 20.0, False)
+    rec = ct.records()
+    assert rec["sides"]["short"]["avg_r"] > 0 > rec["sides"]["long"]["avg_r"] and rec["sides"]["short"]["n"] == ct.PATTERN_N
+    assert rec["leverage"]["≤10x"]["avg_r"] > 0 > rec["leverage"][">10x"]["avg_r"]
+    x, why = ct.pattern_multiplier(rec, "short", 5.0, "L1")
+    assert x == pytest.approx(min(ct.PATTERN_UP ** 3, ct.PATTERN_X_RANGE[1])) and "shorts" in why and "this leader" in why
+    x, why = ct.pattern_multiplier(rec, "long", 20.0, "L2")
+    assert x == pytest.approx(ct.PATTERN_DOWN ** 2) and "this leader" not in why          # the leader's losing cell is probation, not a size
+    assert ct.pattern_multiplier(rec, "long", 5.0, "L9")[0] == pytest.approx(ct.PATTERN_DOWN * ct.PATTERN_UP)
+    assert ct.pattern_multiplier({"sides": {}, "leverage": {}, "leaders": {}}, "long", 5.0, "L9") == (1.0, f"no cell has {ct.PATTERN_N} copies yet")
+
+
+def test_a_leaders_own_week_sizes_their_copies():
+    kv.delete_sync(ct._week_key("LW"))
+    try:
+        assert ct.week_multiplier("LW", NOW)[0] == 1.0
+        for i, roi in enumerate((0.10, 0.05, -0.02)):                                       # ROE at 5×: +2%, +1%, −0.4% price moves
+            ct.note_close("LW", {"position_id": f"p{i}", "closed_ts": NOW - 3600 * (i + 1), "roi": roi, "leverage": 5.0, "symbol": "X", "side": "long"}, NOW)
+        ct.note_close("LW", {"position_id": "p0", "closed_ts": NOW - 3600, "roi": 0.10, "leverage": 5.0}, NOW)          # the same close twice: once
+        ct.note_close("LW", {"position_id": "old", "closed_ts": NOW - 8 * 86400, "roi": -0.5, "leverage": 5.0}, NOW)     # last week: off the week
+        wk = ct.leader_week("LW", NOW)
+        assert wk["n"] == 3 and wk["wins"] == 2 and wk["sum_move_pct"] == pytest.approx(2.6)
+        assert ct.week_multiplier("LW", NOW)[0] == ct.PATTERN_UP
+        for i in range(3):
+            ct.note_close("LW", {"position_id": f"l{i}", "closed_ts": NOW - 60 * (i + 1), "roi": -0.25, "leverage": 5.0}, NOW)
+        x, why = ct.week_multiplier("LW", NOW)                                              # 2 of 6 won, the sum negative
+        assert x == ct.PATTERN_DOWN and "2/6 won" in why
+    finally:
+        kv.delete_sync(ct._week_key("LW"))
+
+
+def _feed_book(tmp_path, monkeypatch, rows, prices):
+    from experiments import books
+    from trading import book_switches, monitor
+    from trading.paper_trader import PaperWallet
+    w = PaperWallet(str(tmp_path / "c.db"), label="copy_trading", initial_balance=10_000)
+    monkeypatch.setitem(books.WALLETS, "copy_trading", w)
+    monkeypatch.setattr(books, "ENABLED", True)
+    monkeypatch.setattr(book_switches, "enabled", lambda name: True)
+    monkeypatch.setattr(ct, "LOG_DB", str(tmp_path / "log.db"))
+    monkeypatch.setattr(ct, "VARIANTS", {"base": ct.VARIANTS["base"]})
+    monkeypatch.setattr(ct, "ALL_BOOKS", {(m, "base"): ct.BOOKS_BY_MARKET[m] for m in ct.MARKETS})
+    for k in ("leaders", "skipped"):
+        kv.delete_sync(ct._k(k))
+    kv.delete_sync(ct._k("seen", "L1"))
+    kv.set_sync(ct._k("leaders"), {"at": NOW, "leaders": [{"id": "L1", "nickname": "x", "nickname_en": "Leader One",
+                                                           "profile": {"median_hold_h": 24.0, "win_move_pct": 2.0, "loss_move_pct": 1.0}}]})
+
+    async def positions(pid, pages=1):
+        return rows
+
+    async def live_price(sym):
+        return prices[sym]
+    monkeypatch.setattr(cc, "positions", positions)
+    monkeypatch.setattr(monitor, "live_price", live_price)
+    return w
+
+
+def _row(pid, sym, lev):
+    return {"position_id": pid, "symbol": sym, "side": "long", "opened_ts": NOW - 60, "closed_ts": None, "entry": 100.0, "close_price": None,
+            "pnl": 0.0, "roi": 0.0, "leverage": lev, "qty": 1.0, "closed_qty": 0.0, "remaining": 1.0, "status": "Open"}
+
+
+def test_high_leverage_leaders_are_not_copied_and_one_leader_holds_at_most_two_copies(tmp_path, monkeypatch):
+    rows = [_row("p1", "ETHUSDT", 20.0), _row("p2", "SOLUSDT", 5.0), _row("p3", "BTCUSDT", 5.0), _row("p4", "XRPUSDT", 5.0)]
+    w = _feed_book(tmp_path, monkeypatch, rows, {s: 100.0 for s in ("ETHUSDT", "SOLUSDT", "BTCUSDT", "XRPUSDT")})
+    try:
+        out = asyncio.run(ct.mirror(NOW))
+        assert sorted(t["symbol"] for t in out["opened"]) == ["BTCUSDT", "SOLUSDT"]
+        sk = {e["symbol"]: e["reason"] for e in ct.skipped()}
+        assert "above the 10× leader-leverage cap" in sk["ETHUSDT"] and "leader already has 2 copies open" in sk["XRPUSDT"]
+        t = out["opened"][0]
+        assert t["pattern_x"] == 1.0 and t["week_x"] == 1.0 and t["notional_usd"] <= 10_000 * ct.MAX_LEG_PCT / 100 + 1
+    finally:
         for k in ("leaders", "skipped"):
             kv.delete_sync(ct._k(k))
         kv.delete_sync(ct._k("seen", "L1"))
