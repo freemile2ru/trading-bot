@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from storage.db import SWING_DB, connect
-from trading import exits, futures
+from trading import exits, futures, trade_alerts
 
 logger = logging.getLogger("trading.paper_trader")
 
@@ -430,6 +430,7 @@ class PaperWallet:
                                  f"free ${self._free_margin(state):.2f}"}
             state["open"].append(trade)
             state.setdefault("shadows", []).extend(exits.make_shadows(trade, self.label))
+            trade_alerts.opened(self.label, trade)
             self._snapshot_equity(state, force=True)
             self._save(state)
             return trade
@@ -583,6 +584,7 @@ class PaperWallet:
         trade = _close_trade(trade, price, reason)
         state["closed"].append(trade)
         state["balance"] = round(state["balance"] + trade["pnl_usd"], 2)
+        trade_alerts.closed(self.label, trade)
         return trade
 
     # ── Funding ──────────────────────────────────────────────────────────────
@@ -730,6 +732,7 @@ class PaperWallet:
         )
         state["open"].append(trade)
         state.setdefault("shadows", []).extend(exits.make_shadows(trade, self.label))
+        trade_alerts.opened(self.label, trade)
         order["trade_id"] = trade["id"]
         order["fill_price"] = price
         self._retire_order(state, order, "filled", "filled")
@@ -910,6 +913,7 @@ class PaperWallet:
                 part = _close_trade(part, price, reason)
                 state["closed"].append(part)
                 state["balance"] = round(state["balance"] + part["pnl_usd"], 2)
+                trade_alerts.closed(self.label, part)
                 trade["quantity"] = round(trade["quantity"] * (1 - frac), 8)
                 for k in shared:
                     trade[k] = round((trade.get(k) or 0.0) * (1 - frac), 4)
