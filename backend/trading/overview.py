@@ -56,7 +56,7 @@ RETIRED_SYSTEMS = {"scalper": "order-flow scalper, retired 2026-09-29", "scalper
                    "claude_swing": "Claude swing, retired 2026-11-02", "copy_futures": "copy trading · commodity perps, retired 2026-11-03",
                    **{f"copy_{m}_{v}": f"copy variant wallet, folded into the {m} copy book 2026-11-02" for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")}}
 SORTABLE = {"closed_ts", "opened_ts", "net_pnl", "gross_pnl", "r", "hold_min", "symbol", "notional",
-            "system", "direction", "exit_reason", "entry_price", "exit_price", "outcome", "costs", "leverage"}
+            "system", "direction", "exit_reason", "entry_price", "exit_price", "outcome", "costs", "leverage", "margin"}
 
 
 def _ts(iso) -> float | None:

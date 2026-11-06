@@ -234,6 +234,7 @@ export function TradesPage() {
     { key: 'hold', header: 'Held', sortKey: 'hold_min', align: 'right', render: t => fmtHold(t.hold_min) },
     { key: 'px', header: 'Entry → exit', sortKey: 'entry_price', align: 'right', render: t => <span className="text-gray-300">{fmtPrice(t.entry_price)} <span className="text-gray-600">→</span> {fmtPrice(t.exit_price)}</span> },
     { key: 'size', header: 'Notional', sortKey: 'notional', align: 'right', render: t => <span>{fmtUsd(t.notional, 0)}{t.leverage && t.leverage > 1 ? <span className="text-gray-500"> · {t.leverage}x</span> : null}</span> },
+    { key: 'margin', header: 'Margin', sortKey: 'margin', align: 'right', title: 'Collateral the position held (notional ÷ leverage)', render: t => <span className="text-gray-300">{t.margin == null ? '—' : fmtUsd(t.margin, 0)}</span> },
     { key: 'gross', header: 'Gross', sortKey: 'gross_pnl', align: 'right', title: 'Price move alone, before fees and funding', render: t => <Pnl v={t.gross_pnl} /> },
     { key: 'cost', header: 'Costs', sortKey: 'costs', align: 'right', title: 'Fees + funding paid', render: t => <span className="text-gray-400">{fmtUsd((t.fees ?? 0) + (t.funding ?? 0))}</span> },
     { key: 'net', header: 'Net', sortKey: 'net_pnl', align: 'right', render: t => <Pnl v={t.net_pnl} strong /> },
