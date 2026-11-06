@@ -60,11 +60,17 @@ def _final_status(client, sid: str, wait_s: float = 6.0) -> tuple[str, int | Non
         time.sleep(0.5)
 
 
-_slots: dict[str, int] = {}
+# The sandbox's pre-approved templates are not readable through the Content API (404), so their slot counts are known here.
+SANDBOX_TEMPLATES = {
+    "HXb5b62575e6e4ff6129ad7c8efe1f983e": 2,     # "Your appointment is coming up on {{1}} at {{2}}. If you need to change it, please reply back and let us know."
+    "HX350d429d32e64a552466cafecbe95f3c": 2,     # "Thank you for your order. Your delivery is scheduled for {{1}} at {{2}}. If you need to change it, please reply back…"
+    "HX229f5a04fd0510ce1b071852155d3e75": 1,     # "{{1}} is your verification code. For your security, do not share this code."
+}
+_slots: dict[str, int] = dict(SANDBOX_TEMPLATES)
 
 
 def template_slots(client, sid: str) -> int:
-    """How many {{n}} variables the content template has (read once from the Content API; 4 if it can't be read)."""
+    """How many {{n}} variables the content template has (the sandbox's known ones, else read once from the Content API; 4 if unreadable)."""
     if sid not in _slots:
         try:
             import re
