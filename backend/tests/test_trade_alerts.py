@@ -1,4 +1,5 @@
 """Trade alerts: every open and close on a wallet becomes one email and one text, bursts share a message."""
+import json
 import time
 
 import pytest
@@ -81,8 +82,20 @@ def test_compose_sums_a_red_minute():
 
 class _FakeTwilio:
     """A Twilio client that fails free-form sends outside the window and accepts templates."""
-    def __init__(self, window_open: bool):
+    def __init__(self, window_open: bool, template_text: str = "Your {{1}} order of {{2}} has shipped and should be delivered on {{3}}. Details: {{4}}"):
         self.window_open, self.sent, self._n = window_open, [], 0
+        text = template_text
+        class _Content:
+            class v1:
+                @staticmethod
+                def contents(sid):
+                    class C:
+                        @staticmethod
+                        def fetch():
+                            class T: types = {"twilio/text": {"body": text}}
+                            return T()
+                    return C()
+        self.content = _Content()
 
     class _Msg:
         def __init__(self, status, err): self.status, self.error_code = status, err
@@ -115,7 +128,15 @@ def test_whatsapp_falls_back_to_the_template_outside_the_window(monkeypatch):
     fake = _FakeTwilio(window_open=False)
     monkeypatch.setattr(n, "_twilio_client", lambda: fake)
     assert n.send_whatsapp("CLOSED · SHORT ZECUSDT +$310", title="Oracle prod", when="06 Nov 16:05 UTC") is True
-    assert len(fake.sent) == 2 and fake.sent[1]["content_sid"] == "HX123" and "ZECUSDT" in fake.sent[1]["content_variables"]
+    assert len(fake.sent) == 2 and fake.sent[1]["content_sid"] == "HX123"
+    vars4 = json.loads(fake.sent[1]["content_variables"])
+    assert vars4 == {"1": "Oracle prod", "2": "trade update", "3": "06 Nov 16:05 UTC", "4": "CLOSED · SHORT ZECUSDT +$310"}
+    # The two-slot appointment template (the sandbox page's sample): title in the first slot, the alert in the last.
+    n._slots.clear()
+    fake = _FakeTwilio(window_open=False, template_text="Your appointment is coming up on {{1}} at {{2}}")
+    monkeypatch.setattr(n, "_twilio_client", lambda: fake)
+    assert n.send_whatsapp("OPENED · LONG CCUSDT", title="Oracle prod", when="now") is True
+    assert json.loads(fake.sent[1]["content_variables"]) == {"1": "Oracle prod", "2": "OPENED · LONG CCUSDT"}
     monkeypatch.delenv("TWILIO_WHATSAPP_TEMPLATE_SID")
     fake = _FakeTwilio(window_open=False)
     monkeypatch.setattr(n, "_twilio_client", lambda: fake)

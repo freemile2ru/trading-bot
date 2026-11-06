@@ -4,10 +4,11 @@ watchdog (ops/watchdog.py) and the trade alerts (trading/trade_alerts.py: every 
 WhatsApp (2026-11-06) goes through Twilio's sandbox: the phone must have joined it (a "join <phrase>" text to the
 sandbox number from the Twilio console), and WhatsApp accepts a free-form message only within 24 hours of the phone's
 last message to the sandbox — outside that window Twilio fails it with error 63016, and only a pre-approved template
-is delivered. So a message is sent free-form first; if Twilio reports 63016, it goes again as the sandbox's
-"Your {{1}} order of {{2}} has shipped and should be delivered on {{3}}. Details: {{4}}" template (its content SID
-in TWILIO_WHATSAPP_TEMPLATE_SID), with the alert in the details slot. Any reply to the sandbox reopens 24 hours of
-plain messages.
+is delivered. So a message is sent free-form first; if Twilio reports 63016, it goes again as the sandbox template
+named by TWILIO_WHATSAPP_TEMPLATE_SID — any of the pre-approved ones: the template's body is read from Twilio's
+Content API to count its {{n}} slots, the alert goes in the last slot and the title and time fill the others
+("Your appointment is coming up on {{1}} at {{2}}" reads "…coming up on Oracle prod at CLOSED · SHORT ZEC +$310…").
+Any reply to the sandbox reopens 24 hours of plain messages.
 
 Email (2026-11-06, back after being removed as unreachable): SMTP_HOST, SMTP_PORT (465 = TLS from the start, anything
 else = STARTTLS), SMTP_USER, SMTP_PASSWORD, and NOTIFY_EMAIL for the recipient (the sender is SMTP_USER unless
@@ -59,6 +60,31 @@ def _final_status(client, sid: str, wait_s: float = 6.0) -> tuple[str, int | Non
         time.sleep(0.5)
 
 
+_slots: dict[str, int] = {}
+
+
+def template_slots(client, sid: str) -> int:
+    """How many {{n}} variables the content template has (read once from the Content API; 4 if it can't be read)."""
+    if sid not in _slots:
+        try:
+            import re
+            c = client.content.v1.contents(sid).fetch()
+            text = " ".join(str(v) for v in (c.types or {}).values())
+            _slots[sid] = max(int(n) for n in re.findall(r"{{\s*(\d+)\s*}}", text)) if "{{" in text else 1
+        except Exception as e:
+            _log.debug("content template %s unreadable (%s): assuming 4 slots", sid, e)
+            _slots[sid] = 4
+    return _slots[sid]
+
+
+def template_variables(slots: int, title: str, when: str, body: str) -> dict[str, str]:
+    """The alert in the last slot, the title and time in front of it."""
+    front = [title[:60], when or "now", "trade update"][:max(slots - 1, 0)]
+    if slots >= 4:
+        front = [title[:60], "trade update", when or "now"]
+    return {str(i + 1): v for i, v in enumerate(front + [body[:900]])}
+
+
 def send_whatsapp(body: str, title: str = "Crypto Oracle", when: str = "") -> bool:
     """A WhatsApp message through the sandbox; outside the 24-hour window, the same text inside the template."""
     if not whatsapp_configured():
@@ -80,7 +106,7 @@ def send_whatsapp(body: str, title: str = "Crypto Oracle", when: str = "") -> bo
             return False
         import json
         m = client.messages.create(from_=sender, to=to, content_sid=template,
-                                   content_variables=json.dumps({"1": title[:60], "2": "trade update", "3": when or "now", "4": body[:900]}))
+                                   content_variables=json.dumps(template_variables(template_slots(client, template), title, when, body)))
         status, err = _final_status(client, m.sid)
         ok = status not in ("failed", "undelivered")
         (_log.info if ok else _log.error)("WhatsApp template %s to %s (status %s%s)", "sent" if ok else "FAILED", to, status, f", error {err}" if err else "")
