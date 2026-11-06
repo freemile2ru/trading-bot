@@ -137,6 +137,11 @@ def test_whatsapp_falls_back_to_the_template_outside_the_window(monkeypatch):
     monkeypatch.setattr(n, "_twilio_client", lambda: fake)
     assert n.send_whatsapp("OPENED · LONG CCUSDT", title="Oracle prod", when="now") is True
     assert json.loads(fake.sent[1]["content_variables"]) == {"1": "Oracle prod", "2": "OPENED · LONG CCUSDT"}
+    n._slots.clear()
+    fake = _FakeTwilio(window_open=False, template_text="{{1}} is your verification code. For your security, do not share this code.")
+    monkeypatch.setattr(n, "_twilio_client", lambda: fake)
+    assert n.send_whatsapp("OPENED · LONG CCUSDT", title="Oracle prod") is True
+    assert json.loads(fake.sent[1]["content_variables"]) == {"1": "Oracle prod · OPENED · LONG CCUSDT"}
     monkeypatch.delenv("TWILIO_WHATSAPP_TEMPLATE_SID")
     fake = _FakeTwilio(window_open=False)
     monkeypatch.setattr(n, "_twilio_client", lambda: fake)

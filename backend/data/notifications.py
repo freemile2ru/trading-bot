@@ -79,7 +79,9 @@ def template_slots(client, sid: str) -> int:
 
 def template_variables(slots: int, title: str, when: str, body: str) -> dict[str, str]:
     """The alert in the last slot, the title and time in front of it."""
-    front = [title[:60], when or "now", "trade update"][:max(slots - 1, 0)]
+    if slots <= 1:                                   # "{{1}} is your verification code…": the whole alert, title first
+        return {"1": f"{title} · {body}"[:900]}
+    front = [title[:60], when or "now", "trade update"][:slots - 1]
     if slots >= 4:
         front = [title[:60], "trade update", when or "now"]
     return {str(i + 1): v for i, v in enumerate(front + [body[:900]])}
