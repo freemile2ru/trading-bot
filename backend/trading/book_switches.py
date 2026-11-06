@@ -121,7 +121,7 @@ BOOKS = [
                     "slide happens before the date (median −9% in the final two weeks, team/investor cliffs ≈ −25%). "
                     "No replay of our own — a forward test under the 40-trade verdict.",
      "off_means": "No new unlock shorts; open ones run to their unlock, the pair stop or the funding kill."},
-    {"name": "vol_premium", "label": "Vol premium (weekly BTC/ETH condors)", "kind": "experiment",
+    {"name": "vol_premium", "label": "Vol premium (weekly BTC/ETH/SOL condors)", "kind": "experiment",
      "description": "Sells a weekly iron condor on BTC and ETH (short the ±1σ strangle, long the ±2σ wings) off Deribit's "
                     "public quotes, sized so the worst case is 5% of equity, held to settlement. Two years of our data: "
                     "BTC implied vol ran 3 points above realised on 69% of days; the condor made ≈ +1.8% of notional a month. "

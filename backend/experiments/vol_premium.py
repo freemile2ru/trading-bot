@@ -1,9 +1,11 @@
-"""Volatility premium — sells a defined-risk weekly strangle on BTC and ETH, on paper, off Deribit's public quotes.
+"""Volatility premium — sells a defined-risk weekly strangle on BTC, ETH and SOL, on paper, off Deribit's public quotes.
 
 Why (2026-10-28, research/vrp_lab.py on two years of hourly spot + 30-day implied vol): BTC's implied vol ran
 3.1 points above the vol that then happened, on 69% of days; a 1σ strangle with 2σ wings made ≈ +1.8% of notional
 per 30 days (78% of periods positive, worst −12.8%). ETH was thinner (+0.5 points; strangle +1.5%). The premium
-shrank in the second year, so this is a paper test under the usual verdict, not a conviction.
+shrank in the second year, so this is a paper test under the usual verdict, not a conviction. SOL joined on
+2026-11-06 without a lab of its own (Deribit's SOL options are young), to bring the verdict forward: three
+structures a week instead of two, each coin judged on its own row.
 
 The trade (one structure per coin at a time, its own ledger — table `vol_premium` in swing_trading.db):
   when     no structure is open for the coin and a weekly expiry sits 5–9.5 days out (Fridays 08:00 UTC)
@@ -30,11 +32,11 @@ from trading import book_switches
 logger = logging.getLogger("experiments.vol_premium")
 
 BOOK = "vol_premium"
-LABEL = "Vol premium (weekly BTC/ETH condors)"
-COINS = os.getenv("VOL_PREMIUM_COINS", "BTC,ETH").split(",")
+LABEL = "Vol premium (weekly BTC/ETH/SOL condors)"
+COINS = os.getenv("VOL_PREMIUM_COINS", "BTC,ETH,SOL").split(",")
 RISK_PCT = float(os.getenv("VOL_PREMIUM_RISK_PCT", "15"))       # max loss per structure, % of equity (15% since 2026-10-29, was 5; one 0.1 BTC lot ≈ $400–500 worst case)
 SHORT_SIGMA, WING_SIGMA = 1.0, 2.0
-MIN_LOT = {"BTC": 0.1, "ETH": 1.0}
+MIN_LOT = {"BTC": 0.1, "ETH": 1.0, "SOL": 10.0}       # Deribit's minimum trade, in units of the coin (one SOL contract is 10 SOL)
 INITIAL_BALANCE = 10_000.0
 
 SCHEMA = """

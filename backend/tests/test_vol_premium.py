@@ -98,3 +98,54 @@ def test_open_mark_settle(tmp_path, monkeypatch):
     assert vp.rows()[0]["outcome"] == "win" and vp.rows()[0]["symbol"] == "BTCUSDT"
     assert json.loads(row["legs"])[0]["side"] == "sell"
     assert vp.balance() == pytest.approx(10_000 + row["net"])
+
+
+# ── Linear (USDC-settled) options: SOL (2026-11-06) ───────────────────────────
+
+def test_linear_sol_options_come_back_in_coin_units(monkeypatch):
+    """Deribit lists SOL under the USDC currency, quoted in dollars per SOL; the chain hands it back like BTC's."""
+    import data.http as http
+    calls = []
+
+    async def get_json(url, params=None, **kw):
+        calls.append(params)
+        return {"result": [
+            {"instrument_name": "SOL_USDC-13NOV26-80-P", "mark_price": 1.8, "bid_price": 1.7, "ask_price": 1.9, "mark_iv": 70.0,
+             "open_interest": 100.0, "underlying_price": 90.0},
+            {"instrument_name": "XRP_USDC-13NOV26-2-C", "mark_price": 0.1, "bid_price": 0.09, "ask_price": 0.11, "mark_iv": 80.0,
+             "open_interest": 5.0, "underlying_price": 2.0},
+            {"instrument_name": "SOL_USDC-13NOV26-100-C", "mark_price": 1.0, "bid_price": None, "ask_price": 1.1, "mark_iv": 72.0,
+             "open_interest": 10.0, "underlying_price": 90.0},
+        ]}
+    monkeypatch.setattr(http, "get_json", get_json)
+    rows = asyncio.run(dc.chain("SOL"))
+    assert calls[0]["currency"] == "USDC" and [r["name"] for r in rows] == ["SOL_USDC-13NOV26-80-P", "SOL_USDC-13NOV26-100-C"]
+    p = rows[0]
+    assert p["coin"] == "SOL" and p["strike"] == 80 and p["type"] == "put" and p["underlying"] == 90.0
+    assert p["mark"] == pytest.approx(1.8 / 90) and p["bid"] == pytest.approx(1.7 / 90) and p["ask"] == pytest.approx(1.9 / 90)
+    assert rows[1]["bid"] is None and rows[1]["ask"] == pytest.approx(1.1 / 90)
+    assert dc.index_name("SOL") == "sol_usdc" and dc.index_name("BTC") == "btc_usd"
+    assert dc.parse("SOL_USDC-6NOV26-70-C")["coin"] == "SOL" and dc.parse("SOL_USDC-6NOV26-70-C")["strike"] == 70
+
+
+def _sol_chain(s=90.0, iv=70.0, expiry=NOW + 7 * 86400):
+    """Strikes every $2 from 60 to 130, marks in coin units off the same crude decay as the BTC chain."""
+    rows = []
+    for k in range(60, 131, 2):
+        for kind in ("put", "call"):
+            dist = abs(k - s) / s
+            mark = max(0.0005, 0.045 * (1 - dist / 0.3)) if dist < 0.3 else 0.0005
+            name = f"SOL_USDC-13NOV26-{k}-{'C' if kind == 'call' else 'P'}"
+            rows.append({"coin": "SOL", "expiry_ts": expiry, "strike": float(k), "type": kind, "name": name, "mark": mark,
+                         "bid": mark * 0.95, "ask": mark * 1.05, "iv": iv, "oi": 1.0, "underlying": s})
+    return rows
+
+
+def test_sol_condor_sizes_in_ten_sol_lots():
+    d = vp.design(_sol_chain(), "SOL", NOW + 7 * 86400, NOW, 10_000)
+    assert d and d["coin"] == "SOL" and d["qty"] % 10 == 0 and d["qty"] >= 10
+    strikes = {(l["type"], l["side"]): l["strike"] for l in d["legs"]}
+    assert strikes[("put", "buy")] < strikes[("put", "sell")] < 90 < strikes[("call", "sell")] < strikes[("call", "buy")]
+    assert d["max_loss"] <= 10_000 * vp.RISK_PCT / 100 and d["credit"] > 0
+    assert vp.design(_sol_chain(), "SOL", NOW + 7 * 86400, NOW, 50) is None          # under one 10-SOL lot
+    assert "SOL" in vp.COINS and vp.MIN_LOT["SOL"] == 10.0

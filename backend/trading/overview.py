@@ -31,7 +31,7 @@ SYSTEMS["events"] = "Event shorts (listings & delistings)"
 SYSTEMS["carry_q"] = "Carry Q · quarterly basis"
 SYSTEMS["carry"] = "Carry · BTC, ETH & gold"
 SYSTEMS["unlocks"] = "Unlock shorts (cliff unlocks vs BTC)"
-SYSTEMS["vol_premium"] = "Vol premium (weekly BTC/ETH condors)"
+SYSTEMS["vol_premium"] = "Vol premium (weekly BTC/ETH/SOL condors)"
 from markets import engine as _markets                     # noqa: E402 — stocks / futures books
 SYSTEMS.update(_markets.LABELS)
 PAPER_SYSTEMS = ("main", "auto", "scalper", "impulse")
