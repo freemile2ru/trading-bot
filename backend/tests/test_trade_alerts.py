@@ -11,10 +11,11 @@ from trading.paper_trader import PaperWallet
 def sent(monkeypatch):
     """Capture what would be sent; the channels on; no waiting window."""
     from data import notifications
-    got = {"email": [], "sms": []}
+    got = {"email": [], "sms": [], "whatsapp": []}
     monkeypatch.setattr(notifications, "send_email", lambda subject, body: got["email"].append((subject, body)) or True)
     monkeypatch.setattr(notifications, "send_sms", lambda body: got["sms"].append(body) or True)
-    monkeypatch.setattr(ta, "CHANNELS", {"email", "sms"})
+    monkeypatch.setattr(notifications, "send_whatsapp", lambda body, title="", when="": got["whatsapp"].append((body, title, when)) or True)
+    monkeypatch.setattr(ta, "CHANNELS", {"email", "sms", "whatsapp"})
     monkeypatch.setattr(ta, "WINDOW", 0.3)
     return got
 
@@ -30,6 +31,8 @@ def test_an_open_and_a_close_each_send_an_email_and_a_text(tmp_path, sent):
     assert subject.startswith("[Oracle local] opened S ZECUSDT") and "OPENED" in body and "copy_trading" in body
     assert "SHORT ZECUSDT" in body and "stop 110" in body and "risk $100" in body and "why: leader 0x6e87 opened" in body
     assert "ZECUSDT" in sent["sms"][0] and "[Oracle" not in sent["sms"][0]
+    body, title, when = sent["whatsapp"][0]
+    assert body == sent["sms"][0] and title == "Oracle local" and when.endswith("UTC")
 
     w.close_trade_manually(t["id"], 95, "manual")
     ta.flush()
@@ -74,3 +77,46 @@ def test_compose_sums_a_red_minute():
     subject, body = ta.compose(evs)
     assert subject == "[Oracle local] closed L AUSDT −$100; closed L BUSDT −$50"
     assert "2 closed: −$150 net" in body and "(-1.00R)" in body and "held 2.0h" in body
+
+
+class _FakeTwilio:
+    """A Twilio client that fails free-form sends outside the window and accepts templates."""
+    def __init__(self, window_open: bool):
+        self.window_open, self.sent, self._n = window_open, [], 0
+
+    class _Msg:
+        def __init__(self, status, err): self.status, self.error_code = status, err
+        def fetch(self): return self
+
+    @property
+    def messages(self):
+        fake = self
+        class M:
+            def create(self, **kw):
+                fake.sent.append(kw); fake._n += 1
+                m = _FakeTwilio._Msg("delivered" if fake.window_open or kw.get("content_sid") else "failed",
+                                     None if fake.window_open or kw.get("content_sid") else 63016)
+                m.sid = f"SM{fake._n}"
+                return m
+            def __call__(self, sid):
+                return fake.sent and _FakeTwilio._Msg(*(("delivered", None) if fake.window_open or fake.sent[-1].get("content_sid") else ("failed", 63016)))
+        return M()
+
+
+def test_whatsapp_falls_back_to_the_template_outside_the_window(monkeypatch):
+    from data import notifications as n
+    for k, v in {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_AUTH_TOKEN": "t", "NOTIFY_PHONE": "+15550001111", "TWILIO_WHATSAPP_TEMPLATE_SID": "HX123"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("NOTIFY_WHATSAPP", raising=False)
+    fake = _FakeTwilio(window_open=True)
+    monkeypatch.setattr(n, "_twilio_client", lambda: fake)
+    assert n.send_whatsapp("OPENED · SHORT INJUSDT", title="Oracle prod", when="06 Nov 12:04 UTC") is True
+    assert len(fake.sent) == 1 and fake.sent[0]["from_"] == "whatsapp:+14155238886" and fake.sent[0]["to"] == "whatsapp:+15550001111"
+    fake = _FakeTwilio(window_open=False)
+    monkeypatch.setattr(n, "_twilio_client", lambda: fake)
+    assert n.send_whatsapp("CLOSED · SHORT ZECUSDT +$310", title="Oracle prod", when="06 Nov 16:05 UTC") is True
+    assert len(fake.sent) == 2 and fake.sent[1]["content_sid"] == "HX123" and "ZECUSDT" in fake.sent[1]["content_variables"]
+    monkeypatch.delenv("TWILIO_WHATSAPP_TEMPLATE_SID")
+    fake = _FakeTwilio(window_open=False)
+    monkeypatch.setattr(n, "_twilio_client", lambda: fake)
+    assert n.send_whatsapp("x") is False                                   # window closed, nothing to fall back on

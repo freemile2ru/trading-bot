@@ -6,10 +6,11 @@ there — the event goes on a queue and a worker thread sends, so a slow mail se
 or the scheduler. Events that land within WINDOW seconds go out as one message (a basket opens four legs at
 once; a red minute closes several), so a burst is one email and one text, not eight.
 
-On by default in production (TRADE_ALERTS=email,sms), off locally (the experiments open dozens of trades a day):
-TRADE_ALERTS=email or email,sms turns it on anywhere, TRADE_ALERTS=off silences production. Each text costs
-Twilio's per-message rate; email is free. Shadow trades, resting orders and the autotrader's funding entries are not
-reported — only positions that exist.
+On by default in production (TRADE_ALERTS=email,whatsapp), off locally (the experiments open dozens of trades a
+day): TRADE_ALERTS with any of email, whatsapp, sms turns it on anywhere, TRADE_ALERTS=off silences production.
+WhatsApp goes through Twilio's sandbox (data/notifications.send_whatsapp: the 24-hour window and the template fall
+back); an SMS costs Twilio's per-message rate and needs a verified sender; email is free. Shadow trades, resting
+orders and the autotrader's funding entries are not reported — only positions that exist.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("trading.trade_alerts")
 
-_DEFAULT = "email,sms" if os.getenv("APP_ENV") == "production" else "off"
+_DEFAULT = "email,whatsapp" if os.getenv("APP_ENV") == "production" else "off"
 CHANNELS = {c.strip() for c in os.getenv("TRADE_ALERTS", _DEFAULT).split(",") if c.strip() and c.strip() != "off"}
 WINDOW = float(os.getenv("TRADE_ALERT_WINDOW_S", "20"))       # events this close together share one message
 INSTANCE = "prod" if os.getenv("APP_ENV") == "production" else "local"
@@ -173,8 +174,12 @@ def send(events: list[dict]) -> dict:
     out = {}
     if "email" in CHANNELS:
         out["email"] = notifications.send_email(subject, body)
+    text = subject.replace(f"[Oracle {INSTANCE}] ", "") + "\n" + body[:900]
+    if "whatsapp" in CHANNELS:
+        out["whatsapp"] = notifications.send_whatsapp(text, title=f"Oracle {INSTANCE}",
+                                                      when=datetime.fromtimestamp(events[0]["ts"], timezone.utc).strftime("%d %b %H:%M UTC"))
     if "sms" in CHANNELS:
-        out["sms"] = notifications.send_sms(subject.replace(f"[Oracle {INSTANCE}] ", "") + "\n" + body[:900])
+        out["sms"] = notifications.send_sms(text)
     logger.info("trade alert: %d event(s) → %s", len(events), out)
     return out
 
