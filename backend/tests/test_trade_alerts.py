@@ -13,7 +13,7 @@ def sent(monkeypatch):
     """Capture what would be sent; the channels on; no waiting window."""
     from data import notifications
     got = {"email": [], "sms": [], "whatsapp": []}
-    monkeypatch.setattr(notifications, "send_email", lambda subject, body: got["email"].append((subject, body)) or True)
+    monkeypatch.setattr(notifications, "send_email", lambda subject, body, html=None: got["email"].append((subject, body)) or True)
     monkeypatch.setattr(notifications, "send_sms", lambda body: got["sms"].append(body) or True)
     monkeypatch.setattr(notifications, "send_whatsapp", lambda body, title="", when="": got["whatsapp"].append((body, title, when)) or True)
     monkeypatch.setattr(ta, "CHANNELS", {"email", "sms", "whatsapp"})
@@ -78,6 +78,23 @@ def test_compose_sums_a_red_minute():
     subject, body = ta.compose(evs)
     assert subject == "[Oracle local] closed L AUSDT −$100; closed L BUSDT −$50"
     assert "2 closed: −$150 net" in body and "(-1.00R)" in body and "held 2.0h" in body
+
+
+def test_the_email_has_a_table_per_kind_with_the_same_facts():
+    evs = [{"kind": "opened", "book": "auto", "ts": time.time(),
+            "trade": {"symbol": "BNBUSDT", "direction": "short", "lane": "reversal", "notional_usd": 1000, "leverage": 8, "entry_price": 694.211674,
+                      "stop_loss": 763.862, "risk_usd": 100, "oracle_reasoning": "reversal score -0.182: short BNBUSDT (rank bottom 2 of 24)"}},
+           {"kind": "closed", "book": "copy_trading", "ts": time.time(),
+            "trade": {"symbol": "ZECUSDT", "direction": "short", "pnl_usd": 97.9, "risk_usd": 165, "close_reason": "trailing_stop", "locked_usd": 110,
+                      "entry_price": 1358.51, "exit_price": 1301.2, "opened_at": "2026-11-06T17:28:00", "closed_at": "2026-11-06T21:07:00"}}]
+    html = ta.compose_html(evs)
+    assert html.count("<table") == 2 and "OPENED" in html and "CLOSED" in html
+    assert "BNBUSDT" in html and "auto · reversal lane" in html and "763.86" in html and "(10.0%)" in html and "$100" in html and "rank bottom 2 of 24" in html
+    assert "ZECUSDT" in html and "+$98" in html and "(+0.59R)" in html and "trailing_stop" in html and "3.6h" in html and "$110" in html
+    assert "<script" not in html and "&lt;" not in html                       # nothing to escape here, and nothing executable ever
+    subject, body = ta.compose(evs)
+    assert "🟢 OPENED" in body and "SHORT BNBUSDT · $1,000 at 8x" in body and "entry 694.21 · stop 763.86 (10.0%) · risk $100" in body
+    assert "🟢 CLOSED" in body and "SHORT ZECUSDT · +$98 (+0.59R)" in body and "trailing_stop · held 3.6h · 1,359 → 1,301 · lock kept $110" in body
 
 
 class _FakeTwilio:

@@ -127,7 +127,8 @@ def send_whatsapp(body: str, title: str = "Crypto Oracle", when: str = "") -> bo
         return False
 
 
-def send_email(subject: str, body: str) -> bool:
+def send_email(subject: str, body: str, html: str | None = None) -> bool:
+    """Plain text always; with `html`, the same message as an HTML alternative (mail clients show that one)."""
     if not email_configured():
         _log.warning("Email not configured — set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, NOTIFY_EMAIL in .env")
         return False
@@ -136,6 +137,8 @@ def send_email(subject: str, body: str) -> bool:
     msg = EmailMessage()
     msg["Subject"], msg["From"], msg["To"] = subject[:200], os.getenv("SMTP_FROM") or user, to
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
     try:
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=20, context=ssl.create_default_context()) as s:

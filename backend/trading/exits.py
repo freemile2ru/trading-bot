@@ -27,11 +27,15 @@ Policies:
   hold           — baseline: original stop or TP2 only, until max hold.
   manual_lock    — manual (the book decides the exit, no clock) plus a DOLLAR profit lock (2026-11-02, the user's
                    rule "secure profits over $100"): once the open P&L has reached the arm level, the stop sits where
-                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. The arm level is LOCK_ARM_USD or,
-                   if higher, the smaller of 1R and LOCK_ARM_PCT of the notional (2026-11-05: measured against a 10%
-                   disaster stop, 1R made the lock inert — two reversal legs peaked +$330 and +$340 at 0.66R and gave
-                   back $400 between them; against the notional a $5k leg arms at $150 while a $32k copy leg still
-                   needs $960, so the 0.3% noise that armed HYPE on 2026-11-04 still does not). A running "manual"
+                   LOCK_KEEP of the peak open P&L is kept, ratcheting with the peak. The arm level is the smaller of
+                   1R and LOCK_ARM_PCT of the notional, never below the LOCK_ARM_USD floor (2026-11-05: measured
+                   against a 10% disaster stop, 1R made the lock inert — two reversal legs peaked +$330 and +$340 at
+                   0.66R and gave back $400 between them; against the notional a $5k leg arms at $150 while a $32k
+                   copy leg still needs $960, so the 0.3% noise that armed HYPE on 2026-11-04 still does not.
+                   2026-11-07: the floor was $100 — the user's original "secure profits over $100" — which on the
+                   $1,000 reversal legs sized since 2026-11-06 meant a 10% move before any lock; ZEC sat +$18 at its
+                   24h low with a 12% stop and nothing to keep it. The floor is now $10, a noise guard, and the arm
+                   scales with the leg: $30 on a $1k leg, $150 on $5k, $640 on a $32k copy leg). A running "manual"
                    trade on a book where the lock is live adopts it on its next bar (adopt_lock), so a deploy never
                    leaves an open trade on the old rule again. Live on every book in production
                    (2026-11-05: the mentor's system and the main wallet included). Locally, live on the copy books and
@@ -79,7 +83,7 @@ class Policy:
     run_if_r: float | None = None         # at the max hold, a trade at least this far in profit gets run_extend_h more
     run_extend_h: float = 24.0            # …each time, up to run_cap_h in total; it then leaves on its stop or trail
     run_cap_h: float = 168.0
-    lock_arm_usd: float | None = None     # dollar profit lock: arm once the open P&L has been this high…
+    lock_arm_usd: float | None = None     # dollar profit lock: on when set; the floor the arm level never goes below (a noise guard)…
     lock_keep: float = 0.5                # …and keep this share of the peak open P&L (the stop ratchets with the peak)
     lock_arm_r: float = 1.0               # …but never before the trade is this many R up (2026-11-04: $100 on a $32k copy leg armed at +0.3%)…
     lock_arm_pct: float | None = None     # …or this share of the notional, whichever of the two is smaller (2026-11-05: 1R of a 10% stop never came)
@@ -102,7 +106,7 @@ POLICIES: dict[str, Policy] = {
     # nothing else — no breakeven moves, trailing, stale cut or expiry.
     "manual": Policy("manual", breakeven=None, stale=False),
     "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
-                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "100")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5")),
+                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5")),
                           lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
@@ -146,7 +150,9 @@ def lock_policy_for(label: str | None, policy_name: str | None) -> str | None:
 
 
 def lock_arm_usd(t: dict, p: Policy) -> float | None:
-    """The open P&L at which this trade's lock arms (None: no lock on its policy)."""
+    """The open P&L at which this trade's lock arms (None: no lock on its policy): the smaller of lock_arm_r × risk and
+    lock_arm_pct × notional, never below the lock_arm_usd floor — so it scales with the leg instead of sitting at a fixed
+    dollar figure that a small leg can never reach."""
     if p.lock_arm_usd is None:
         return None
     by_r = p.lock_arm_r * (t.get("risk_usd") or 0.0)

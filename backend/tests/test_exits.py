@@ -287,6 +287,16 @@ def test_manual_lock_arms_at_three_percent_of_the_notional_when_one_r_is_further
     assert closed["close_reason"] == "trailing_stop" and 70 < closed["pnl_usd"] < 90
 
 
+def test_manual_lock_scales_down_to_a_small_leg(wallet):
+    """A $1,000 reversal leg at a 10% stop (2026-11-07: ZEC sat +$18 at its 24h low, the old $100 floor needed a 10% move): arms at 3% of the notional."""
+    t = wallet.open_trade("ZECUSDT", "short", 100, 110, 90, 80, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
+    assert t["risk_usd"] == pytest.approx(100, rel=0.05) and t["notional_usd"] == pytest.approx(1000, rel=0.05)
+    assert exits.lock_arm_usd(t, exits.POLICIES["manual_lock"]) == pytest.approx(30, rel=0.05)       # 3% of $1k, not 1R = $100, not the $10 floor
+    _walk(wallet, t, [(100, 100.1, 96.4, 96.5)])                                    # ≈ +$35 at the peak: armed
+    live = wallet.get_portfolio()["open_trades"][0]
+    assert live["stop_loss"] < 110 and live["locked_usd"] == pytest.approx(17, abs=3)
+
+
 def test_a_running_manual_trade_adopts_the_lock_once_it_is_live_on_its_book(wallet, monkeypatch):
     """The policy is stamped at entry: the two legs open when the lock deployed (2026-11-05) kept the old rule."""
     monkeypatch.setattr(exits, "LOCK_MODE", "shadow")

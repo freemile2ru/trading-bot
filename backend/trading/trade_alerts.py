@@ -84,31 +84,57 @@ def _where(book: str, trade: dict) -> str:
     return f"{book} · {lane} lane" if lane else book
 
 
+def _pct(x: float | None, digits: int = 1) -> str:
+    return "" if x is None else f"{x:.{digits}f}%"
+
+
+def _px(x) -> str:
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    return f"{x:,.6g}" if x < 1 else f"{x:,.2f}" if x < 1000 else f"{x:,.0f}"
+
+
+def _stop_pct(t: dict) -> float | None:
+    return abs(t["stop_loss"] / t["entry_price"] - 1) * 100 if t.get("stop_loss") and t.get("entry_price") else None
+
+
+def _r(t: dict) -> float | None:
+    pnl, risk = t.get("pnl_usd") or 0.0, t.get("risk_usd") or 0.0
+    return pnl / risk if risk else None
+
+
+def _why(t: dict, n: int = 160) -> str:
+    why = (t.get("oracle_reasoning") or t.get("reasoning") or t.get("entry_note") or "").strip().replace("\n", " ")
+    return (why[:n] + "…") if len(why) > n else why
+
+
 def line(ev: dict) -> str:
+    """One event as plain text: a headline line, a numbers line, and the why — what WhatsApp and SMS show."""
     t, book = ev["trade"], ev["book"]
     side = (t.get("direction") or "?").upper()
     sym = t.get("symbol", "?")
     at = datetime.fromtimestamp(ev["ts"], timezone.utc).strftime("%H:%M UTC")
     if ev["kind"] == "opened":
-        stop_pct = abs(t["stop_loss"] / t["entry_price"] - 1) * 100 if t.get("stop_loss") and t.get("entry_price") else None
-        bits = [f"OPENED {at}", _where(book, t), f"{side} {sym}", f"${t.get('notional_usd', 0):,.0f} at {t.get('leverage', '?')}x",
-                f"entry {t.get('entry_price')}", f"stop {t.get('stop_loss')}" + (f" ({stop_pct:.1f}%)" if stop_pct is not None else ""),
-                f"risk ${t.get('risk_usd') or 0:,.0f}"]
-        why = (t.get("oracle_reasoning") or t.get("reasoning") or "").strip().replace("\n", " ")
-        if why:
-            bits.append("why: " + (why[:160] + "…" if len(why) > 160 else why))
-    else:
-        pnl, risk = t.get("pnl_usd") or 0.0, t.get("risk_usd") or 0.0
-        r = f" ({pnl / risk:+.2f}R)" if risk else ""
-        bits = [f"CLOSED {at}", _where(book, t), f"{side} {sym}", f"{_money(pnl)}{r}", str(t.get("close_reason") or "closed"),
-                f"held {_hours(t)}", f"{t.get('entry_price')} → {t.get('exit_price')}"]
-        if t.get("locked_usd"):
-            bits.append(f"lock kept ${t['locked_usd']:,.0f}")
-    return " · ".join(b for b in bits if b)
+        sp = _stop_pct(t)
+        head = f"🟢 OPENED {at} · {_where(book, t)}"
+        what = f"{side} {sym} · ${t.get('notional_usd', 0):,.0f} at {t.get('leverage', '?')}x"
+        nums = f"entry {_px(t.get('entry_price'))} · stop {_px(t.get('stop_loss'))}" + (f" ({_pct(sp)})" if sp is not None else "") + f" · risk ${t.get('risk_usd') or 0:,.0f}"
+        why = _why(t)
+        return "\n".join(x for x in (head, what, nums, f"why: {why}" if why else "") if x)
+    pnl = t.get("pnl_usd") or 0.0
+    r = _r(t)
+    head = f"{'🟢' if pnl >= 0 else '🔴'} CLOSED {at} · {_where(book, t)}"
+    what = f"{side} {sym} · {_money(pnl)}" + (f" ({r:+.2f}R)" if r is not None else "")
+    nums = f"{t.get('close_reason') or 'closed'} · held {_hours(t)} · {_px(t.get('entry_price'))} → {_px(t.get('exit_price'))}"
+    if t.get("locked_usd"):
+        nums += f" · lock kept ${t['locked_usd']:,.0f}"
+    return "\n".join((head, what, nums))
 
 
 def compose(events: list[dict]) -> tuple[str, str]:
-    """(subject, body) for a batch: the subject names each position, the body has a line per event."""
+    """(subject, body) for a batch: the subject names each position, the body has a block per event."""
     heads = []
     for ev in events:
         t = ev["trade"]
@@ -119,12 +145,80 @@ def compose(events: list[dict]) -> tuple[str, str]:
     n_open, n_close = sum(e["kind"] == "opened" for e in events), sum(e["kind"] == "closed" for e in events)
     subject = f"[Oracle {INSTANCE}] " + "; ".join(heads[:4]) + (f" (+{len(heads) - 4} more)" if len(heads) > 4 else "")
     net = sum((e["trade"].get("pnl_usd") or 0.0) for e in events if e["kind"] == "closed")
-    body = "\n".join(line(e) for e in events)
+    body = "\n\n".join(line(e) for e in events)
     if n_close > 1:
         body += f"\n\n{n_close} closed: {_money(net)} net"
     if n_open or n_close:
         body += f"\n\nCrypto Oracle · {INSTANCE}"
     return subject, body
+
+
+# ── The email: the same facts as tables ──────────────────────────────────────
+
+_CSS = ("font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#1f2937;line-height:1.45")
+_TH = "text-align:left;padding:6px 10px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e5e7eb;white-space:nowrap"
+_TD = "padding:7px 10px;border-bottom:1px solid #f3f4f6;vertical-align:top;white-space:nowrap"
+_GREEN, _RED, _GRAY = "#047857", "#b91c1c", "#6b7280"
+
+
+def _esc(x) -> str:
+    return (str(x if x is not None else "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _pill(text: str, color: str) -> str:
+    return f'<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:{color}">{_esc(text)}</span>'
+
+
+def _side(t: dict) -> str:
+    side = (t.get("direction") or "?").upper()
+    return _pill(side, _GREEN if side == "LONG" else _RED if side == "SHORT" else _GRAY)
+
+
+def _table(headers: list[str], rows: list[list[str]]) -> str:
+    th = "".join(f'<th style="{_TH}">{_esc(h)}</th>' for h in headers)
+    trs = "".join("<tr>" + "".join(f'<td style="{_TD}">{c}</td>' for c in r) + "</tr>" for r in rows)
+    return f'<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%;max-width:980px">' \
+           f'<thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>'
+
+
+def compose_html(events: list[dict]) -> str:
+    """The batch as an HTML email: one table for the positions opened, one for those closed, a net line and the why."""
+    when = datetime.fromtimestamp(events[0]["ts"], timezone.utc).strftime("%a %d %b %Y · %H:%M UTC")
+    opened = [e for e in events if e["kind"] == "opened"]
+    closed = [e for e in events if e["kind"] == "closed"]
+    parts = [f'<div style="{_CSS}">',
+             f'<div style="margin:0 0 14px"><span style="font-size:16px;font-weight:700">Crypto Oracle</span> '
+             f'<span style="color:{_GRAY}">· {_esc(INSTANCE)} · {_esc(when)}</span></div>']
+    if opened:
+        rows = []
+        for e in opened:
+            t = e["trade"]
+            sp = _stop_pct(t)
+            rows.append([_esc(_where(e["book"], t)), f'{_side(t)} <b>{_esc(t.get("symbol", "?"))}</b>',
+                         f'${t.get("notional_usd", 0):,.0f} <span style="color:{_GRAY}">at {_esc(t.get("leverage", "?"))}x</span>',
+                         _esc(_px(t.get("entry_price"))),
+                         _esc(_px(t.get("stop_loss"))) + (f' <span style="color:{_GRAY}">({_esc(_pct(sp))})</span>' if sp is not None else ""),
+                         f'${t.get("risk_usd") or 0:,.0f}',
+                         f'<span style="white-space:normal;color:{_GRAY}">{_esc(_why(t, 220))}</span>'])
+        parts.append(f'<div style="margin:12px 0 6px;font-weight:600">{_pill("OPENED", _GREEN)} {len(opened)} position{"s" if len(opened) != 1 else ""}</div>')
+        parts.append(_table(["Book", "Position", "Size", "Entry", "Stop", "Risk", "Why"], rows))
+    if closed:
+        rows = []
+        for e in closed:
+            t = e["trade"]
+            pnl, r = t.get("pnl_usd") or 0.0, _r(t)
+            color = _GREEN if pnl >= 0 else _RED
+            rows.append([_esc(_where(e["book"], t)), f'{_side(t)} <b>{_esc(t.get("symbol", "?"))}</b>',
+                         f'<b style="color:{color}">{_esc(_money(pnl))}</b>' + (f' <span style="color:{_GRAY}">({r:+.2f}R)</span>' if r is not None else ""),
+                         _esc(t.get("close_reason") or "closed"), _esc(_hours(t)),
+                         f'{_esc(_px(t.get("entry_price")))} → {_esc(_px(t.get("exit_price")))}',
+                         (f'${t["locked_usd"]:,.0f}' if t.get("locked_usd") else f'<span style="color:{_GRAY}">—</span>')])
+        net = sum((e["trade"].get("pnl_usd") or 0.0) for e in closed)
+        parts.append(f'<div style="margin:16px 0 6px;font-weight:600">{_pill("CLOSED", _GREEN if net >= 0 else _RED)} {len(closed)} position{"s" if len(closed) != 1 else ""}'
+                     + (f' <span style="color:{_GREEN if net >= 0 else _RED}">· {_esc(_money(net))} net</span>' if len(closed) > 1 else "") + '</div>')
+        parts.append(_table(["Book", "Position", "P&L", "Exit", "Held", "Entry → Exit", "Lock kept"], rows))
+    parts.append(f'<div style="margin-top:16px;font-size:12px;color:{_GRAY}">Sent by the {_esc(INSTANCE)} instance. Times are UTC.</div></div>')
+    return "".join(parts)
 
 
 # ── The worker ────────────────────────────────────────────────────────────────
@@ -173,7 +267,7 @@ def send(events: list[dict]) -> dict:
     subject, body = compose(events)
     out = {}
     if "email" in CHANNELS:
-        out["email"] = notifications.send_email(subject, body)
+        out["email"] = notifications.send_email(subject, body, html=compose_html(events))
     text = subject.replace(f"[Oracle {INSTANCE}] ", "") + "\n" + body[:900]
     if "whatsapp" in CHANNELS:
         out["whatsapp"] = notifications.send_whatsapp(text, title=f"Oracle {INSTANCE}",
