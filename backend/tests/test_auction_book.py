@@ -208,3 +208,39 @@ def test_a_stop_inside_one_atr_and_a_chase_from_the_open_are_refused_and_ib_leve
     monkeypatch.setattr(auction, "MAX_FROM_OPEN_PCT", 2.0)
     kv.delete_sync(auction._k("state", "TESTUSDT"))
     assert asyncio.run(auction.step("TESTUSDT", df.iloc[:k + 3], now))["event"] == "accepted"
+
+
+def test_the_forward_arrangements_score_the_days_real_bars_once(monkeypatch, book):
+    # The acceptance-above-PDH tape from test_auction_levels: two quiet days, a session, an overnight, then day 2 runs up.
+    pre = [99.0 + i / 575 for i in range(576)]
+    day1 = [100 + i / 90 for i in range(90)]
+    night = [98.5 + 2.5 * i / 197 for i in range(198)]
+    day2 = [101.0, 101.05, 101.2, 101.3, 101.5, 101.9, 102.3, 102.8, 103.4, 104.0, 104.5, 104.8, 105.0] + [105.0] * 60
+    df = _bars(pre + day1 + night + day2)
+    monkeypatch.setattr(auction, "VARIANTS_FORWARD", {"open0": {"min_grade": 0, "min_target_bps": 0, "entry": "next_open", "target_mode": "next"},
+                                                       "grade9": {"min_grade": 9, "min_target_bps": 0, "entry": "next_open", "target_mode": "next"}})
+    monkeypatch.setattr(auction, "VARIANTS_SINCE", 0.0)
+    kv.delete_sync(auction._k("variants"), auction._k("variants", "day", "2026-06-03"))
+
+    async def bars(sym, now):
+        return df
+    monkeypatch.setattr(auction, "bars", bars)
+    # Day 1 (the grind up) gives the study two longs, at ONH in the first hour and at ORBH after it; day 2's only setup is at
+    # IBH, a level the book does not trade, so the gate drops it.
+    day1_open = df.index[576]                                                  # 09:30 ET on day 1
+    day_et = day1_open.tz_convert(auction.ET).strftime("%Y-%m-%d")
+    rows = auction.variant_trades_for_day(df, "TESTUSDT", day_et)
+    assert len(rows) == 2 and all(r["variant"] == "open0" for r in rows)       # grade 9 is impossible: that arrangement takes nothing
+    t = rows[0]
+    assert t["direction"] == "long" and t["level"] == "ONH" and t["slot"] == "first_hour" and rows[1]["slot"] == "later"
+    assert t["net_pct"] == pytest.approx(t["pnl_pct"] - 2 * auction.VARIANT_COST_BPS / 100, abs=1e-6)
+    day2_et = df.index[576 + 90 + 198].tz_convert(auction.ET).strftime("%Y-%m-%d")
+    assert auction.variant_trades_for_day(df, "TESTUSDT", day2_et) == []       # IBH: gated
+    after_close = day1_open.timestamp() + 8 * 3600                             # 17:30 ET, past the study's session end: the pass runs
+    assert asyncio.run(auction.variants_pass(day1_open.timestamp() + 3600)) == 0     # in the session: not yet
+    assert asyncio.run(auction.variants_pass(day1_open.timestamp() + 7 * 3600)) == 0  # 16:30 ET: the book's close, not the study's — not yet
+    assert asyncio.run(auction.variants_pass(after_close)) == len(rows)
+    assert asyncio.run(auction.variants_pass(after_close + 600)) == 0          # the day is scored once
+    fwd = auction.variants_forward()
+    assert fwd["variants"]["open0"]["trades"] == len(rows) and fwd["variants"]["open0"]["status"] == "collecting"
+    assert fwd["variants"]["grade9"]["trades"] == 0 and fwd["days"] == 1

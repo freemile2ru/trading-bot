@@ -23,7 +23,9 @@ The rule, as the lab ran it:
   exit       HOLD_H hours after entry (expires_at), or a STOP_PCT disaster stop. The lab's rules carried no stop at all
              (a 2% stop closed three quarters of the up-burst legs before the runners ran); the wallet needs one, so it
              is wide enough never to matter inside four hours short of a crash. No profit lock: the books stay on the
-             plain manual policy locally so the forward record is the lab's rule and nothing else.
+             plain manual policy locally so the forward record is the lab's rule and nothing else. Every exit policy
+             (trail, the protect family, the profit lock) is shadowed beside each entry from 2026-11-07, so the
+             40-trade verdict can say whether a trailed exit would have beaten hold-to-expiry without changing the rule.
 """
 from __future__ import annotations
 
@@ -175,7 +177,7 @@ async def tick(now: float | None = None) -> list[dict]:
                          timeframe="4h", oracle_confidence=0, leverage=LEVERAGE,
                          oracle_reasoning=f"{BOOKS[book]['label']}: {q['move_pct']:+.2f}% in 5 min ({q['sigma_x']}σ, {q['vol_x']}× volume), "
                                           f"entered {BOOKS[book]['delay_min']} min after", hold_duration=f"{HOLD_H:g}h",
-                         extra={"strategy": book, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market",
+                         extra={"strategy": book, "exit_policy": "manual", "shadows": True, "claude_verdict": "skipped", "entry_type": "market",
                                 "burst_move_pct": q["move_pct"], "burst_sigma_x": q["sigma_x"], "burst_vol_x": q["vol_x"],
                                 "burst_trigger_ts": q["trigger_ts"], "entry_delay_min": BOOKS[book]["delay_min"], "rule": "v1"})
         if t.get("error"):

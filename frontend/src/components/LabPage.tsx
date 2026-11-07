@@ -23,6 +23,7 @@ const fmtDay = (ts: number) => new Date(ts * 1000).toLocaleDateString(undefined,
 function VerdictBadge({ v }: { v: Verdict }) {
   const cls = {
     collecting: 'bg-gray-800 text-gray-300', inconclusive: 'bg-gray-800 text-gray-200', no_difference: 'bg-gray-800 text-gray-200',
+    extend: 'bg-amber-900/40 text-amber-300',
     edge: 'bg-emerald-900/50 text-emerald-300', adds: 'bg-emerald-900/50 text-emerald-300',
     no_edge: 'bg-red-900/40 text-red-300', costs: 'bg-red-900/40 text-red-300',
   }[v.status]

@@ -475,15 +475,10 @@ async def experiments_summary(ledger: str = Query("both", pattern="^(both|paper|
     return await asyncio.to_thread(lab.summary, ledger)
 
 
-@router.post("/markets/{market}/trend/close-all")
-async def markets_trend_close_all(market: str, reason: str = Query("retired", max_length=40)):
-    """Close every open position of a market's trend book at the live price (used when the book is retired), then
-    let the capital plan take the freed cash."""
-    if market not in ("stocks", "futures"):
-        raise HTTPException(404, "unknown market")
-    from markets import engine as mk
+async def _close_all_at_live_price(w, reason: str) -> dict:
+    """Close every open position of a paper book at the live price (used when the book is retired), then let the
+    capital plan take the freed cash."""
     from trading import capital
-    w = mk.WALLETS[f"{market}_trend"]
     out = []
     for t in w.get_portfolio()["open_trades"]:
         price = await monitor.live_price(t["symbol"]) or t.get("current_price")
@@ -494,6 +489,24 @@ async def markets_trend_close_all(market: str, reason: str = Query("retired", ma
             out.append({"symbol": t["symbol"], "pnl_usd": done["pnl_usd"]})
     moved = await asyncio.to_thread(capital.apply_plan)
     return {"closed": out, "net": round(sum(x["pnl_usd"] for x in out), 2), "moved": moved}
+
+
+@router.post("/experiments/{name}/close-all")
+async def experiment_close_all(name: str, reason: str = Query("retired", max_length=40)):
+    """Close every open position of an experiment book at the live price (used when the book is retired)."""
+    from experiments import books
+    if name not in books.WALLETS:
+        raise HTTPException(404, "unknown experiment book")
+    return await _close_all_at_live_price(books.WALLETS[name], reason)
+
+
+@router.post("/markets/{market}/trend/close-all")
+async def markets_trend_close_all(market: str, reason: str = Query("retired", max_length=40)):
+    """Close every open position of a market's trend book at the live price (used when the book is retired)."""
+    if market not in ("stocks", "futures"):
+        raise HTTPException(404, "unknown market")
+    from markets import engine as mk
+    return await _close_all_at_live_price(mk.WALLETS[f"{market}_trend"], reason)
 
 
 @router.get("/auction")

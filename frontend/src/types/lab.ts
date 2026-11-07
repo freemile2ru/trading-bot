@@ -11,7 +11,7 @@ export interface BookStats {
 }
 
 export interface Verdict {
-  status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive' | 'adds' | 'costs' | 'no_difference'
+  status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive' | 'extend' | 'adds' | 'costs' | 'no_difference'
   label: string
   expectancy_usd?: number
   expectancy_ci?: [number, number]

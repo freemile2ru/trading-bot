@@ -4,6 +4,12 @@ Verdict rules, fixed before any results came in:
   * standalone (Claude swing, Signals · Claude): after MIN_TRADES closed trades, the 95% bootstrap
     interval of the average net result per trade must sit above zero → "edge"; entirely below →
     "no edge"; straddling zero → "inconclusive".
+  * amendment 2026-11-07 (set with cascade at 34 trades, before its 40th): a straddling interval at
+    MIN_TRADES is not the end when the bootstrap mostly favours the book. With EXTEND_SHARE % or more
+    of the resampled means positive the book keeps collecting to EXTEND_TRADES ("extend"); with
+    STOP_SHARE % or fewer it is "no edge" there and then; between the two it is "inconclusive" as
+    before. Forty trades cannot tell a +0.04R edge from zero (that takes about ninety); a fixed forty
+    either promotes on noise or kills a small real edge.
   * paired (what does Claude add?): after MIN_TRADES closed trades in EACH book over the same
     period, the 95% interval of (with Claude − without) per-trade average must sit above zero →
     "Claude adds value"; below → "Claude costs money"; straddling → "no difference shown".
@@ -15,9 +21,12 @@ import random
 import time
 
 from experiments import books, claude_swing
-from trading import capital, overview, trade_analytics
+from trading import capital, overview, trade_analytics, verdicts
 
 MIN_TRADES = 40
+EXTEND_TRADES = 90                # a straddling range at MIN_TRADES runs on to here when the bootstrap mostly favours the book
+EXTEND_SHARE = 80.0               # % of bootstrap resamples with a positive mean: at or above this → "extend"
+STOP_SHARE = 20.0                 # at or below this the straddle is "no edge" at MIN_TRADES
 SIMULATIONS = 2000
 _COPY_VARIANT_DESC = {
     "wide": "the same quality bar but 15 leaders a venue instead of 5 — more positions seen opening",
@@ -88,8 +97,18 @@ def _verdict_single(closed: list[dict], rng: random.Random) -> dict:
     if n < MIN_TRADES or not c.get("enough"):
         return {"status": "collecting", "label": f"Collecting — {n}/{MIN_TRADES} trades", **c}
     lo, hi = c["expectancy_ci"]
-    status, label = ("edge", "Edge shown") if lo > 0 else ("no_edge", "No edge") if hi < 0 else ("inconclusive", "Inconclusive")
-    return {"status": status, "label": label, **c}
+    share = c.get("positive_share") or 0.0
+    if lo > 0:
+        status, label = "edge", "Edge shown"
+    elif hi < 0:
+        status, label = "no_edge", "No edge"
+    elif share >= EXTEND_SHARE and n < EXTEND_TRADES:
+        status, label = "extend", f"Extending — {share:.0f}% positive, to {EXTEND_TRADES} trades"
+    elif share <= STOP_SHARE:
+        status, label = "no_edge", f"No edge — {share:.0f}% positive"
+    else:
+        status, label = "inconclusive", "Inconclusive"
+    return {"status": status, "label": label, "extend_to": EXTEND_TRADES, **c}
 
 
 def _verdict_paired(a: list[dict], b: list[dict], rng: random.Random) -> dict:
@@ -133,9 +152,9 @@ def summary(ledger: str = "both") -> dict:
     for name, label in books.LABELS.items():
         started = books.started_at(name)
         mine = by_system.get(name, [])
-        if name == "cascade":
-            from experiments import cascade
-            mine = [r for r in mine if (r.get("opened_ts") or 0) >= cascade.RULE_SINCE]      # the old rule's trades stay on record, not in the verdict
+        since_rule = verdicts.rule_since(name)
+        if since_rule:
+            mine = [r for r in mine if (r.get("opened_ts") or 0) >= since_rule]          # the old rule's trades stay on record, not in the verdict
         closed = [r for r in mine if r["status"] == "closed"]
         experiments.append({
             "key": name, "label": label, "description": DESCRIPTIONS[name], "started_at": started,

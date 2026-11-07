@@ -18,6 +18,36 @@ from scalper import config as SC
 
 RETIRED: list[dict] = [
     {
+        "key": "multi_factor",
+        "score_inputs": {"result_r": -0.056, "result_note": "−0.06R a trade over 46 closed trades (95% range −$0.89 … +$0.40 a trade)",
+                         "t": 1.0, "t_note": "t ≈ −1.0", "n": 46, "n_note": "closed trades (paper, $1k book)", "lost_pct": 1.4},
+        "title": "Multi-factor basket (momentum + trend + funding)",
+        "category": "Strategy",
+        "active": "2026-10-29 → 2026-11-07",
+        "retired": "2026-11-07",
+        "hypothesis": "Three documented crypto factors held together — 30-day cross-sectional momentum, 10-day time-series trend and "
+                      "funding carry — each scaled by its own volatility (risk parity) beat any one alone: a test-half Sharpe of 1.25 "
+                      "with a 26% drawdown on four years of 40 perps (research/multi_factor_lab.py).",
+        "method": "A $1k paper book rebalanced once a day after 00:10 UTC to the lab's weights, 3× leverage, a 30% disaster stop; "
+                  "judged on the usual 40-trade verdict. Its legs were mirrored into the autotrader's factor lane.",
+        "numbers": [
+            ("Live trades", "46 closed, 37% won", "−0.06R a trade, −$14 net"),
+            ("Verdict", "95% range −$0.89 … +$0.40 a trade", "straddles zero with 16% of resamples positive — the 2026-11-07 stop bar"),
+            ("Book", "17 legs open at retirement", "re-sized daily, earning nothing: +$7 unrealised"),
+            ("Lab", "+5.8 bps/day on equity in the test half", "nine days forward: −1.4%"),
+        ],
+        "why": [
+            "The lab's edge was a portfolio-level one over four years; nine days of a choppy tape with a daily rebalance "
+            "and three small sleeves was never going to show it, and the forward record gave no sign of it either. Under the "
+            "2026-11-07 amendment to the Lab's verdict rule (a straddling range at 40 trades is 'no edge' when a fifth or fewer "
+            "of the bootstrap's resamples are positive) it fails, and it was retired in the same review as that rule.",
+        ],
+        "kept": "The lab and its result stay on the research shelf; the funding and momentum readings it used are still in the scanner.",
+        "removed": "Nothing deleted — the book is switched off and its legs closed. Its $1,000 plan entry was the autotrader's factor-lane "
+                   "budget, not wallet money, and leaves the plan with it; the lane stays wired (AUTOTRADER_FACTOR) with nothing to mirror.",
+        "evidence": "trading/book_switches.RETIRED_BOOKS",
+    },
+    {
         "key": "copy_futures",
         "score_inputs": {"result_r": None, "result_note": "no closed copies", "t": None, "t_note": "nothing to test", "n": 0, "n_note": "copies in 7 days at $21.8k", "lost_pct": 0.0},
         "title": "Copy trading · commodity perps",

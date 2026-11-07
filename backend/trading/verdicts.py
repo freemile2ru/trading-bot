@@ -36,6 +36,18 @@ CARRY_EXPECTED_BPS_DAY = {"BTCUSDT": 1.015, "ETHUSDT": 0.571,      # research/ca
 NO_VERDICT = {"main"}
 
 
+def rule_since(book: str) -> float:
+    """When a book's current rule began (0 when it never changed): trades opened before it stay on its record but
+    not in its verdict — the verdict judges the rule that runs, not the one it replaced."""
+    if book == "cascade":
+        from experiments import cascade
+        return cascade.RULE_SINCE
+    if book.startswith("copy_"):                  # the base books and the variants alike: the caps and the sizing apply to every copy
+        from experiments import copy_trading
+        return copy_trading.RULE_SINCE
+    return 0.0
+
+
 def bootstrap_ci(rs: list[float], seed: int = 7) -> tuple[float, float] | None:
     """90% range of the mean, resampling runs of BLOCK consecutive trades (circular)."""
     n = len(rs)
@@ -103,10 +115,15 @@ def judge_carry(positions: list[dict]) -> dict:
 def for_books(rows: list[dict]) -> dict[str, dict]:
     """Every book's verdict from overview rows (any ledger mix the caller chose)."""
     rs: dict[str, list[tuple[float, float]]] = {}
+    since: dict[str, float] = {}
     for r in rows:
         if r.get("status") == "open" or r.get("r") is None:
             continue
         book = r["system"].removesuffix("_live")
+        if book not in since:
+            since[book] = rule_since(book)
+        if (r.get("opened_ts") or 0) < since[book]:
+            continue
         rs.setdefault(book, []).append((r.get("closed_ts") or 0, r["r"]))
     out = {b: judge([x for _, x in sorted(v)]) for b, v in rs.items() if b not in NO_VERDICT}
     try:

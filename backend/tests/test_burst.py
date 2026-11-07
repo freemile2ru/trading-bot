@@ -77,6 +77,7 @@ def test_an_up_burst_is_ridden_fifteen_minutes_later_by_the_up_book_only(book):
     assert t["notional_usd"] == pytest.approx(5_000 * burst.LEG_PCT / 100, rel=0.01)
     assert t["stop_loss"] == pytest.approx(106 * (1 - burst.STOP_PCT / 100)) and t["expires_at"] == pytest.approx(q[0]["fire_at"] + 20 + burst.HOLD_H * 3600)
     assert t["burst_move_pct"] == pytest.approx(6.0, abs=0.01) and t["entry_delay_min"] == 15
+    assert t["exit_policy"] == "manual" and t["shadows"] is True                    # the lab's exit, every policy scored beside it
     assert ws["burst_dip"].get_portfolio()["open_trades"] == [] and burst.pending() == []
 
 

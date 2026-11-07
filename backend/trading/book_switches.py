@@ -150,6 +150,10 @@ BOOKS = [
 ]
 # Books switched off for good: kept out of the switch list (and always off), their records kept.
 RETIRED_BOOKS = {
+    "multi_factor": "Retired 2026-11-07 — flat after its 40-trade verdict: 46 closed trades, −0.06R a trade, −$14 net on $1k (37% won), "
+                    "only 16% of the bootstrap's resampled means positive; the daily basket kept 17 legs on that earned nothing. Its open legs "
+                    "were closed; its $1,000 plan entry was the autotrader's factor-lane budget (a signal ledger holds no money) and leaves "
+                    "the plan with it. The lane stays wired with nothing to mirror.",
     "copy_futures": "Retired 2026-11-03 — zero copies in its week at $21.8k: every commodity-perp position the leaders held pre-dated "
                     "tracking and they open new ones too rarely for a verdict. Its capital went to the crypto and stock copy books; "
                     "a leader's commodity position is now recorded as a skip.",

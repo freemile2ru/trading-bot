@@ -126,6 +126,8 @@ LEADER_PROBATION_DAYS = float(os.getenv("COPY_LEADER_PROBATION_DAYS", "7"))   # 
 VENUE_MEASURE_N = int(os.getenv("COPY_VENUE_MEASURE_N", "10"))           # a venue with this many closed copies and average R ≤ 0 copies at…
 VENUE_MEASURE_X = float(os.getenv("COPY_VENUE_MEASURE_X", "0.25"))       # …this fraction of size until its record turns
 RECORD_N = 20                                                             # the record is the last this-many closed copies
+RULE_SINCE = 1793984400.0                 # 2026-11-06 17:00 UTC: the leverage and per-leader caps and the pattern/week sizing went live;
+                                          # copies opened before stay on record, out of the verdict (trading/verdicts.rule_since)
 MAX_LEADER_LEVERAGE = float(os.getenv("COPY_MAX_LEADER_LEVERAGE", "10"))   # 2026-11-06: the 15× and 20× leaders were prod's two big losers
 MAX_PER_LEADER = int(os.getenv("COPY_MAX_PER_LEADER", "2"))               # open copies of one leader across the copy books
 PATTERN_N = int(os.getenv("COPY_PATTERN_N", "8"))                         # a cell sizes once it has this many closed copies

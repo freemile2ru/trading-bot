@@ -6,6 +6,7 @@ it runs at measuring size and is judged like every book, on its own 40 trades.
 
 The book (books.WALLETS["auction"]), every closed 5-minute bar in the New York cash session (09:30–16:00 ET):
   setup     the study's acceptance → confirmation → entry sequence (VARIANT: target ≥ MIN_TARGET_BPS away, grade ≥ MIN_GRADE)
+  shadows   from 2026-11-07 the grade-6 and next-open arrangements (and the base one) are scored daily on the real bars (VARIANTS_FORWARD)
   gates     calendar first — nothing inside a macro-release blackout (FOMC, CPI, NFP…) or an earnings window for the
             name (ops/calendar); the trade is tagged with any nearby release for the exit-reason record
   size      RISK_PCT of equity at the stop, at most MAX_GROSS × equity notional, leverage from the stop distance
@@ -37,6 +38,18 @@ SYMBOLS = tuple(os.getenv("AUCTION_SYMBOLS", "QQQUSDT,NVDAUSDT,TSLAUSDT,AMDUSDT"
 # (+0.017% a trade); at Binance costs it still loses (−0.13%), so the minimum target distance and grade stay as gates.
 VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "min_grade": int(os.getenv("AUCTION_MIN_GRADE", "7")),
            "entry": os.getenv("AUCTION_ENTRY", "retest"), "target_mode": os.getenv("AUCTION_TARGET", "second")}
+# 2026-11-07: forward shadows of the arrangements the log kept skipping. In its first week the base rule took nothing on
+# four instruments (40 setups: 15 never confirmed, 8 no retest, 8 graded 6 against the floor of 7, 6 stand-downs); at that
+# rate its 40-trade verdict never comes. Each session day, once the cash close has passed, the study's own sequence
+# (trading/auction_levels.simulate) is run over the day's real bars under each arrangement and the trades it finds are
+# recorded through the book's level and entry-cutoff gates, costed at the paper wallet's rate, and scored on the same
+# 40-trade verdict. The fills are the bar's close (no slippage) and the study's 17:00 session end, so the base
+# arrangement's own shadow beside the live book shows what the fills and the other gates cost. Registered before the first
+# session it scores (Monday 2026-11-09); the live book is unchanged.
+VARIANTS_FORWARD = {"base": dict(VARIANT), "grade6": {**VARIANT, "min_grade": 6}, "next_open": {**VARIANT, "entry": "next_open"}}
+VARIANTS_SINCE = 1794009600.0                                     # 2026-11-07 00:00 UTC
+VARIANT_COST_BPS = 8.0                                            # a side: taker fee + slippage (research/auction_lab.COST_BPS)
+VARIANTS_KEEP = 2000
 RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "2.0"))           # 2% of the book at the stop (2026-11-01, was 1)
 MAX_GROSS = float(os.getenv("AUCTION_MAX_GROSS", "2.0"))         # a trade is at most 2× the book in notional (2026-11-01, was 3): $60k on $30k
 MAX_LEVERAGE = int(os.getenv("AUCTION_MAX_LEVERAGE", "5"))
@@ -286,12 +299,104 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
     return out
 
 
+def _variant_rows() -> list[dict]:
+    return kv.get_sync(_k("variants")) or []
+
+
+def variant_trades_for_day(df: pd.DataFrame, sym: str, day_et: str) -> list[dict]:
+    """One session day's trades under each forward arrangement: the study's sequence on the real bars, through the book's
+    gates that the simulator does not know (levels the book does not trade, the entry cutoff), costed both ways."""
+    out = []
+    for name, v in VARIANTS_FORWARD.items():
+        trades = AL.simulate(df, sym, min_grade=v["min_grade"], min_target_bps=v["min_target_bps"],
+                             entry=v.get("entry", "next_open"), target_mode=v.get("target_mode", "next"))
+        for t in trades:
+            if t.exit is None:
+                continue
+            et = t.entry_ts.tz_convert(ET)
+            if et.strftime("%Y-%m-%d") != day_et or t.level_name in SKIP_LEVELS:
+                continue
+            minute = _m((et.hour, et.minute))
+            if minute >= _m(ENTRY_CUTOFF):
+                continue
+            out.append({"variant": name, "symbol": sym, "day": day_et, "direction": t.direction, "level": t.level_name, "grade": t.grade,
+                        "target": t.target_name, "entry_ts": float(t.entry_ts.timestamp()),
+                        "exit_ts": float(t.exit_ts.timestamp()) if t.exit_ts is not None else None,
+                        "entry": round(t.entry, 6), "exit": round(t.exit, 6), "exit_reason": t.exit_reason,
+                        "pnl_pct": round(t.pnl_pct, 4), "net_pct": round(t.pnl_pct - 2 * VARIANT_COST_BPS / 100, 4),
+                        "r": round(t.r, 3) if t.r is not None else None,
+                        "slot": "first_hour" if minute < _m(FIRST_HOUR_END) else "later"})
+    return out
+
+
+async def variants_pass(now: float | None = None) -> int:
+    """Once a session day, after the close: score the day under each arrangement. Returns the rows added."""
+    now = now or time.time()
+    if now < VARIANTS_SINCE:
+        return 0
+    et = datetime.fromtimestamp(now, ET)
+    # The study's session ends at 17:00 ET (AL.SESSION_END), an hour after the book's: the pass waits for that bar so the
+    # shadows' exits are the study's, not whichever bar the tick happened to find last.
+    if et.weekday() >= 5 or _m((et.hour, et.minute)) < _m(AL.SESSION_END) + 15:
+        return 0
+    day = et.strftime("%Y-%m-%d")
+    if kv.get_sync(_k("variants", "day", day)):
+        return 0
+    rows = _variant_rows()
+    seen = {(r["variant"], r["symbol"], r["entry_ts"]) for r in rows}
+    added, failed = 0, 0
+    for sym in SYMBOLS:
+        try:
+            df = await bars(sym, now)
+            for r in variant_trades_for_day(df, sym, day):
+                key = (r["variant"], r["symbol"], r["entry_ts"])
+                if key not in seen:
+                    rows.append(r)
+                    seen.add(key)
+                    added += 1
+        except Exception as e:
+            failed += 1
+            logger.warning("Auction variants %s failed for %s: %s", sym, day, e)
+    kv.set_sync(_k("variants"), rows[-VARIANTS_KEEP:], 180 * 86400)
+    if not failed:                                                # a symbol that failed is retried next minute; `seen` keeps the retry from double-counting
+        kv.set_sync(_k("variants", "day", day), 1, 3 * 86400)
+    logger.info("Auction variants: %d trade(s) scored for %s (%d symbol(s) failed)", added, day, failed)
+    return added
+
+
+def variants_forward() -> dict:
+    """The forward arrangements' records, each judged by the Lab's standalone verdict (experiments/lab._verdict_single):
+    40 trades, the 95% range of net % a trade, and the Lab's extension when the bootstrap mostly favours it."""
+    import random
+    from experiments import lab
+    rows = _variant_rows()
+    out = {}
+    for name, v in VARIANTS_FORWARD.items():
+        mine = [r for r in rows if r["variant"] == name]
+        verdict = lab._verdict_single([{"net_pnl": r["net_pct"], "r": r["r"]} for r in mine], random.Random(5))
+        lo, hi = verdict.get("expectancy_ci") or (None, None)
+        first = [r for r in mine if r["slot"] == "first_hour"]
+        rs = [r["r"] for r in mine if r["r"] is not None]
+        out[name] = {"rule": {k: v.get(k) for k in ("entry", "min_grade", "min_target_bps", "target_mode")},
+                     "trades": len(mine), "wins": sum(1 for r in mine if r["net_pct"] > 0),
+                     "avg_net_pct": round(sum(r["net_pct"] for r in mine) / len(mine), 4) if mine else None,
+                     "avg_r": round(sum(rs) / len(rs), 3) if rs else None,
+                     "first_hour": {"trades": len(first), "avg_net_pct": round(sum(r["net_pct"] for r in first) / len(first), 4) if first else None},
+                     "status": verdict["status"], "label": verdict["label"], "ci": [lo, hi], "positive_share": verdict.get("positive_share")}
+    return {"since": VARIANTS_SINCE, "cost_bps": VARIANT_COST_BPS, "days": len({r["day"] for r in rows}), "variants": out,
+            "recent": sorted(rows, key=lambda r: -r["entry_ts"])[:20]}
+
+
 async def tick(now: float | None = None) -> list[dict]:
     """Every minute: in the New York session, once each 5-minute bar closes, run the sequence for every symbol."""
     from experiments import books
     now = now or time.time()
     if not books.ENABLED or not book_switches.enabled(BOOK):
         return []
+    try:
+        await variants_pass(now)                              # after the close, once a day: the forward arrangements
+    except Exception as e:
+        logger.warning("Auction variants pass failed: %s", e)
     et = datetime.fromtimestamp(now, ET)
     hm = (et.hour, et.minute)
     if not (AL.SESSION_OPEN <= hm < (SESSION_END[0], SESSION_END[1] + 5)) or et.weekday() >= 5:
@@ -315,7 +420,7 @@ async def tick(now: float | None = None) -> list[dict]:
 def status() -> dict:
     return {"symbols": list(SYMBOLS), "variant": VARIANT, "risk_pct": RISK_PCT, "max_gross": MAX_GROSS, "max_open": MAX_OPEN,
             "states": {s: {k: v for k, v in _state(s).items() if k != "bar"} for s in SYMBOLS},
-            "log": list(reversed(kv.get_sync(_k("log")) or []))[:30]}
+            "log": list(reversed(kv.get_sync(_k("log")) or []))[:30], "variants_forward": variants_forward()}
 
 
 # ── The mentor's page ──────────────────────────────────────────────────────────
@@ -429,7 +534,7 @@ async def snapshot(now: float | None = None) -> dict:
                        "min_stop_atr": MIN_STOP_ATR, "max_from_open_pct": MAX_FROM_OPEN_PCT,
                        "buffer_bps": AL.BUFFER_BPS, "stop_offset_bps": AL.STOP_OFFSET_BPS, "retest_bars": AL.RETEST_BARS},
             "instruments": views, "log": list(reversed(kv.get_sync(_k("log")) or []))[:40], "replay": replay_summary,
-            "level_labels": LEVEL_LABELS}
+            "variants_forward": variants_forward(), "level_labels": LEVEL_LABELS}
     _snap_cache.update(at=now, data=data)
     return data
 

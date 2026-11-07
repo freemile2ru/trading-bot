@@ -30,6 +30,14 @@ export interface AuctionSnapshot {
   instruments: AuctionInstrument[]
   log: AuctionLog[]
   replay: { verdict: string; variant_verdict: string; variants: Record<string, { trades: number; binance: number | null; futures: number | null; halves_futures: [number | null, number | null] }> } | null
+  variants_forward?: {
+    since: number; cost_bps: number; days: number
+    variants: Record<string, { rule: Record<string, string | number | null>; trades: number; wins: number; avg_net_pct: number | null; avg_r: number | null
+                               first_hour: { trades: number; avg_net_pct: number | null }; status: 'collecting' | 'edge' | 'no_edge' | 'inconclusive' | 'extend'; label: string
+                               ci: [number | null, number | null]; positive_share: number | null }>
+    recent: { variant: string; symbol: string; day: string; direction: string; level: string; grade: number; target: string; entry_ts: number
+              exit_reason: string | null; net_pct: number; r: number | null; slot: string }[]
+  }
   level_labels: Record<string, string>
 }
 
