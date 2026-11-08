@@ -40,9 +40,13 @@ export interface CopyStatus {
           recent: { symbol: string; direction: string; leader: string | null; pnl_usd: number | null; roe_pct: number | null; close_reason: string | null
                     opened_at: string | null; closed_at: string | null; moved_pct_at_entry: number | null }[] }
   open: { symbol: string; direction: string; market?: string; variant?: string; size_x?: number | null; leader: string | null; venue?: string | null; consensus?: number | null; entry: number; leader_entry: number | null; moved_pct_at_entry: number | null
-          age_h_at_entry: number | null; pnl_usd: number | null; opened_at: string | null }[]
+          age_h_at_entry: number | null; pnl_usd: number | null; opened_at: string | null
+          second_look_view?: 'agree' | 'doubt' | 'disagree' | null; second_look_why?: string | null; second_look_x?: number | null }[]
   skipped: { ts: number; leader: string; venue?: string | null; symbol: string; market?: string; variant?: string; side: string; reason: string; mark: number | null; moved_pct?: number; age_h?: number; outcome_pct?: number; leader_roi?: number }[]
   skip_rule: { judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null }
+  second_look?: { mode: 'veto' | 'record' | 'off'; claude: boolean; doubt_x: number
+                  by_view: Record<'agree' | 'doubt' | 'disagree', { n: number; pnl: number; wins: number }>
+                  vetoed: { n: number; judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null } }
   config: { leaders_n: number; wide_n?: number; max_leader_leverage?: number; max_per_leader?: number; pattern_n?: number; pattern_up?: number; pattern_down?: number; week_n?: number; week_days?: number; fast_hold_h?: number; late_size_x?: number; venues?: string[]; consensus_x?: number; leg_pct: number; max_leverage: number; max_open: number; disaster_pct: number; late_age_frac: number; late_move_frac: number
-            adverse_frac: number; max_hold_h?: number; stop_x?: number; stop_pct_min?: number; max_leg_pct?: number; max_gross_pct?: number; day_loss_halt_pct?: number; leader_probation_n?: number; leader_probation_days?: number; venue_measure_n?: number; venue_measure_x?: number; fee_gate_x?: number; round_trip_pct?: number; reduce_frac?: number; risk_pct?: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
+            adverse_frac: number; second_look?: { mode: string; claude: boolean; doubt_x: number; parabolic_pct: number; chase_pct: number; extreme_pct: number }; max_hold_h?: number; stop_x?: number; stop_pct_min?: number; max_leg_pct?: number; max_gross_pct?: number; day_loss_halt_pct?: number; leader_probation_n?: number; leader_probation_days?: number; venue_measure_n?: number; venue_measure_x?: number; fee_gate_x?: number; round_trip_pct?: number; reduce_frac?: number; risk_pct?: number; bar: { min_copiers: number; min_aum: number; min_days: number; max_mdd: number; min_win: number; min_weeks_pos: number } }
 }

@@ -60,6 +60,11 @@ LEADER_PROBATION_DAYS after their last copy closed; a venue with VENUE_MEASURE_N
 copied at VENUE_MEASURE_X size until its record turns. Review rule, set the same day: stops, consensus and the
 variants stay as they are until the crypto book has 40 closed copies under the 2026-11-04 sizing.
 
+Second look (2026-11-08, the user's ask after prod's first dozen copies): before a copy is taken, our own read of the tape
+(experiments/copy_second_look.py) — an opposite position of ours on the coin, or Claude disagreeing on top of a tape concern,
+blocks it (a recorded skip, judged like every skip); one tape concern halves the leg; every copy carries the read so the
+views are judged by what they earned. COPY_SECOND_LOOK=record keeps the reads without acting on them.
+
 Sized by pattern (2026-11-06, the user's call after prod's first eight copies, overriding the 40-copy review rule): the
 eight split along lines the larger samples had already shown — four of five winners were shorts, both big losers
 followed 15–20× leaders, no loser ever reached +0.25R, and one Lighter leader's ZEC shorts were the whole result. So:
@@ -93,6 +98,7 @@ import statistics
 import time
 
 from storage import state as kv
+from experiments import copy_second_look as second_look
 from trading import book_switches, coin_lock, monitor, tape
 
 logger = logging.getLogger("experiments.copy_trading")
@@ -1055,10 +1061,19 @@ async def mirror(now: float | None = None) -> dict:
                                   "variant": other, "reason": f"routed to the {VARIANTS[variant]['label']} book ({routed_why})", "mark": mark, "routed": True})
             book = book_name(market, variant)
             w = wallets[(market, variant)]
+            look = await second_look.look(r["symbol"], r["side"], {"name": name, "venue": L.get("venue"), "leverage": r.get("leverage"), "consensus": n_agree,
+                                                                  "week": leader_week(L["id"], now), "record": rec["leaders"].get(L["id"])}, now)
+            if look["view"] == "disagree" and second_look.MODE == "veto":
+                _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                              "variant": variant, "reason": f"second look: {look['why']}", "mark": mark, "leader_entry": r["entry"],
+                              "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree, "second_look": {k: look[k] for k in ("view", "concerns", "claude")}})
+                logger.info("Copy %s %s vetoed by the second look: %s", r["side"], r["symbol"], look["why"])
+                continue
             if True:
                 s = 1 if r["side"] == "long" else -1
                 equity = w.get_portfolio()["total_equity"]
                 size_x *= CONSENSUS_X if n_agree >= 2 else 1.0
+                size_x *= look["x"]
                 venue_x, venue_why = venue_multiplier(rec, L.get("venue"))
                 pattern_x, pattern_why = pattern_multiplier(rec, r["side"], r.get("leverage"), L["id"])
                 week_x, week_why = week_multiplier(L["id"], now)
@@ -1075,7 +1090,9 @@ async def mirror(now: float | None = None) -> dict:
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
                                         "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,
                                         "venue_x": venue_x, "venue_why": venue_why, "pattern_x": pattern_x, "pattern_why": pattern_why,
-                                        "week_x": week_x, "week_why": week_why})
+                                        "week_x": week_x, "week_why": week_why,
+                                        "second_look_view": look["view"], "second_look_why": look["why"], "second_look_x": look["x"],
+                                        "second_look_claude": (look.get("claude") or {}).get("view"), "second_look_tape": look.get("features")})
                 if t.get("error"):
                     logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])
                 else:
@@ -1247,7 +1264,9 @@ def status() -> dict:
             "open": [{"symbol": t["symbol"], "direction": t["direction"], "market": t.get("market") or market_of(t["symbol"]), "variant": t.get("variant") or "base",
                       "leader": t.get("leader"), "venue": t.get("venue"), "entry": t["entry_price"], "size_x": t.get("size_x"),
                       "leader_entry": t.get("leader_entry"), "moved_pct_at_entry": t.get("moved_pct_at_entry"), "age_h_at_entry": t.get("age_h_at_entry"),
-                      "consensus": t.get("consensus"), "pnl_usd": t.get("pnl_usd"), "opened_at": t.get("opened_at")} for t in open_],
+                      "consensus": t.get("consensus"), "pnl_usd": t.get("pnl_usd"), "opened_at": t.get("opened_at"),
+                      "second_look_view": t.get("second_look_view"), "second_look_why": t.get("second_look_why"), "second_look_x": t.get("second_look_x")} for t in open_],
+            "second_look": second_look.audit([t for ww in _unique_wallets() for t in ww.get_portfolio(closed_limit=400)["closed_trades"]], sk),
             "skipped": [{**e, "market": market_of(e["symbol"]), "variant": e.get("variant") or "base"} for e in sk[-120:][::-1]],
             "skip_rule": {"judged": len(judged), "avg_outcome_pct": round(sum(e["outcome_pct"] for e in judged) / len(judged), 3) if judged else None,
                           "would_have_won_pct": round(100 * sum(e["outcome_pct"] > 0 for e in judged) / len(judged), 1) if judged else None},
@@ -1308,5 +1327,7 @@ def config() -> dict:
             "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT,
             "leader_probation_n": LEADER_PROBATION_N, "leader_probation_days": LEADER_PROBATION_DAYS, "venue_measure_n": VENUE_MEASURE_N, "venue_measure_x": VENUE_MEASURE_X, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
             "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X,
+            "second_look": {"mode": second_look.MODE, "claude": second_look.CLAUDE_ON, "doubt_x": second_look.DOUBT_X, "parabolic_pct": second_look.PARABOLIC_PCT,
+                            "chase_pct": second_look.CHASE_PCT, "extreme_pct": second_look.EXTREME_PCT},
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,
                     "hl_equity": list(HL_EQUITY), "hl_month_roi": list(HL_MONTH_ROI), "hl_turnover": list(HL_TURNOVER)}}

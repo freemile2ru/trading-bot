@@ -103,3 +103,10 @@ def _no_macro_blackout(request, monkeypatch):
         return
     from ops import calendar
     monkeypatch.setattr(calendar, "macro_blackout", lambda now=None: None)
+
+
+@pytest.fixture(autouse=True)
+def _second_look_off(monkeypatch):
+    """The copy book's second look reads the tape and may call Claude: off in every test unless a test turns it on."""
+    from experiments import copy_second_look
+    monkeypatch.setattr(copy_second_look, "MODE", "off")
