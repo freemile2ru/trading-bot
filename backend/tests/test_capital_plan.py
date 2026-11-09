@@ -20,7 +20,8 @@ def test_withdraw_takes_at_most_free_cash(tmp_path):
 
 
 def test_plan_adds_up_to_the_total():
-    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 194_500                 # +$10k burst books 2026-11-06, −$1k multi_factor lane budget 2026-11-07
+    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 219_500                 # +$10k burst books 2026-11-06, −$1k multi_factor lane budget 2026-11-07, +$25k prop 2026-11-09
+    assert capital.PLAN["prop"] == 25_000.0
     assert capital.PLAN["burst_up"] == capital.PLAN["burst_dip"] == 5_000.0
     assert capital.PLAN["copy_trading"] == capital.PLAN["copy_stocks"] == 32_750.0 and "copy_futures" not in capital.PLAN   # $60k + the variants' $5.5k, futures retired
     assert "claude_swing" not in capital.PLAN and not any(b.startswith("copy_crypto_") for b in capital.PLAN)

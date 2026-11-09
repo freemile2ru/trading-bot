@@ -36,12 +36,12 @@ export interface Experiment extends BookStats {
   config?: { min_conviction: number; hold_hours: number; leg_pct: number; max_pairs: number; disaster_pct: number }
   by_side?: Record<'long' | 'short', BookStats>
   /** Carry only: positions, funding and the holdout it's testing. */
-  carry?: { coins: string[]; notional_x: number; open: number; equity: number; initial?: number; funding_earned: number; return_pct: number
+  carry?: { coins: string[]; notional_x: number; open: number; equity: number; initial?: number; funding_earned: number; return_pct: number | null
             annualised_pct: number | null
             positions: { symbol: string; notional: number; funding: number; basis_bps_now: number | null; pnl: number; days: number }[] }
   research?: Record<string, any> | null
   /** Carry Q only: the quarterly basis locked per position. */
-  carry_q?: { coins: string[]; notional_x: number; open: number; equity: number; initial?: number; return_pct: number
+  carry_q?: { coins: string[]; notional_x: number; open: number; equity: number; initial?: number; return_pct: number | null
               positions: { symbol: string; contract: string; notional: number; basis_locked_pct: number; days_to_delivery: number; pnl: number; days: number }[] }
   /** Event shorts only: announcements queued and positions open. */
   events?: { pending: { symbol: string; kind: string; title: string | null }[]

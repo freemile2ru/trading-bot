@@ -35,13 +35,14 @@ LABELS = {
     "auction": "Auction levels (mentor's NQ system, stock & index perps)",
     "burst_up": "Burst · ride the up-burst (+15m, 4h)",
     "burst_dip": "Burst · buy the dip (+60m, 4h)",
+    "prop": "Prop · Propr Classic 1-Step $25K",
     # Copy-trading variants (2026-10-30): the same leaders' board read three other ways, one wallet per market each.
     **{f"copy_{m}_{v}": f"Copy · {ml} · {vl}" for m, ml in (("crypto", "crypto"), ("stocks", "stock perps"), ("futures", "commodity perps"))
        for v, vl in (("wide", "more leaders"), ("fast", "faster traders"), ("late", "late entries, half size"))},
 }
 # Each experiment and what it's compared with (None: judged on its own against the criterion).
 PAIRS = {"auto_rules": "auto", "signals_rules": "signals_claude", "signals_claude": None, "claude_swing": None, "weekly_rs": None, "cascade": None,
-         "copy_trading": None, "copy_stocks": None, "copy_futures": None, "multi_factor": None, "auction": None, "burst_up": None, "burst_dip": None,
+         "copy_trading": None, "copy_stocks": None, "copy_futures": None, "multi_factor": None, "auction": None, "burst_up": None, "burst_dip": None, "prop": None,
          **{f"copy_{m}_{v}": None for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")}}
 
 WALLETS: dict[str, PaperWallet] = {
@@ -64,7 +65,7 @@ async def monitor_all() -> None:
     from trading import monitor
     if not ENABLED:
         return
-    for name in ("weekly_rs", "cascade", "copy_trading", "copy_stocks", "multi_factor", "auction", "burst_up", "burst_dip"):
+    for name in ("weekly_rs", "cascade", "copy_trading", "copy_stocks", "multi_factor", "auction", "burst_up", "burst_dip", "prop"):
         try:
             await monitor.run(WALLETS[name])
         except Exception as e:
@@ -99,6 +100,11 @@ async def monitor_all() -> None:
         await burst.tick()                          # every minute: the last closed minute of each coin in the universe
     except Exception as e:
         logging.getLogger("experiments").warning("Burst book failed: %s", e)
+    try:
+        from experiments import prop
+        await prop.tick()                           # every minute: the prop account against Propr's floors (entries come from the lanes)
+    except Exception as e:
+        logging.getLogger("experiments").warning("Prop book failed: %s", e)
     try:
         from experiments import events
         await events.tick()

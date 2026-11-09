@@ -241,6 +241,13 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                     else:
                         w.annotate(t["id"], expires_at=end_et.timestamp())
                         out = {"sym": sym, "event": "opened", "trade": t}
+                        try:
+                            from experiments import prop          # the same entry under Propr's rules, on the prop book's own ledger
+                            await prop.mirror_auction(sym, t["direction"], px, entering["stop"], entering["target"], end_et.timestamp(),
+                                                      t.get("oracle_reasoning") or "", {"level_name": entering["level_name"], "grade": entering["grade"],
+                                                                                         "target_name": entering["target_name"]})
+                        except Exception as e:
+                            logger.warning("Prop book auction mirror failed: %s", e)
                         _log({"ts": now, "sym": sym, "event": "opened", "direction": t["direction"], "level": entering["level_name"], "grade": entering["grade"],
                               "target": entering["target_name"], "target_bps": entering["target_bps"], "notional": notional})
                 else:

@@ -370,7 +370,7 @@ async def trade_history(
 
 
 # Every system the Trades page can filter on — the trading books and the Lab's experiment books.
-SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|burst_up|burst_dip|(stocks|futures)_(trend|rules|claude))$"
+SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|burst_up|burst_dip|prop|(stocks|futures)_(trend|rules|claude))$"
 
 
 @router.get("/trades/all")
@@ -507,6 +507,27 @@ async def markets_trend_close_all(market: str, reason: str = Query("retired", ma
         raise HTTPException(404, "unknown market")
     from markets import engine as mk
     return await _close_all_at_live_price(mk.WALLETS[f"{market}_trend"], reason)
+
+
+@router.get("/prop")
+async def prop_status():
+    """The Prop tab: the evaluation's ledger against Propr's floors, the open legs, the record by source, the log."""
+    from experiments import prop
+    return await asyncio.to_thread(prop.status)
+
+
+@router.post("/prop/reset")
+async def prop_reset(note: str = Query("new attempt", max_length=80)):
+    """Start a new attempt (what buying another challenge would be): everything is closed, the old attempt stays on record."""
+    from experiments import prop
+    return await prop.reset(note)
+
+
+@router.post("/prop/tick")
+async def prop_tick_now():
+    """Read the account against its floors now (the loop does this every minute)."""
+    from experiments import prop
+    return {"tick": await prop.tick(), "status": await asyncio.to_thread(prop.status)}
 
 
 @router.get("/auction")

@@ -137,6 +137,12 @@ BOOKS = [
                     "The spike lab's healthiest line (+112 bps a trade, median +44, both halves positive) and the cascade book's rule "
                     "on a wider universe — a forward test from 2026-11-06, judged on its own 40 trades.",
      "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
+    {"name": "prop", "label": "Prop · Propr Classic 1-Step $25K", "kind": "experiment",
+     "description": "The reversal lane's picks and the auction book's entries run under Propr's Classic 1-Step $25K rulebook "
+                    "(propr.xyz/rules: 10% target, 3% daily loss on the start-of-day balance, 6% static drawdown, 6 positions, "
+                    "2× leverage with 5× on BTC/ETH) on a book of the account's size, flattening at our own tighter floors. "
+                    "Paper here; PROP_EXEC=beta|live mirrors it to the firm's API once there is an account (2026-11-09).",
+     "off_means": "No new legs; open ones run to their stop, target or expiry; the account ledger keeps ticking."},
     {"name": "fade24", "label": "Fade the scanner (24h vs BTC)", "kind": "experiment",
      "description": "Trades AGAINST strong scanner conviction (|conviction| ≥ 0.30) for 24h, hedged with an opposite "
                     "BTC position. Since 2026-10-24: conviction has pointed the wrong way for weeks (IC −0.26 at 24h); "
@@ -181,7 +187,7 @@ RETIRED_BOOKS = {
 }
 RETIRED_BOOKS_ENFORCED = True                    # tests of the retired books' code turn this off
 PRODUCTION = os.getenv("APP_ENV") == "production"
-PROMOTED = {b.strip() for b in os.getenv("PROMOTED_BOOKS", "main,auto,auction,copy_trading,copy_stocks").split(",") if b.strip()}
+PROMOTED = {b.strip() for b in os.getenv("PROMOTED_BOOKS", "main,auto,auction,copy_trading,copy_stocks,prop").split(",") if b.strip()}
 NOT_PROMOTED = "not promoted to production: it runs on the local instance until it is"
 _RETIRED_DEFS = {b["name"]: b for b in BOOKS if b["name"] in RETIRED_BOOKS}
 BOOKS = [b for b in BOOKS if b["name"] not in RETIRED_BOOKS]
@@ -219,7 +225,7 @@ def unavailable(name: str) -> str | None:
     """Why a book can't be switched at all (not promoted to this instance, or turned off in .env), or None."""
     if not promoted(name):
         return NOT_PROMOTED
-    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction") or name.startswith("copy_"):
+    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction", "prop") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:
             return "EXPERIMENTS_ENABLED=false in .env"

@@ -35,6 +35,10 @@ _COPY_VARIANT_DESC = {
 }
 
 DESCRIPTIONS = {
+    "prop": "The reversal lane's picks and the auction book's entries under Propr's Classic 1-Step $25K rulebook (10% target, 3% daily "
+            "loss on the start-of-day balance checked on equity, 6% static drawdown, 6 positions, 2× leverage with 5× on BTC/ETH), on a "
+            "book of the account's size; the book flattens at 2.25% of a day and 5% total, three quarters of the firm's floors. Judged on "
+            "its own 40 trades, and on whether it reaches the target before a floor (the Prop tab). Registered 2026-11-09 before its first trade.",
     "auto_rules": "The autotrader's exact rules on the same scans, entering wherever the real autotrader asks Claude. "
                   "Compared with the real autotrader (paper and live) over the same period.",
     "signals_rules": "Every scanner candidate the rules send to Claude, taken whatever Claude says, with rule-based levels.",
@@ -79,6 +83,12 @@ COMPARISONS: list[dict] = []
 
 def _mean(xs):
     return sum(xs) / len(xs) if xs else None
+
+
+def _return_pct(equity: float, initial: float) -> float | None:
+    """Return on the book's capital, or None where the book holds none: on a production instance the capital
+    programme withdraws everything from an unpromoted book (trading/capital.py, 2026-11-04), so its initial is 0."""
+    return round((equity / initial - 1) * 100, 3) if initial and initial > 0 else None
 
 
 def _stats(rows: list[dict]) -> dict:
@@ -227,7 +237,7 @@ def summary(ledger: str = "both") -> dict:
         "curve": _curve([r for r in mine if r["status"] == "closed"]),
         # Returns are against the book's capital after programme deposits (trading/capital.py), not the seed balance.
         "carry_q": {**stq, "initial": capital.initial("carry_q", carry_q.INITIAL_BALANCE),
-                    "return_pct": round((stq["equity"] / capital.initial("carry_q", carry_q.INITIAL_BALANCE) - 1) * 100, 3)},
+                    "return_pct": _return_pct(stq["equity"], capital.initial("carry_q", carry_q.INITIAL_BALANCE))},
     })
 
     # Carry: positions stay open for weeks, so it's judged on equity and funding, not closed trades.
@@ -243,8 +253,9 @@ def summary(ledger: str = "both") -> dict:
         "verdict": {"status": "collecting", "label": "Running — judged on funding earned vs the holdout year"},
         "curve": _curve([r for r in mine if r["status"] == "closed"]),
         "carry": {**st, "initial": capital.initial("carry", carry.INITIAL_BALANCE),
-                  "return_pct": round((st["equity"] / capital.initial("carry", carry.INITIAL_BALANCE) - 1) * 100, 3),
-                  "annualised_pct": round((st["equity"] / capital.initial("carry", carry.INITIAL_BALANCE) - 1) * 100 * 365 / days, 2) if days >= 3 else None},
+                  "return_pct": _return_pct(st["equity"], capital.initial("carry", carry.INITIAL_BALANCE)),
+                  "annualised_pct": round(_return_pct(st["equity"], capital.initial("carry", carry.INITIAL_BALANCE)) * 365 / days, 2)
+                  if days >= 3 and _return_pct(st["equity"], capital.initial("carry", carry.INITIAL_BALANCE)) is not None else None},
         "research": carry.research(),
     })
 

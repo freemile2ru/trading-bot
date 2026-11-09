@@ -103,3 +103,14 @@ def test_gold_leg_prices_its_spot_from_paxg(c, monkeypatch):
     asyncio.run(carry.tick(time.time() - 7200))
     p = carry.open_positions()[0]
     assert p["symbol"] == "XAUUSDT" and set(asked) == {"PAXGUSDT"} and p["spot_entry"] > 4000.0 > 0.999 * p["perp_entry"]
+
+
+def test_the_lab_survives_a_book_whose_capital_was_withdrawn(c, monkeypatch):
+    """On a production instance the capital programme withdraws everything from an unpromoted book, so its initial
+    is 0 — the Lab must report no return rather than divide by it (prod's Lab 500ed on this, 2026-11-09)."""
+    from trading import capital
+    from experiments import lab
+    monkeypatch.setattr(capital, "added", lambda book: -carry.INITIAL_BALANCE if book in ("carry", "carry_q") else 0.0)
+    es = {x["key"]: x for x in lab.summary()["experiments"]}
+    assert es["carry"]["carry"]["initial"] == 0 and es["carry"]["carry"]["return_pct"] is None
+    assert es["carry"]["carry"]["annualised_pct"] is None and es["carry_q"]["carry_q"]["return_pct"] is None

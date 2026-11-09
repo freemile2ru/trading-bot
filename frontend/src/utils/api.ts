@@ -12,6 +12,7 @@ import type { GuardsStatus } from '../types/guards'
 import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '../types/ops'
 import type { CopyStatus } from '../types/copy'
 import type { AuctionChartData, AuctionSnapshot } from '../types/auction'
+import type { PropStatus } from '../types/prop'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
 
@@ -151,6 +152,11 @@ export const api = {
   copy: {
     status: () => get<CopyStatus>('/copy/leaders'),
     refresh: () => post<CopyStatus>('/copy/refresh'),
+  },
+  prop: {
+    status: () => get<PropStatus>('/prop'),
+    tick: () => post<{ tick: unknown; status: PropStatus }>('/prop/tick'),
+    reset: (note: string) => post<PropStatus>(`/prop/reset?note=${encodeURIComponent(note)}`),
   },
   auction: {
     status: () => get<AuctionSnapshot>('/auction'),

@@ -1304,6 +1304,11 @@ async def _reversal_lane(scans: list[dict]) -> None:
         return
     await kv.set(slot_key, {"bucket": bucket, "at": now, "n": len(scores)}, 5 * 3600)
     picks = reversal.picks(scores, REVERSAL_K, REVERSAL_SIDES)
+    try:
+        from experiments import prop                      # the same picks under Propr's rules, on the prop book's own ledger
+        await prop.mirror_reversal(picks, scores, now)
+    except Exception as e:
+        logger.warning("Prop book reversal mirror failed: %s", e)
     w = _active()
     equity = w.get_portfolio()["total_equity"]
     budget = _lane_budget("reversal", equity)
