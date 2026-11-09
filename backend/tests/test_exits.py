@@ -248,7 +248,7 @@ def test_protect_rides_the_last_six_hours_and_leaves_when_price_slips():
 
 # ── Dollar profit lock (2026-11-02) ────────────────────────────────────────────
 
-def test_manual_lock_keeps_half_of_the_peak_once_a_hundred_dollars_up(wallet):
+def test_manual_lock_keeps_sixty_five_percent_of_the_peak_once_armed(wallet):
     t = wallet.open_trade("SOLUSDT", "long", 100, 98, 103, 105, risk_pct=1, timeframe="1h", extra={"exit_policy": "manual_lock", "strategy": "x"})
     assert t["exit_policy"] == "manual_lock" and t["quantity"] == pytest.approx(50, rel=0.05)    # $100 at risk over 2 points
     ev = _walk(wallet, t, [
@@ -256,12 +256,12 @@ def test_manual_lock_keeps_half_of_the_peak_once_a_hundred_dollars_up(wallet):
     ])
     assert wallet.get_portfolio()["open_trades"][0]["stop_loss"] == 98
     ev = _walk(wallet, t, [
-        (101.4, 104.2, 101.3, 104.0),   # ≈ +$205 at the peak: armed — half of it is kept from the next bar
+        (101.4, 104.2, 101.3, 104.0),   # ≈ +$205 at the peak: armed — 65% of it is kept from the next bar (2026-11-09; was half)
         (104.0, 104.1, 100.5, 100.8),   # gives most of it back: out on the lock
     ], skip=1)
     closed = ev[-1]["trade"]
     assert closed["close_reason"] == "trailing_stop" and closed["locked_usd"] - 8 < closed["pnl_usd"] <= closed["locked_usd"]   # the exit's own fee and slippage come off the lock
-    assert 90 < closed["pnl_usd"] < 110
+    assert 115 < closed["pnl_usd"] < 140
 
 
 def test_manual_lock_arms_no_earlier_than_one_r(wallet):
@@ -281,10 +281,10 @@ def test_manual_lock_arms_at_three_percent_of_the_notional_when_one_r_is_further
     assert exits.lock_arm_usd(t, exits.POLICIES["manual_lock"]) == pytest.approx(150, rel=0.05)      # 3% of $5k, not 1R = $500
     _walk(wallet, t, [(100, 103.5, 99.9, 103.4)])                                   # ≈ +$170 at the peak: armed
     live = wallet.get_portfolio()["open_trades"][0]
-    assert live["stop_loss"] > 100 and live["locked_usd"] == pytest.approx(85, abs=5)
+    assert live["stop_loss"] > 100 and live["locked_usd"] == pytest.approx(110, abs=6)                # 65% of the peak
     ev = _walk(wallet, t, [(103.4, 103.5, 100.2, 100.5)], skip=1)                   # gives it back: out with half the peak
     closed = ev[-1]["trade"]
-    assert closed["close_reason"] == "trailing_stop" and 70 < closed["pnl_usd"] < 90
+    assert closed["close_reason"] == "trailing_stop" and 95 < closed["pnl_usd"] < 115
 
 
 def test_manual_lock_scales_down_to_a_small_leg(wallet):
@@ -294,7 +294,7 @@ def test_manual_lock_scales_down_to_a_small_leg(wallet):
     assert exits.lock_arm_usd(t, exits.POLICIES["manual_lock"]) == pytest.approx(30, rel=0.05)       # 3% of $1k, not 1R = $100, not the $10 floor
     _walk(wallet, t, [(100, 100.1, 96.4, 96.5)])                                    # ≈ +$35 at the peak: armed
     live = wallet.get_portfolio()["open_trades"][0]
-    assert live["stop_loss"] < 110 and live["locked_usd"] == pytest.approx(17, abs=3)
+    assert live["stop_loss"] < 110 and live["locked_usd"] == pytest.approx(23, abs=3)
 
 
 def test_a_running_manual_trade_adopts_the_lock_once_it_is_live_on_its_book(wallet, monkeypatch):

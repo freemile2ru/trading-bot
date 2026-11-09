@@ -289,6 +289,35 @@ async def _monitor(scans: dict[str, dict]) -> None:
                         trade["symbol"], trade["direction"], trade["entry_price"], trade["limit_price"],
                         trade["leverage"])
             _publish("auto_trade", {"event": "filled", "trade": trade})
+    try:
+        await _hold_checks(scans)
+    except Exception as e:
+        logger.warning("Hold checks failed: %s", e)
+
+
+async def _hold_checks(scans: dict[str, dict]) -> None:
+    """Every monitor pass: is each reversal leg still worth holding (autotrader/hold_check.py)? The sweep's scans, when
+    this pass has them, give the coin's current reversal score; the leg's tape gives the 24h VWAP and the last hours."""
+    from autotrader import hold_check, reversal
+    legs = [(w, t) for w in _wallets() for t in w.get_portfolio()["open_trades"] if lanes.lane_of(t) == "reversal" and t.get("sizing")]
+    if not legs:
+        return
+    now = time.time()
+    scores = reversal.score(list(scans.values())) if len(scans) >= reversal.MIN_COINS else {}
+    for w, t in legs:
+        held_h = (now - (t.get("opened_ts") or now)) / 3600
+        tp = await hold_check.tape(t["symbol"], now) if held_h >= hold_check.GRACE_H else None
+        hold, why, rule = hold_check.verdict(t, now, scores.get(t["symbol"]), tp)
+        if hold:
+            continue
+        price = (tp or {}).get("price") or await _live_price(t["symbol"], scans) or t.get("current_price")
+        if not price:
+            continue
+        await asyncio.to_thread(w.annotate, t["id"], hold_rule=rule, exit_note=f"{rule}: {why}")     # before the close: the record keeps it
+        closed = await asyncio.to_thread(w.close_trade_manually, t["id"], price, "hold_check")
+        if closed:
+            logger.info("Reversal leg %s %s closed by the hold check — %s: %s", t["direction"], t["symbol"], rule, why)
+            await _on_closed(closed)
 
 
 async def monitor_now() -> None:
@@ -1054,8 +1083,10 @@ def _holdings_elsewhere(include_books: bool = True) -> list[dict]:
 
 
 async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct: float, notional_pct: float,
-                           reasoning: str, hold: str, expires_at: float | None, extra: dict, risk_pct: float | None = None) -> dict | None:
-    """One leg of a mirrored position: market entry, a disaster stop, no targets, the book decides the exit."""
+                           reasoning: str, hold: str, expires_at: float | None, extra: dict, risk_pct: float | None = None,
+                           sized: dict | None = None) -> dict | None:
+    """One leg of a mirrored position: market entry, a disaster stop, no targets, the book decides the exit. A `sized`
+    plan (autotrader/sizing.py) fixes the notional and replaces the lane allocator's multiplier with its own reasons."""
     price = await monitor.live_price(symbol)
     if not price:
         return None
@@ -1081,9 +1112,13 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         if into:
             logger.info("%s leg %s %s deferred: %s", lane, direction, symbol, into)
             return None
-    lane_mult, lane_why = await _lane_mult(lane, symbol if not _is_hedge(extra) else None, direction)
-    notional = min(max(equity * notional_pct / 100, equity * (risk_pct if risk_pct is not None else LANE_RISK_PCT) / max(stop_pct, 0.1)) * lane_mult,
-                   equity * LANE_MAX_NOTIONAL_PCT / 100)
+    if sized:
+        lane_mult, lane_why = 1.0, sized["why"]
+        notional = min(sized["notional"], equity * LANE_MAX_NOTIONAL_PCT / 100)
+    else:
+        lane_mult, lane_why = await _lane_mult(lane, symbol if not _is_hedge(extra) else None, direction)
+        notional = min(max(equity * notional_pct / 100, equity * (risk_pct if risk_pct is not None else LANE_RISK_PCT) / max(stop_pct, 0.1)) * lane_mult,
+                       equity * LANE_MAX_NOTIONAL_PCT / 100)
     if not _is_hedge(extra):
         capped = lanes.net_cap_reason(direction, notional, [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]], equity)
         if capped:
@@ -1311,22 +1346,33 @@ async def _reversal_lane(scans: list[dict]) -> None:
         logger.warning("Prop book reversal mirror failed: %s", e)
     w = _active()
     equity = w.get_portfolio()["total_equity"]
-    budget = _lane_budget("reversal", equity)
     all_open = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]
     held = {t["symbol"] for t in all_open}
     lane_open = sum(1 for t in all_open if lanes.lane_of(t) == "reversal")
-    notional_pct = budget / max(len(picks), 1) / (equity or 1) * 100
-    for sym, direction in picks:
-        if sym in held or notional_pct <= 0 or lane_open >= REVERSAL_MAX_OPEN:
+    # Sized by autotrader/sizing.py (2026-11-09): equal dollars of daily swing per coin, a stop in ATRs, the side's shrunken
+    # record, a tilt for the slot's rank, a heat cap — and no clock: autotrader/hold_check.py decides the exit each minute.
+    from autotrader import hold_check, sizing
+    card = await asyncio.to_thread(lambda: lanes.scorecard(_lane_history()))
+    regime_key = lanes.regime_key(await regime.current())
+    for rank, (sym, direction) in enumerate(picks):
+        if sym in held or lane_open >= REVERSAL_MAX_OPEN:
+            continue
+        atr = await sizing.daily_atr_pct(sym, now)
+        legs = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]
+        plan = sizing.plan_leg(equity, atr, sizing.cell_for(card, "reversal", regime_key, direction), rank, len(picks), legs, direction)
+        if not plan or plan.get("refused"):
+            logger.info("reversal leg %s %s refused by sizing: %s", direction, sym, (plan or {}).get("refused"))
             continue
         ours = await _open_mirror_leg(
-            w, sym, direction, REVERSAL_STOP_PCT, notional_pct,
-            f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)})",
-            f"{REVERSAL_HOLD_H:g}h", now + REVERSAL_HOLD_H * 3600, {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym]},
-            risk_pct=REVERSAL_RISK_PCT)
+            w, sym, direction, plan["stop_pct"], 0.0,
+            f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)}); {plan['why']}",
+            "until the hold check says otherwise", now + hold_check.HARD_CAP_H * 3600,
+            {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym], "sizing": plan, "atr_pct": plan["atr_pct"],
+             "lock_arm_pct": plan["lock_arm_pct"] / 100},
+            sized=plan)
         if ours:
             lane_open += 1
-            logger.info("Autotrader reversal lane: %s %s (score %+.3f)", direction, sym, scores[sym])
+            logger.info("Autotrader reversal lane: %s %s (score %+.3f) $%.0f at a %.1f%% stop — %s", direction, sym, scores[sym], plan["notional"], plan["stop_pct"], plan["why"])
             _publish("auto_trade", {"event": "opened", "trade": ours})
 
 

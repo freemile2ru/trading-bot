@@ -26,6 +26,9 @@ function fmtUsd(n: number): string {
   return `${n >= 0 ? '+' : '−'}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
 }
 
+const usd = (n: number) => `$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+const signed = (n: number) => `${n >= 0 ? '+' : '−'}${usd(n)}`
+
 function fmtDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds))
   if (s < 3600) return `${Math.floor(s / 60)}m`
@@ -478,6 +481,18 @@ export function AutoTraderPanel({
             </div>
           ))}
           <div className="text-[10px] text-gray-600">{auto.lanes.rule} Lanes marked off are traded only in their own book, so no signal is ever held twice.</div>
+          {auto.lanes.sizing && (
+            <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-1.5">
+              <span className="text-gray-400">Reversal sizing:</span> {auto.lanes.sizing.rule} Heat on now {usd(auto.lanes.sizing.heat_used_usd)} of {usd((auto.total_equity || 0) * auto.lanes.sizing.heat_cap_pct / 100)}.
+              {auto.lanes.hold && <> <span className="text-gray-400">Exits:</span> {auto.lanes.hold.rule}</>}
+              {auto.lanes.reversal_audit && auto.lanes.reversal_audit.n > 0 && (
+                <> <span className="text-gray-400">Audit:</span> {auto.lanes.reversal_audit.n} closed legs {signed(auto.lanes.reversal_audit.actual)};
+                  the old lock replayed on their peaks {signed(auto.lanes.reversal_audit.old_lock_cf)}, the new one {signed(auto.lanes.reversal_audit.new_lock_cf)} (upper bounds);
+                  by exit {Object.entries(auto.lanes.reversal_audit.by_exit).map(([k, v]) => `${k} ${v.n} (${signed(v.pnl)})`).join(', ')}
+                  {auto.lanes.reversal_audit.sized_n > 0 && <>; sized here: {auto.lanes.reversal_audit.sized_n} legs {signed(auto.lanes.reversal_audit.sized_pnl)}</>}.</>
+              )}
+            </div>
+          )}
         </section>
       )}
       {auto.dry && (

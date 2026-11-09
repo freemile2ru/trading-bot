@@ -185,5 +185,34 @@ def status(closed: list[dict], open_trades: list[dict], regime: dict | None) -> 
                       "open": sum(1 for t in open_trades if lane_of(t) == lane
                                   and t.get("event_leg") != "hedge" and t.get("unlock_leg") != "hedge"),
                       "regimes": c["by_regime"]})
+    from autotrader import hold_check, sizing
     return {"regime": key, "regime_label": (regime or {}).get("label"), "rule": RULE, "cell_n": CELL_N, "min_n": MIN_N,
-            "measure_x": MEASURE, "net_cap_pct": NET_CAP_PCT, "net_exposure_usd": round(net_exposure(open_trades), 2), "lanes": lanes}
+            "measure_x": MEASURE, "net_cap_pct": NET_CAP_PCT, "net_exposure_usd": round(net_exposure(open_trades), 2), "lanes": lanes,
+            "sizing": {**sizing.describe(), "heat_used_usd": round(sizing.heat_usd(open_trades), 2)}, "hold": hold_check.describe(),
+            "reversal_audit": reversal_exit_audit([t for t in closed if lane_of(t) == "reversal"])}
+
+
+def reversal_exit_audit(closed: list[dict]) -> dict:
+    """The reversal legs' exits, actual against two lock rules replayed on each leg's recorded peak (an upper bound: the
+    peak is a print, the lock acts from the next bar): the rule before 2026-11-09 (arm 3% of notional, keep 50%) and the
+    one since (arm 1%, keep 65%). By exit reason, with the hold check's rules named where they closed a leg."""
+    def cf(arm_pct: float, keep: float) -> float:
+        out = 0.0
+        for t in closed:
+            s = 1 if t.get("direction") == "long" else -1
+            q, e, peak = t.get("quantity") or 0, t.get("entry_price") or 0, t.get("peak_price")
+            pnl = t.get("pnl_usd") or 0.0
+            peak_pnl = (peak - e) * s * q if peak and e else 0.0
+            n = t.get("notional_usd") or (e * q) or 1
+            out += max(pnl, keep * peak_pnl - (t.get("fees_usd") or 0.0)) if peak_pnl / n * 100 >= arm_pct else pnl
+        return round(out, 2)
+    by_exit: dict[str, dict] = {}
+    for t in closed:
+        k = t.get("hold_rule") or t.get("close_reason") or "?"
+        d = by_exit.setdefault(k, {"n": 0, "pnl": 0.0, "wins": 0})
+        d["n"] += 1
+        d["pnl"] = round(d["pnl"] + (t.get("pnl_usd") or 0.0), 2)
+        d["wins"] += 1 if (t.get("pnl_usd") or 0) > 0 else 0
+    sized = [t for t in closed if t.get("sizing")]
+    return {"n": len(closed), "actual": round(sum(t.get("pnl_usd") or 0.0 for t in closed), 2), "old_lock_cf": cf(3.0, 0.5), "new_lock_cf": cf(1.0, 0.65),
+            "by_exit": by_exit, "sized_n": len(sized), "sized_pnl": round(sum(t.get("pnl_usd") or 0.0 for t in sized), 2)}

@@ -43,6 +43,10 @@ Policies:
                    "protect") and a shadow on every other manual-policy book (the weekly basket's lab and the reversal
                    legs' paths both said trailing exits earn less than holding, so those keep their rule until their
                    own shadows disagree).
+                   2026-11-09: the lock keeps 65% of the peak (was 50% — the user's call after the exit review: trailing
+                   wins were keeping 46% of peaks that were themselves small), and a trade may carry its own arm share
+                   and keep (lock_arm_pct / lock_keep on the trade: the reversal legs arm at 1% of notional, where the
+                   global 3% sat above the lane's median peak of 2–3.6%).
   protect_quick, protect_cut6, protect_trim — shadow-only candidates (see each one's note).
 
 The replay covers one week of mostly-long signals in a rising market; the shadow book
@@ -106,7 +110,7 @@ POLICIES: dict[str, Policy] = {
     # nothing else — no breakeven moves, trailing, stale cut or expiry.
     "manual": Policy("manual", breakeven=None, stale=False),
     "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
-                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.5")),
+                          lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
                           lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
@@ -156,10 +160,16 @@ def lock_arm_usd(t: dict, p: Policy) -> float | None:
     if p.lock_arm_usd is None:
         return None
     by_r = p.lock_arm_r * (t.get("risk_usd") or 0.0)
-    if p.lock_arm_pct:
+    pct = t.get("lock_arm_pct", p.lock_arm_pct)                     # a trade may carry its own arm share (the reversal legs: 1%)
+    if pct:
         notional = t.get("notional_usd") or (t.get("entry_price") or 0.0) * (t.get("quantity") or 0.0)
-        by_r = min(by_r, p.lock_arm_pct * notional)
+        by_r = min(by_r, pct * notional)
     return max(p.lock_arm_usd, by_r)
+
+
+def lock_keep(t: dict, p: Policy) -> float:
+    """The share of the peak open P&L the lock keeps: the trade's own figure when it carries one, else the policy's."""
+    return float(t.get("lock_keep") or p.lock_keep)
 
 
 def adopt_lock(t: dict, label: str | None) -> bool:
@@ -334,7 +344,8 @@ def apply_bar(
     if p.lock_arm_usd is not None and t.get("quantity", 0) > 0:
         peak_pnl = (t["peak_price"] - t["entry_price"]) * s * t["quantity"] - t.get("fees_usd", 0.0) - t.get("funding_usd", 0.0)
         if peak_pnl >= lock_arm_usd(t, p):
-            keep = t["entry_price"] + s * (p.lock_keep * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
+            keep_frac = lock_keep(t, p)
+            keep = t["entry_price"] + s * (keep_frac * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
             # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
             # −$385) that "locked" a level above the market and the next tick stopped it out at the current price.
             if (keep - t["stop_loss"]) * s > 0 and (c - keep) * s > 0:
@@ -342,7 +353,7 @@ def apply_bar(
                 t["stop_loss"] = round(keep, 8)
                 t["trailing"] = True
                 t["stop_moved"] = True
-                t["locked_usd"] = round(p.lock_keep * peak_pnl, 2)
+                t["locked_usd"] = round(keep_frac * peak_pnl, 2)
 
     # 6. Time: cut trades going nowhere; cap how long anything is held.
     if t.get("stale_after_s") and bar_end - t.get("opened_ts", bar_end) >= t["stale_after_s"] \
