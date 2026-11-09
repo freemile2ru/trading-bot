@@ -12,14 +12,15 @@ from trading import book_switches, monitor
 from trading.paper_trader import PaperWallet
 
 UNIVERSE = {"BTC": {"szDecimals": 5, "maxLeverage": 40}, "ETH": {"szDecimals": 4, "maxLeverage": 25}, "ZEC": {"szDecimals": 2, "maxLeverage": 10},
-            "kPEPE": {"szDecimals": 0, "maxLeverage": 10}, "xyz:NVDA": {"szDecimals": 2, "maxLeverage": 10}, "xyz:XYZ100": {"szDecimals": 2, "maxLeverage": 10}}
+            "kPEPE": {"szDecimals": 0, "maxLeverage": 10}, "xyz:NVDA": {"szDecimals": 2, "maxLeverage": 10}, "xyz:XYZ100": {"szDecimals": 2, "maxLeverage": 10}, "xyz:TSLA": {"szDecimals": 2, "maxLeverage": 10}}
 
 
 # ── The rulebook ──────────────────────────────────────────────────────────────
 
 def test_symbols_resolve_to_hyperliquid_coins_or_nothing():
     assert R.resolve("BTCUSDT", UNIVERSE) == "BTC" and R.resolve("1000PEPEUSDT", UNIVERSE) == "kPEPE"
-    assert R.resolve("NVDAUSDT", UNIVERSE) == "xyz:NVDA" and R.resolve("QQQUSDT", UNIVERSE) == "xyz:XYZ100"
+    assert R.resolve("NVDAUSDT", UNIVERSE) == "xyz:NVDA" and R.resolve("SKHYNIXUSDT", UNIVERSE | {"xyz:SKHX": {"szDecimals": 2, "maxLeverage": 10}}) == "xyz:SKHX"
+    assert R.resolve("QQQUSDT", UNIVERSE) is None                     # xyz:XYZ100 is the index, not the ETF: a mirror would be 40× too large
     assert R.resolve("CAPUSDT", UNIVERSE) is None
     assert R.leverage_cap("BTC") == 5 and R.leverage_cap("ZEC") == 2 and R.leverage_cap("xyz:NVDA") == 2
 
@@ -103,7 +104,7 @@ def test_a_losing_day_halts_then_flattens_and_the_firms_breach_is_recorded(book)
     coins = ["ZECUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]
     for c in coins:
         prices[c] = 100.0
-    prices["QQQUSDT"] = 200.0
+    prices["TSLAUSDT"] = 200.0
     uni = {**UNIVERSE, "SOL": {"szDecimals": 2}}
 
     async def u(now=None):
@@ -111,7 +112,7 @@ def test_a_losing_day_halts_then_flattens_and_the_firms_breach_is_recorded(book)
     prop.universe = u
     # four reversal shorts ($1,000 each, stop +10%) and two auction longs (1% at a 2% stop → ~$12.5k each, stop −2%)
     assert len(asyncio.run(prop.mirror_reversal([(c, "short") for c in coins], {}, now))) == 4
-    for sym in ("NVDAUSDT", "QQQUSDT"):
+    for sym in ("NVDAUSDT", "TSLAUSDT"):
         t = asyncio.run(prop.mirror_auction(sym, "long", 200.0, 196.0, 210.0, now + 7200, "auction test", {"level_name": "ONH"}, now + 1))
         assert t and t["notional_usd"] == pytest.approx(12_400.0, rel=0.03)
     asyncio.run(prop.tick(now + 2))
@@ -122,16 +123,16 @@ def test_a_losing_day_halts_then_flattens_and_the_firms_breach_is_recorded(book)
     out = asyncio.run(prop.tick(now + 60))
     assert out["assess"]["action"] == "ok" and out["acted"] is None
     # the stock legs slip 0.5%: −$125 more → ~1.8%: halt, and nothing new opens
-    prices["NVDAUSDT"] = prices["QQQUSDT"] = 199.0
-    w.update_prices({"NVDAUSDT": 199.0, "QQQUSDT": 199.0})
+    prices["NVDAUSDT"] = prices["TSLAUSDT"] = 199.0
+    w.update_prices({"NVDAUSDT": 199.0, "TSLAUSDT": 199.0})
     out = asyncio.run(prop.tick(now + 120))
     assert out["assess"]["action"] == "halt" and prop.status()["halted_day"] == R.day_key(now + 120)
     prices["DOGEUSDT"] = 1.0
     uni["DOGE"] = {"szDecimals": 0}
     assert asyncio.run(prop.mirror_reversal([("DOGEUSDT", "short")], {}, now + 121)) == []
     # the stock legs slip 1.5% (their stops sit at −2%): −$375 → ~2.8%: everything is flattened by our rule
-    prices["NVDAUSDT"] = prices["QQQUSDT"] = 197.0
-    w.update_prices({"NVDAUSDT": 197.0, "QQQUSDT": 197.0})
+    prices["NVDAUSDT"] = prices["TSLAUSDT"] = 197.0
+    w.update_prices({"NVDAUSDT": 197.0, "TSLAUSDT": 197.0})
     out = asyncio.run(prop.tick(now + 180))
     assert out["acted"] and len(out["acted"]["flattened"]) == 6 and w.get_portfolio()["open_trades"] == []
     st = prop.status()

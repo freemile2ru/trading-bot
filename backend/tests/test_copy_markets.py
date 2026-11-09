@@ -125,7 +125,8 @@ def test_hyperliquid_builder_markets_map_to_binance_tradfi_perps():
     perps = {"TSLAUSDT", "XAUUSDT", "XAGUSDT", "CLUSDT", "SPYUSDT", "BTCUSDT", "SKHYNIXUSDT"}
     assert hl.binance_symbol("xyz:TSLA", perps) == "TSLAUSDT" and hl.binance_symbol("xyz:GOLD", perps) == "XAUUSDT"
     assert hl.binance_symbol("xyz:SILVER", perps) == "XAGUSDT" and hl.binance_symbol("xyz:CL", perps) == "CLUSDT"
-    assert hl.binance_symbol("xyz:SP500", perps) == "SPYUSDT" and hl.binance_symbol("xyz:SKHX", perps) == "SKHYNIXUSDT"
+    assert hl.binance_symbol("xyz:SKHX", perps) == "SKHYNIXUSDT"
+    assert hl.binance_symbol("xyz:SP500", perps) is None and hl.binance_symbol("xyz:XYZ100", perps | {"QQQUSDT"}) is None   # index-level perps: no ETF-priced twin
     assert hl.binance_symbol("xyz:VIX", perps) is None and hl.binance_symbol("abc:TSLA", perps) is None
     assert hl.binance_symbol("BTC", perps) == "BTCUSDT"
 

@@ -13,6 +13,7 @@ import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '
 import type { CopyStatus } from '../types/copy'
 import type { AuctionChartData, AuctionSnapshot } from '../types/auction'
 import type { PropStatus } from '../types/prop'
+import type { ControlReport } from '../types/control'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
 
@@ -152,6 +153,10 @@ export const api = {
   copy: {
     status: () => get<CopyStatus>('/copy/leaders'),
     refresh: () => post<CopyStatus>('/copy/refresh'),
+  },
+  control: {
+    report: (book: string) => get<ControlReport>(`/control/${encodeURIComponent(book)}`),
+    run: (book: string, limit = 50) => post<{ recorded: number; pending: number; report: ControlReport }>(`/control/${encodeURIComponent(book)}/run?limit=${limit}`),
   },
   prop: {
     status: () => get<PropStatus>('/prop'),

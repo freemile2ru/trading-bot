@@ -106,6 +106,11 @@ async def monitor_all() -> None:
     except Exception as e:
         logging.getLogger("experiments").warning("Prop book failed: %s", e)
     try:
+        from experiments import control
+        await control.tick()                        # every 15 minutes: the controls for the newest closed trades of each book
+    except Exception as e:
+        logging.getLogger("experiments").warning("Control data failed: %s", e)
+    try:
         from experiments import events
         await events.tick()
     except Exception as e:

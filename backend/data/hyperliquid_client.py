@@ -57,7 +57,10 @@ def flatten(x: dict) -> dict:
 # positions live in a separate clearinghouse state (dex="xyz"); fills carry the prefixed coin name.
 DEXES = ("", "xyz")
 XYZ_TO_BINANCE = {"GOLD": "XAUUSDT", "SILVER": "XAGUSDT", "CL": "CLUSDT", "BRENTOIL": "BZUSDT", "COPPER": "COPPERUSDT", "NATGAS": "NATGASUSDT",
-                  "PLATINUM": "XPTUSDT", "PALLADIUM": "XPDUSDT", "SMSN": "SAMSUNGUSDT", "SKHX": "SKHYNIXUSDT", "SP500": "SPYUSDT", "XYZ100": "QQQUSDT"}
+                  "PLATINUM": "XPTUSDT", "PALLADIUM": "XPDUSDT", "SMSN": "SAMSUNGUSDT", "SKHX": "SKHYNIXUSDT"}
+# Not mapped (2026-11-09): xyz:SP500 and xyz:XYZ100 are priced at the index level (~7,400 / ~27,000) while Binance's
+# SPYUSDT / QQQUSDT track the ETFs (~740 / ~660). Mapping them read a leader's QQQ long as "-97% against them" on the
+# Copy tab and would have sized a prop mirror 40× too large. No Binance perp tracks the index itself, so they are skipped.
 
 
 async def positions(address: str) -> list[dict]:

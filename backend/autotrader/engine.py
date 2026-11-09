@@ -1283,9 +1283,18 @@ async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
     equity = w.get_portfolio()["total_equity"]
     budget = _lane_budget(lane, equity)
     held = {t["symbol"] for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
+    now = time.time()
     for sid, t in src_open.items():
         if sid in mirrored or t["symbol"] in held:
             continue                                        # already mirrored, or ended on its own (kept as "ended" so it isn't re-opened)
+        late = mirror_too_late(t, now)
+        if late:
+            # 2026-11-09: five cascade mirrors opened within minutes of the book's 4-hour bell (legs deferred by the tape gate or
+            # a restart, then taken at the end) and were closed with the book 0–30 minutes later at a loss. A position past half
+            # its life, or with under an hour left, is not followed; it is marked so it is never re-offered.
+            await kv.hset(key, sid, {"trade": None, "symbol": t["symbol"], "late": late, "opened": now})
+            logger.info("Autotrader %s mirror of %s %s skipped: %s", lane, t["direction"], t["symbol"], late)
+            continue
         frac = (t.get("notional_usd") or 0) / (sp["total_equity"] or 1)
         notional_pct = frac * budget / (equity or 1) * 100
         if notional_pct <= 0:
@@ -1309,7 +1318,7 @@ async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
                 continue
             await kv.hset(key, sid, {**m, "ended": time.time()})     # ours ended on its own (stop, expiry): not re-opened while the book holds it
             continue
-        if m.get("pre_existing"):
+        if m.get("pre_existing") or m.get("late"):
             await kv.hdel(key, sid)
             continue
         if m.get("trade") in open_ids:
@@ -1320,6 +1329,20 @@ async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
             if closed:
                 await _on_closed(closed)
         await kv.hdel(key, sid)
+
+
+def mirror_too_late(t: dict, now: float, min_left_s: float = 3600.0, max_spent_frac: float = 0.5) -> str | None:
+    """Why a book position is too old to mirror now, or None: more than `max_spent_frac` of its life gone, or less than
+    `min_left_s` left before its expiry. A position without an expiry is never too late."""
+    exp, opened = t.get("expires_at"), t.get("opened_ts")
+    if not exp:
+        return None
+    left = exp - now
+    if left < min_left_s:
+        return f"the book's position has {max(left, 0) / 60:.0f} min left"
+    if opened and (now - opened) / max(exp - opened, 1) > max_spent_frac:
+        return f"the book's position is {100 * (now - opened) / (exp - opened):.0f}% through its hold"
+    return None
 
 
 async def _reversal_lane(scans: list[dict]) -> None:

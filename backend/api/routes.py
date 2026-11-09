@@ -509,6 +509,26 @@ async def markets_trend_close_all(market: str, reason: str = Query("retired", ma
     return await _close_all_at_live_price(mk.WALLETS[f"{market}_trend"], reason)
 
 
+@router.get("/control/{book}")
+async def control_report(book: str):
+    """What could have happened: every closed trade of a book replayed on its bars under plain controls (held 1–48h with
+    its stop, best/worst by window, the move after our exit), summed against the actual and by exit reason."""
+    from experiments import control
+    if book not in control.BOOKS:
+        raise HTTPException(404, f"no control data for {book}; books: {', '.join(control.BOOKS)}")
+    return await asyncio.to_thread(control.report, book)
+
+
+@router.post("/control/{book}/run")
+async def control_run(book: str, limit: int = Query(50, ge=1, le=500)):
+    """Backfill the controls for the book's closed trades whose 48-hour window has passed."""
+    from experiments import control
+    if book not in control.BOOKS:
+        raise HTTPException(404, f"no control data for {book}; books: {', '.join(control.BOOKS)}")
+    out = await control.run(book, limit)
+    return {**out, "report": await asyncio.to_thread(control.report, book)}
+
+
 @router.get("/prop")
 async def prop_status():
     """The Prop tab: the evaluation's ledger against Propr's floors, the open legs, the record by source, the log."""
