@@ -87,3 +87,26 @@ def test_a_feed_failure_never_silences_the_book(monkeypatch):
     monkeypatch.setattr(sl, "features", boom)
     out = asyncio.run(sl.look("ETHUSDT", "long", {}, NOW))
     assert out["view"] == "agree" and out["x"] == 1.0 and "unavailable" in out["why"]
+
+
+def test_features_read_perpetual_candles_so_stock_perps_get_a_second_look(monkeypatch):
+    import asyncio
+    from data import binance_client
+    calls = []
+
+    async def perp_bars(symbol, interval="1h", limit=48):
+        calls.append((symbol, interval, limit))
+        return [{"open_time": i * 3_600_000, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0 + i * 0.1, "volume": 10.0, "close_time": i * 3_600_000 + 3_599_999}
+                for i in range(48)]
+
+    async def spot_bars(*a, **k):
+        raise AssertionError("the spot endpoint has no stock perps")
+
+    async def btc(now=None):
+        return {"tilt": "flat", "pct": 0.0}
+    monkeypatch.setattr(binance_client, "fetch_futures_klines", perp_bars)
+    monkeypatch.setattr(binance_client, "fetch_ohlcv", spot_bars)
+    from trading import tape
+    monkeypatch.setattr(tape, "btc_tape", btc)
+    f = asyncio.run(sl.features("SKHYNIXUSDT", "short", now=48 * 3600))
+    assert calls == [("SKHYNIXUSDT", "1h", 48)] and f["px"] > 100 and f["vs_vwap24_pct"] is not None and f["pos24_pct"] is not None

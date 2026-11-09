@@ -293,7 +293,7 @@ def second_levels(r: pd.Series) -> tuple[tuple[float, str], tuple[float, str]]:
 
 def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at_end: bool = FLAT_AT_SESSION_END,
              min_target_bps: float = 0.0, cont_only: bool = False, min_rr: float = 0.0,
-             entry: str = "next_open", target_mode: str = "next", trail: bool = False) -> list[Trade]:
+             entry: str = "next_open", target_mode: str = "next", trail: bool = False, max_from_open_pct: float | None = None) -> list[Trade]:
     """Walk the closed bars, one trade at a time, exactly as the study sequences acceptance → confirmation → entry → exit.
 
     The replay found the study's targets sit a dozen basis points away on index perps — inside the costs. The filters
@@ -306,8 +306,11 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
                           close beyond it again (the study's retest, cyan candle) — enter at that close, stop under the
                           retest bar; no retest within the window → no trade
       target_mode="second" aim at the level beyond the nearest one (the nearest is often inside the costs)
-      trail=True          once the trade is +1R, the stop follows the 5m EMA20 (closes through it exit the trade)"""
+      trail=True          once the trade is +1R, the stop follows the 5m EMA20 (closes through it exit the trade)
+      max_from_open_pct   the live book's chase gate (experiments/auction, 2026-11-05): no acceptance once price is this far
+                          from the session's open in the trade's direction; None takes every acceptance"""
     d = session_frame(df5)
+    session_open = d["open"].where(d["in_session"]).groupby(d["tday"]).transform("first")
     trades: list[Trade] = []
     pending: dict | None = None            # accepted, waiting for the confirmation bar
     entering: dict | None = None           # confirmed, entering at the next bar's open
@@ -391,6 +394,11 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
         dns = [(r[n], n) for n in DOWN_LEVELS if np.isfinite(r[n]) and r["close"] < r[n] - buf and prev_c >= r[n] - buf]
         if not ups and not dns:
             continue
+        if max_from_open_pct is not None:
+            so = session_open.iloc[i]
+            sd = 1 if ups else -1
+            if np.isfinite(so) and so > 0 and (float(r["close"]) / so - 1) * 100 * sd > max_from_open_pct:
+                continue                                                 # the chase gate: the move has already run from the open
         up_lv, dn_lv = next_levels(r) if target_mode == "next" else second_levels(r)
         off = r["close"] * STOP_OFFSET_BPS / 1e4
         if ups:
@@ -401,6 +409,103 @@ def simulate(df5: pd.DataFrame, symbol: str, min_grade: int = MIN_GRADE, flat_at
             level, name = min(dns)
             pending = {"direction": "short", "level": float(level), "level_name": name, "accept_ts": ts, "stop": float(r["high"] + off),
                        "target": float(dn_lv[0]), "target_name": dn_lv[1]}
+    return trades
+
+
+# ── Trend day (2026-11-09) ───────────────────────────────────────────────────────────────────────────────────────────
+# Registered after a gap-and-go session (AMD +4%, TSLA +5%, NVDA +3% by mid-morning) on which the study's sequence took
+# nothing: the retest never came and the chase gate refused every opening-range break. The study's own context already
+# names such a day — master bias aligned, 5m bias aligned, no divergence — so this arrangement trades it the only way a
+# trend day can be entered without chasing: on the pullback. Once the initial balance has closed, a close beyond it by
+# TREND_EXT × its range with that context ARMS the day in that direction; the entry is the first bar whose low (high)
+# comes within TREND_PULLBACK_ATR ATRs of the 5m EMA20 and closes back beyond it in the trend's direction; the stop is
+# under that bar, at least TREND_MIN_STOP_ATR ATRs away; the target is the far extension (IB + 2× range) and must be at
+# least min_target_bps away; a close back through the session VWAP before the entry disarms the day (it may re-arm), and
+# after the entry it exits the trade. One trade a symbol a day. Everything else (fills at the close, the book's cutoff,
+# the costs) is the forward shadow's. Verdict: the same 40 trades as the other arrangements.
+TREND_EXT = 0.5
+TREND_PULLBACK_ATR = 0.5
+TREND_MIN_STOP_ATR = 1.0
+
+
+def simulate_trend_day(df5: pd.DataFrame, symbol: str, min_target_bps: float = 0.0, flat_at_end: bool = FLAT_AT_SESSION_END) -> list[Trade]:
+    """The trend-day arrangement above, on closed 5-minute bars. Trades carry level_name IBH05/IBL05 (the arming level),
+    target_name IBH2/IBL2, exit_reason stop | target | vwap_lost | session_end, and context entry_mode="trend_day"."""
+    d = session_frame(df5)
+    trades: list[Trade] = []
+    open_trade: Trade | None = None
+    armed: dict | None = None
+    traded_days: set[str] = set()
+    n = len(d)
+    for i in range(201, n):
+        r = d.iloc[i]
+        ts = d.index[i]
+        day = r["tday"]
+        if open_trade is not None:
+            t = open_trade
+            s = 1 if t.direction == "long" else -1
+            hit_stop = r["low"] <= t.stop if s > 0 else r["high"] >= t.stop
+            hit_target = r["high"] >= t.target if s > 0 else r["low"] <= t.target
+            lost = (r["close"] < r["vwap"]) if s > 0 else (r["close"] > r["vwap"])
+            if hit_stop:
+                t.exit, t.exit_reason = (min(t.stop, r["open"]) if s > 0 else max(t.stop, r["open"])), "stop"
+            elif hit_target:
+                t.exit, t.exit_reason = t.target, "target"
+            elif lost:
+                t.exit, t.exit_reason = float(r["close"]), "vwap_lost"
+            elif flat_at_end and (not r["in_session"] or i == n - 1):
+                t.exit, t.exit_reason = float(r["close"]), "session_end"
+            if t.exit is not None:
+                t.exit_ts = ts
+                trades.append(t)
+                open_trade = None
+            continue
+        if armed is not None and armed["day"] != day:
+            armed = None
+        if not r["in_session"] or not r["ib_valid"] or day in traded_days:
+            continue
+        rng = float(r["IBH"] - r["IBL"]) if np.isfinite(r["IBH"]) and np.isfinite(r["IBL"]) else 0.0
+        atr = float(r["atr"]) if np.isfinite(r["atr"]) else 0.0
+        if rng <= 0 or atr <= 0:
+            continue
+        if armed is None:
+            c = float(r["close"])
+            if c >= r["IBH"] + TREND_EXT * rng or c <= r["IBL"] - TREND_EXT * rng:
+                s = 1 if c >= r["IBH"] + TREND_EXT * rng else -1
+                ctx = context(d, i)
+                if ctx["master"] == s and ctx["bias"] == s and not ctx["divergence"]:
+                    armed = {"day": day, "direction": s, "arm_ts": ts, "level": float(r["IBH"] + TREND_EXT * rng) if s > 0 else float(r["IBL"] - TREND_EXT * rng)}
+            continue                                                     # the arming bar is never the entry
+        s = armed["direction"]
+        if (r["close"] < r["vwap"]) if s > 0 else (r["close"] > r["vwap"]):
+            armed = None                                                 # the trend broke before an entry: disarm, it may re-arm
+            continue
+        ema = float(r["ema20"])
+        touched = r["low"] <= ema + TREND_PULLBACK_ATR * atr if s > 0 else r["high"] >= ema - TREND_PULLBACK_ATR * atr
+        held = (r["close"] > ema and r["close"] > r["open"]) if s > 0 else (r["close"] < ema and r["close"] < r["open"])
+        if not (touched and held):
+            continue
+        px = float(r["close"])
+        off = px * STOP_OFFSET_BPS / 1e4
+        stop = float(r["low"] - off) if s > 0 else float(r["high"] + off)
+        if abs(px - stop) < TREND_MIN_STOP_ATR * atr:
+            stop = px - s * TREND_MIN_STOP_ATR * atr
+        target = float(r["IBH2"]) if s > 0 else float(r["IBL2"])
+        target_bps = (target / px - 1) * 1e4 * s
+        if not np.isfinite(target) or target_bps < max(min_target_bps, 0.0) or target_bps <= 0:
+            traded_days.add(day)                                         # the move has already run to the far extension: no trade today
+            armed = None
+            continue
+        ctx = context(d, i)
+        g, _, reasons = grade(ctx, s)
+        t = Trade(symbol=symbol, direction="long" if s > 0 else "short", level_name="IBH05" if s > 0 else "IBL05", level=armed["level"],
+                  accept_ts=armed["arm_ts"], confirm_ts=armed["arm_ts"], entry_ts=ts, entry=px, stop=stop, target=target,
+                  target_name="IBH2" if s > 0 else "IBL2", grade=g,
+                  context={**ctx, "stand_down_reasons": reasons, "entry_mode": "trend_day", "trailing": False, "target_bps": round(target_bps, 1),
+                           "rr": round(abs(target - px) / abs(px - stop), 2) if px != stop else None})
+        open_trade = t
+        traded_days.add(day)
+        armed = None
     return trades
 
 

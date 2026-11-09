@@ -198,10 +198,13 @@ def test_our_record_sizes_copies_by_side_leverage_bucket_and_leader(tmp_path, mo
     assert rec["sides"]["short"]["avg_r"] > 0 > rec["sides"]["long"]["avg_r"] and rec["sides"]["short"]["n"] == ct.PATTERN_N
     assert rec["leverage"]["≤10x"]["avg_r"] > 0 > rec["leverage"][">10x"]["avg_r"]
     x, why = ct.pattern_multiplier(rec, "short", 5.0, "L1")
-    assert x == pytest.approx(min(ct.PATTERN_UP ** 3, ct.PATTERN_X_RANGE[1])) and "shorts" in why and "this leader" in why
+    assert x == pytest.approx(ct.PATTERN_UP) and "shorts" in why and "2 others agree" in why   # one cell decides (2026-11-09): never ×1.25³
     x, why = ct.pattern_multiplier(rec, "long", 20.0, "L2")
-    assert x == pytest.approx(ct.PATTERN_DOWN ** 2) and "this leader" not in why          # the leader's losing cell is probation, not a size
-    assert ct.pattern_multiplier(rec, "long", 5.0, "L9")[0] == pytest.approx(ct.PATTERN_DOWN * ct.PATTERN_UP)
+    assert x == pytest.approx(ct.PATTERN_DOWN) and "this leader" not in why               # the leader's losing cell is probation, not a size
+    assert ct.pattern_multiplier(rec, "long", 5.0, "L9")[0] == pytest.approx(ct.PATTERN_DOWN)   # a losing cell wins over a winning one
+    rec2 = {"sides": {"short": {"n": ct.PATTERN_N, "avg_r": 0.3}}, "leverage": {"≤10x": {"n": ct.PATTERN_N + 5, "avg_r": 0.1}}, "leaders": {}}
+    x, why = ct.pattern_multiplier(rec2, "short", 5.0, "L1")
+    assert x == pytest.approx(ct.PATTERN_UP) and why.startswith("≤10x leaders")              # the cell with the most copies speaks
     assert ct.pattern_multiplier({"sides": {}, "leverage": {}, "leaders": {}}, "long", 5.0, "L9") == (1.0, f"no cell has {ct.PATTERN_N} copies yet")
 
 

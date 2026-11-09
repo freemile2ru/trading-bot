@@ -881,21 +881,27 @@ def venue_multiplier(rec: dict, venue: str | None) -> tuple[float, str]:
 
 def pattern_multiplier(rec: dict, side: str, leader_leverage: float | None, leader_id: str) -> tuple[float, str]:
     """The size multiplier from our own record: the side's cell, the leader-leverage bucket's cell and the leader's cell
-    each PATTERN_UP (average R > 0) or PATTERN_DOWN (≤ 0) once they hold PATTERN_N copies; the product, bounded."""
-    x, why = 1.0, []
+    each say PATTERN_UP (average R > 0) or PATTERN_DOWN (≤ 0) once they hold PATTERN_N copies. One cell decides — the
+    one with the most copies (ties: side, then leverage, then leader) — except that any cell at PATTERN_DOWN wins:
+    caution is never averaged away. Until 2026-11-09 the cells were multiplied: with a dozen copies the shorts cell,
+    the ≤10× cell and a venue's cell were the same trades counted three times, and ×1.25³ = ×1.95 put $8k on an AMD
+    short that lost $178 at its stop. The leader's losing cell is probation (a block), not a size."""
+    cells = []
     for cell, label in (((rec.get("sides") or {}).get(side), f"{side}s"),
                         ((rec.get("leverage") or {}).get(leverage_bucket(leader_leverage)), f"{leverage_bucket(leader_leverage)} leaders"),
                         ((rec.get("leaders") or {}).get(leader_id), "this leader")):
         if not cell or cell["n"] < PATTERN_N:
             continue
         if cell["avg_r"] > 0:
-            x *= PATTERN_UP
-            why.append(f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_UP:g}")
-        elif label != "this leader":                       # the leader's losing cell is probation (a block), not a size
-            x *= PATTERN_DOWN
-            why.append(f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_DOWN:g}")
+            cells.append((PATTERN_UP, cell["n"], f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_UP:g}"))
+        elif label != "this leader":
+            cells.append((PATTERN_DOWN, cell["n"], f"{label} {cell['avg_r']:+.2f}R over {cell['n']} → ×{PATTERN_DOWN:g}"))
+    if not cells:
+        return 1.0, f"no cell has {PATTERN_N} copies yet"
+    down = [c for c in cells if c[0] <= 1.0]
+    x, _n, why = down[0] if down else max(cells, key=lambda c: c[1])          # max is stable: the first of equal n (side, leverage, leader) wins
     x = min(max(x, PATTERN_X_RANGE[0]), PATTERN_X_RANGE[1])
-    return x, "; ".join(why) if why else f"no cell has {PATTERN_N} copies yet"
+    return x, why + (f" (one cell decides; {len(cells) - 1} other{'s' if len(cells) > 2 else ''} agree)" if len(cells) > 1 else "")
 
 
 def _week_key(leader_id: str) -> str:

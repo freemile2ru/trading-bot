@@ -46,8 +46,6 @@ VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "
 # 40-trade verdict. The fills are the bar's close (no slippage) and the study's 17:00 session end, so the base
 # arrangement's own shadow beside the live book shows what the fills and the other gates cost. Registered before the first
 # session it scores (Monday 2026-11-09); the live book is unchanged.
-VARIANTS_FORWARD = {"base": dict(VARIANT), "grade6": {**VARIANT, "min_grade": 6}, "next_open": {**VARIANT, "entry": "next_open"}}
-VARIANTS_SINCE = 1794009600.0                                     # 2026-11-07 00:00 UTC
 VARIANT_COST_BPS = 8.0                                            # a side: taker fee + slippage (research/auction_lab.COST_BPS)
 VARIANTS_KEEP = 2000
 RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "2.0"))           # 2% of the book at the stop (2026-11-01, was 1)
@@ -85,6 +83,19 @@ FIRST_HOUR_END = (10, 30)
 # high and low were the worst level family (−0.14%, both halves) — they stay as targets, not as levels to accept.
 MIN_STOP_ATR = float(os.getenv("AUCTION_MIN_STOP_ATR", "1.0"))        # the stop must sit at least this many 14-bar ATRs from the entry
 MAX_FROM_OPEN_PCT = float(os.getenv("AUCTION_MAX_FROM_OPEN_PCT", "2.0"))   # no acceptance once price is this far from the session open, the trade's way
+# 2026-11-09, after a gap-and-go session (AMD +4%, TSLA +5%, NVDA +3% by mid-morning) on which the book took nothing — QQQ
+# confirmed twice and never retested, the other three were refused by the 2%-from-the-open chase gate. Two candidate
+# arrangements were written and replayed first (research/auction_trend_lab.py, 214 sessions of the four names):
+# "chase_gate", the base arrangement plus the live book's gate, goes forward (base − chase_gate is what the gate costs or
+# saves; in the replay the gate removed net losers). "trend_day" (trading/auction_levels.simulate_trend_day — beyond the
+# initial balance by half its range with the study's bias aligned, enter the first EMA20 pullback that holds, target
+# IB + 2× range) was REJECTED at the replay: 104 trades, 30% won, −0.13% a trade, both halves below zero — the pullback
+# stop is hit two times in three and the far extension is reached seven times. It is not scored forward.
+# chase_gate carries its own `since`, so the day it was written on is not scored for it.
+VARIANTS_FORWARD = {"base": dict(VARIANT), "grade6": {**VARIANT, "min_grade": 6}, "next_open": {**VARIANT, "entry": "next_open"},
+                    "chase_gate": {**VARIANT, "max_from_open_pct": MAX_FROM_OPEN_PCT, "since": 1794268800.0,
+                                   "label": "retest · grade ≥ 7 · target ≥ 50 bps · ≤ %g%% from the open (the live gate)" % MAX_FROM_OPEN_PCT}}
+VARIANTS_SINCE = 1794009600.0                                     # 2026-11-07 00:00 UTC (chase_gate: 2026-11-10)
 HISTORY_DAYS = 10                      # enough closed 30-minute candles for the HTF ATR and a prior week for its levels
 BAR_S = 300
 LOG_KEEP = 60
@@ -315,8 +326,13 @@ def variant_trades_for_day(df: pd.DataFrame, sym: str, day_et: str) -> list[dict
     gates that the simulator does not know (levels the book does not trade, the entry cutoff), costed both ways."""
     out = []
     for name, v in VARIANTS_FORWARD.items():
-        trades = AL.simulate(df, sym, min_grade=v["min_grade"], min_target_bps=v["min_target_bps"],
-                             entry=v.get("entry", "next_open"), target_mode=v.get("target_mode", "next"))
+        if v.get("since") and datetime.strptime(day_et, "%Y-%m-%d").replace(tzinfo=ET).timestamp() < v["since"]:
+            continue                                                 # registered after this day: not scored on it
+        if v.get("entry") == "trend_day":
+            trades = AL.simulate_trend_day(df, sym, min_target_bps=v["min_target_bps"])
+        else:
+            trades = AL.simulate(df, sym, min_grade=v["min_grade"], min_target_bps=v["min_target_bps"],
+                                 entry=v.get("entry", "next_open"), target_mode=v.get("target_mode", "next"), max_from_open_pct=v.get("max_from_open_pct"))
         for t in trades:
             if t.exit is None:
                 continue
@@ -384,7 +400,7 @@ def variants_forward() -> dict:
         lo, hi = verdict.get("expectancy_ci") or (None, None)
         first = [r for r in mine if r["slot"] == "first_hour"]
         rs = [r["r"] for r in mine if r["r"] is not None]
-        out[name] = {"rule": {k: v.get(k) for k in ("entry", "min_grade", "min_target_bps", "target_mode")},
+        out[name] = {"rule": {k: v.get(k) for k in ("entry", "min_grade", "min_target_bps", "target_mode", "max_from_open_pct", "label")}, "since": v.get("since") or VARIANTS_SINCE,
                      "trades": len(mine), "wins": sum(1 for r in mine if r["net_pct"] > 0),
                      "avg_net_pct": round(sum(r["net_pct"] for r in mine) / len(mine), 4) if mine else None,
                      "avg_r": round(sum(rs) / len(rs), 3) if rs else None,

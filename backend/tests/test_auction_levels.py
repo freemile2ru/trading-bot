@@ -73,3 +73,53 @@ def test_summary_applies_costs_and_splits_halves():
     s = AL.summarize([t, u], cost_bps=10.0)
     assert s["trades"] == 2 and s["all"]["avg_net_pct"] == pytest.approx((3.0 - 0.2 + (-1.0 - 0.2)) / 2, abs=1e-6)
     assert s["first_half"]["n"] == 1 and s["by_grade"][7]["win_pct"] == 100.0 and s["by_exit"]["stop"]["avg_r"] == pytest.approx(-1.2)
+
+
+def _trend_day_frame(ext: float = 1.04, pullback: bool = True, lose_vwap: bool = False) -> pd.DataFrame:
+    """Two quiet days, a session, an overnight drift up, then a gap-and-go day: the initial balance forms 101–102,
+    price runs beyond IBH + ½ range, pulls back to the EMA20 and (by default) resumes toward IB + 2× range."""
+    pre = [99.0 + i / 575 for i in range(576)]
+    day1 = [100 + i / 90 for i in range(90)]
+    night = [100.0 + 1.0 * i / 197 for i in range(198)]                    # 100 → 101 overnight: bias up at the open
+    ib = [101.0 + i / 11 for i in range(12)]                               # 09:30–10:30: 101 → 102 (IB range 1, IBH05 = 102.5, IBH2 = 104)
+    run = [102.2, 102.4, 102.6, 102.8, 103.0, 103.1]                       # beyond IBH05 with momentum: arms
+    pb = [102.9, 102.5, 102.1, 102.35] if pullback else [103.2, 103.3, 103.4, 103.5]   # a dip to the EMA20 (≈102.1) whose last bar closes back up
+    tail = [102.95, 103.3, 103.6, 103.9, 104.2] if not lose_vwap else [102.3, 101.6, 101.0, 100.6, 100.4]
+    rest = [tail[-1]] * 60
+    return _bars(pre + day1 + night + ib + run + pb + tail + rest)
+
+
+def _day2(trades):
+    """The gap-and-go day's trades (the grind-up day before it arms too, on a tiny initial balance)."""
+    return [t for t in trades if t.entry_ts.date().isoformat() == "2026-06-04"]
+
+
+def test_trend_day_arms_beyond_the_initial_balance_and_enters_the_pullback_that_holds():
+    trades = _day2(AL.simulate_trend_day(_trend_day_frame(), "TESTUSDT", min_target_bps=20))
+    assert len(trades) == 1, "one trade a symbol a day"
+    t = trades[0]
+    assert t.direction == "long" and t.level_name == "IBH05" and t.target_name == "IBH2" and t.context["entry_mode"] == "trend_day"
+    assert t.entry_ts > t.accept_ts                                        # the arming bar is never the entry
+    assert t.stop < t.entry < t.target
+    assert t.exit_reason in ("target", "session_end") and t.pnl_pct > 0
+
+
+def test_trend_day_takes_nothing_without_a_pullback_and_exits_when_vwap_is_lost():
+    assert _day2(AL.simulate_trend_day(_trend_day_frame(pullback=False), "TESTUSDT")) == []
+    trades = _day2(AL.simulate_trend_day(_trend_day_frame(lose_vwap=True), "TESTUSDT"))
+    assert len(trades) == 1 and trades[0].exit_reason in ("vwap_lost", "stop") and trades[0].pnl_pct < 0
+
+
+def test_the_chase_gate_refuses_an_acceptance_far_from_the_open():
+    pre = [99.0 + i / 575 for i in range(576)]
+    day1 = [100 + i / 90 for i in range(90)]
+    night = [98.5 + 2.5 * i / 197 for i in range(198)]
+    # the same acceptance-above-PDH tape as the entry test, but the session opens at 98.0 so the acceptance at ~101.05 sits 3% up from the open
+    day2 = [98.0, 99.0, 100.0, 100.9, 101.2, 101.3, 101.5, 101.9, 102.3, 102.8, 103.4, 104.0, 104.5, 104.8, 105.0] + [105.0] * 60
+    df = _bars(pre + day1 + night + day2)
+    i0 = 576 + 90 + 198                                                    # the 09:30 ET bar: gap the session open down to 98 (the helper's opens are the prior close)
+    df.iloc[i0, df.columns.get_loc("open")] = 98.0
+    df.iloc[i0, df.columns.get_loc("low")] = 97.95
+    assert _day2(AL.simulate(df, "TESTUSDT", min_grade=0)), "without the gate the acceptance is a trade"
+    assert _day2(AL.simulate(df, "TESTUSDT", min_grade=0, max_from_open_pct=2.0)) == []
+    assert _day2(AL.simulate(df, "TESTUSDT", min_grade=0, max_from_open_pct=8.0))         # the day's one accepted level sits 7% above the open

@@ -260,7 +260,7 @@ export function AuctionPage() {
 
       {d.variants_forward && (
         <section className="card space-y-2">
-          <h3 className="text-sm font-semibold text-white">The same tape, three arrangements</h3>
+          <h3 className="text-sm font-semibold text-white">The same tape, {Object.keys(d.variants_forward.variants).length} arrangements</h3>
           <p className="text-[11px] text-gray-500">Each session day after the close the study's own sequence is run over the day's real bars under each arrangement, through the book's level and cutoff gates, at {d.variants_forward.cost_bps} bps a side. Simulated fills at the bar's close; the base arrangement beside the live book shows what the fills and the other gates cost. Each is judged on its own 40 trades. {d.variants_forward.days} session day{d.variants_forward.days === 1 ? '' : 's'} scored since {fmtDay(d.variants_forward.since)}.</p>
           <table className="w-full text-xs">
             <thead><tr className="text-[10px] uppercase tracking-wider text-gray-500 text-left"><th className="py-1 font-normal">Arrangement</th><th className="py-1 font-normal">Rule</th><th className="py-1 font-normal text-right">Trades</th><th className="py-1 font-normal text-right">Won</th><th className="py-1 font-normal text-right">Net / trade</th><th className="py-1 font-normal text-right">Avg R</th><th className="py-1 font-normal text-right">First hour</th><th className="py-1 font-normal text-right">Verdict</th></tr></thead>
@@ -268,7 +268,7 @@ export function AuctionPage() {
               {Object.entries(d.variants_forward.variants).map(([k, v]) => (
                 <tr key={k} className="border-t border-gray-800/70">
                   <td className="py-1 text-gray-300">{k}</td>
-                  <td className="py-1 text-gray-500">{String(v.rule.entry)} · grade ≥ {String(v.rule.min_grade)} · target ≥ {String(v.rule.min_target_bps)} bps</td>
+                  <td className="py-1 text-gray-500">{v.rule.label ? String(v.rule.label) : `${String(v.rule.entry)} · grade ≥ ${String(v.rule.min_grade)} · target ≥ ${String(v.rule.min_target_bps)} bps`}{v.since && v.since > d.variants_forward!.since ? <span className="text-gray-600"> · from {fmtDay(v.since)}</span> : null}</td>
                   <td className="py-1 text-right tabular-nums text-gray-400">{v.trades}</td>
                   <td className="py-1 text-right tabular-nums text-gray-400">{v.wins}</td>
                   <td className={clsx('py-1 text-right font-mono', tone(v.avg_net_pct))}>{pct(v.avg_net_pct, 3)}</td>

@@ -57,9 +57,11 @@ Reply with JSON only: {"view": "agree" | "doubt" | "disagree", "reason": "<one s
 async def features(symbol: str, side: str, now: float | None = None) -> dict:
     """The coin's last day in a few numbers: the 4h and 24h moves, where it sits against its 24h VWAP and in its 24h range,
     the slope of its 20h mean, and BTC's 24h tape."""
-    from data.binance_client import fetch_ohlcv
+    from data.binance_client import fetch_futures_klines
     from trading import tape
-    bars = await fetch_ohlcv(symbol, "1h", 48)
+    # Perpetual candles, not spot (2026-11-09): the copies are perps, and the stock perps (SK Hynix, AMD…) have no spot
+    # market at all — the spot endpoint answered 400 and every stock-perp copy went through with "second look unavailable".
+    bars = await fetch_futures_klines(symbol, "1h", 48)
     bars = [b for b in bars if b.get("close_time") and b["close_time"] <= int((now or time.time()) * 1000)] or bars[:-1]
     closes = [b["close"] for b in bars]
     px = closes[-1]
