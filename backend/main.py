@@ -215,5 +215,8 @@ if __name__ == "__main__":
     import uvicorn
     # Local only by default: anyone who can reach this port can trade the connected Binance account.
     # The reloader is for development; in the container (APP_ENV=production) docker-entrypoint.sh runs one plain worker.
+    # timeout_graceful_shutdown: on a reload uvicorn waits for every open connection to close before
+    # it restarts; the dashboard's event stream never closes, so without a bound a reload hung the
+    # local app for hours (2026-11-09: "Waiting for connections to close" from 18:10 to 23:50).
     uvicorn.run("main:app", host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", 8000)),
-                reload=os.getenv("APP_ENV", "development") != "production")
+                reload=os.getenv("APP_ENV", "development") != "production", timeout_graceful_shutdown=5)

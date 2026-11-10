@@ -43,6 +43,31 @@ def test_replay_applies_the_stop_pessimistically_and_carries_it_forward():
     assert short["stopped_at_h"] == pytest.approx(24 * 2 / 24, abs=0.1) and short["held"]["48h"] == pytest.approx((100 - 108) * 10 - 0.5, abs=0.01)
 
 
+def test_best_and_worst_take_the_right_extremes_for_a_short():
+    o = 1_000_000.0
+    closes = [100.0, 103.0, 97.0, 100.0] + [100.0] * (48 * 12 - 4)      # a spike up to 103.2, then a dip to 96.8
+    rec = control.replay(_trade(direction="short", stop=110.0, closed=o + 3600, pnl=0.0), _path(o, closes))
+    assert rec["best_pct"]["1h"] == pytest.approx(3.2, abs=0.01)         # the lowest low is the short's best
+    assert rec["worst_pct"]["1h"] == pytest.approx(-3.2, abs=0.01)       # the highest high its worst
+    assert rec["v"] == control.REPLAY_V
+
+
+def test_a_record_from_an_older_replay_is_redone(monkeypatch):
+    kv.delete_sync(control._k("index", "cascade"))
+    t = _trade(opened=1_000_000.0, closed=1_003_600.0)
+    kv.set_sync(control._k(t["id"]), {"trade_id": t["id"], "v": control.REPLAY_V - 1, "held": {}, "best_pct": {}, "worst_pct": {}, "after_exit_pct": {}, "actual": 0.0, "stopped_at_h": None, "hold_h": 1.0, "opened_ts": t["opened_ts"], "symbol": "ZECUSDT", "direction": "long", "closed_ts": t["closed_ts"], "close_reason": "expired", "notional": 1000.0, "lane": None, "hold_rule": None})
+    kv.set_sync(control._k("index", "cascade"), [t["id"]])
+    monkeypatch.setattr(control, "closed_trades", lambda book: [{**t, "opened_ts": t["opened_ts"], "closed_ts": t["closed_ts"]}])
+    assert control.report("cascade")["pending"] == 1
+    seen = []
+
+    async def fake_record(book, trade):
+        seen.append(trade["id"])
+        return {"trade_id": trade["id"]}
+    monkeypatch.setattr(control, "record", fake_record)
+    assert asyncio.run(control.run("cascade"))["recorded"] == 1 and seen == [t["id"]]
+
+
 def test_the_report_sums_actual_against_the_controls_and_flags_early_exits(monkeypatch):
     kv.delete_sync(control._k("index", "cascade"))
     o = 1_000_000.0

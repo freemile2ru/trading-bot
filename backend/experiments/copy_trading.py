@@ -1087,6 +1087,15 @@ async def mirror(now: float | None = None) -> dict:
                 stop = stop_pct(L.get("profile"))
                 cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
                 notional = min(leg_notional(equity, stop, market) * size_x, equity * cap / 100)       # sized up, never past the cap
+                from trading import capital
+                room = capital.coin_room(r["symbol"], r["side"], notional, book)
+                if room["notional"] <= 0:
+                    _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                                  "variant": variant, "reason": room["why"], "mark": mark, "leader_entry": r["entry"],
+                                  "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+                    logger.info("Copy %s %s skipped: %s", r["side"], r["symbol"], room["why"])
+                    continue
+                notional = room["notional"]
                 t = w.open_trade(symbol=r["symbol"], direction=r["side"], entry_price=mark, stop_loss=mark * (1 - s * stop / 100),
                                  take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=notional,
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
@@ -1098,6 +1107,7 @@ async def mirror(now: float | None = None) -> dict:
                                         "venue_x": venue_x, "venue_why": venue_why, "pattern_x": pattern_x, "pattern_why": pattern_why,
                                         "week_x": week_x, "week_why": week_why,
                                         "second_look_view": look["view"], "second_look_why": look["why"], "second_look_x": look["x"],
+                                        "coin_cap": room["why"], "coin_held": room["held"],
                                         "second_look_claude": (look.get("claude") or {}).get("view"), "second_look_tape": look.get("features")})
                 if t.get("error"):
                     logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])

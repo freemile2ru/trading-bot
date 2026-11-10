@@ -273,3 +273,27 @@ def test_high_leverage_leaders_are_not_copied_and_one_leader_holds_at_most_two_c
         for k in ("leaders", "skipped"):
             kv.delete_sync(ct._k(k))
         kv.delete_sync(ct._k("seen", "L1"))
+
+
+def test_a_copy_joining_a_coin_another_book_already_holds_is_cut_or_skipped(tmp_path, monkeypatch):
+    """The programme-wide per-coin cap (trading/capital.py): a second book on the same side is cut to the room, or skipped."""
+    from trading import capital
+    rows = [_row("p1", "SOLUSDT", 5.0), _row("p2", "BTCUSDT", 5.0)]
+    w = _feed_book(tmp_path, monkeypatch, rows, {"SOLUSDT": 100.0, "BTCUSDT": 100.0})
+    calls = []
+
+    def room(symbol, side, wanted, book):
+        calls.append((symbol, side, book))
+        if symbol == "SOLUSDT":
+            return {"notional": 0.0, "why": "coin cap: auto $8,000 already long", "held": {"auto": 8_000.0}}
+        return {"notional": round(wanted / 2, 2), "why": "coin cap: cut", "held": {"auto": 4_000.0}}
+    monkeypatch.setattr(capital, "coin_room", room)
+    try:
+        out = asyncio.run(ct.mirror(NOW))
+        assert [t["symbol"] for t in out["opened"]] == ["BTCUSDT"] and out["opened"][0]["coin_cap"] == "coin cap: cut"
+        assert {e["symbol"]: e["reason"] for e in ct.skipped()}["SOLUSDT"].startswith("coin cap:")
+        assert sorted(c[0] for c in calls) == ["BTCUSDT", "SOLUSDT"] and all(c[2] in ("copy_trading", "copy_stocks", "copy_futures") for c in calls)
+    finally:
+        for k in ("leaders", "skipped"):
+            kv.delete_sync(ct._k(k))
+        kv.delete_sync(ct._k("seen", "L1"))

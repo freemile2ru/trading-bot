@@ -218,6 +218,62 @@ def resume() -> None:
     logger.info("Capital programme resumed")
 
 
+# ── Programme-wide exposure per coin (2026-11-10, pre-registered) ────────────────────────────────────────────
+# 2026-11-09: the copy book and the reversal lane were both short ARB, $10k across two books, and both legs lost.
+# Nothing looked across books. Rule: the programme's net notional on one coin (every book below, signed by side)
+# may not exceed COIN_CAP_PCT of TOTAL once a second book joins the same side — the first book on a coin is governed
+# by its own sizing, a later same-side leg is cut to the room left or skipped when less than COIN_CAP_MIN_FRAC of it
+# fits. The auto ledger's mirrors of a book are that book's exposure carried to the executor, so they are counted on
+# the book and never cut; the prop book is a separate account, neither counted nor capped.
+COIN_CAP_PCT = float(os.getenv("COIN_CAP_PCT", "4"))            # of TOTAL: $8.8k on $219.5k
+COIN_CAP_MIN_FRAC = 0.5                                          # a leg cut below half of what was wanted is skipped
+COIN_CAP_BOOKS = ("main", "auto", "copy_trading", "copy_stocks", "copy_futures", "auction", "cascade", "burst_up", "burst_dip", "weekly_rs")
+
+
+def coin_exposure(symbol: str) -> dict[str, float]:
+    """Signed open notional on a coin by book (long +, short −), over the programme's books."""
+    from autotrader import lanes
+    from experiments import books
+    from trading import history
+    out: dict[str, float] = {}
+    for name in COIN_CAP_BOOKS:
+        w = history.WALLETS.get(name) or books.WALLETS.get(name)
+        if w is None:
+            continue
+        total = 0.0
+        for t in w.get_portfolio(closed_limit=1, history_limit=1)["open_trades"]:
+            if t.get("symbol") != symbol:
+                continue
+            if name == "auto" and lanes.LANE_BOOK.get(lanes.lane_of(t), "auto") != "auto":
+                continue                                          # a mirror: counted on its book
+            total += float(t.get("notional_usd") or 0.0) * (1 if t.get("direction") == "long" else -1)
+        if total:
+            out[name] = round(total, 2)
+    return out
+
+
+def coin_room(symbol: str, direction: str, wanted: float, book: str) -> dict:
+    """How much of a wanted leg the programme's per-coin cap allows: {notional (0 = skip), why, held}."""
+    try:
+        held = coin_exposure(symbol)
+    except Exception as e:                                        # the cap never blocks a leg it cannot measure
+        logger.warning("coin exposure for %s unavailable: %s", symbol, e)
+        return {"notional": wanted, "why": None, "held": {}}
+    s = 1 if direction == "long" else -1
+    same_side_elsewhere = {b: n for b, n in held.items() if b != book and n * s > 0}
+    if not same_side_elsewhere:
+        return {"notional": wanted, "why": None, "held": held}
+    cap = TOTAL * COIN_CAP_PCT / 100
+    net = sum(held.values()) * s                                  # the programme's net, signed in this leg's direction
+    room = max(cap - max(net, 0.0), 0.0)
+    who = ", ".join(f"{b} ${abs(n):,.0f}" for b, n in same_side_elsewhere.items())
+    if room >= wanted:
+        return {"notional": wanted, "why": f"coin cap: {who} already {direction}; ${room:,.0f} of ${cap:,.0f} left", "held": held}
+    if room >= wanted * COIN_CAP_MIN_FRAC:
+        return {"notional": round(room, 2), "why": f"coin cap: cut ${wanted:,.0f} → ${room:,.0f} — {who} already {direction} ({COIN_CAP_PCT:g}% of the programme a coin)", "held": held}
+    return {"notional": 0.0, "why": f"coin cap: {who} already {direction}, ${room:,.0f} of ${cap:,.0f} left for a ${wanted:,.0f} leg ({COIN_CAP_PCT:g}% of the programme a coin)", "held": held}
+
+
 def sizing_equity(book: str, equity: float) -> float:
     """What a book should size new positions from: its equity, or — while paused — its equity without the
     programme's extra capital, so exposure drifts back to base as positions roll. Books cut below base are unchanged."""

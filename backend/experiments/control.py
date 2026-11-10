@@ -32,6 +32,7 @@ BATCH = int(os.getenv("CONTROL_BATCH", "20"))
 BOOKS = [b.strip() for b in os.getenv("CONTROL_BOOKS", "cascade,auto:cascade,auto:reversal,burst_up,burst_dip,prop,auction").split(",") if b.strip()]
 # Each book's own horizon: an exit before it is "early" in the report.
 HORIZON_OF = {"cascade": 4.0, "auto:cascade": 4.0, "burst_up": 4.0, "burst_dip": 4.0, "auto:reversal": 24.0, "prop": 24.0, "auction": 6.5}
+REPLAY_V = 2                                                      # bump when replay() changes: older records are redone by the tick
 FEE_BPS = 5.0                                                     # taker, one side — the controls pay an exit like ours did
 INDEX_KEEP = 600
 _last_tick = {"at": 0.0}
@@ -119,9 +120,10 @@ def replay(trade: dict, path: list[dict]) -> dict:
         if pnl is None:
             pnl = (window[-1]["c"] - e) * s * q - fee if stopped_at_h is None else held.get(f"{HORIZONS_H[HORIZONS_H.index(H) - 1]}h")
         held[f"{H}h"] = round(pnl, 2) if pnl is not None else None
-        favourable = [(b["h"] if s > 0 else b["l"]) for b in window]
-        adverse = [(b["l"] if s > 0 else b["h"]) for b in window]
-        hi, lo = (max(favourable) - e) * s / e * 100, (min(adverse) - e) * s / e * 100
+        # The furthest the price went our way / against us, as signed % of the entry: for a short the
+        # best is the lowest low and the worst the highest high (the first version took the wrong extremes).
+        hi = max((b["h"] - e) * s / e * 100 if s > 0 else (b["l"] - e) * s / e * 100 for b in window)
+        lo = min((b["l"] - e) * s / e * 100 if s > 0 else (b["h"] - e) * s / e * 100 for b in window)
         best[f"{H}h"], worst[f"{H}h"] = round(hi, 3), round(lo, 3)
     exit_bar = next((b for b in after if b["t"] >= x_ts), None)
     after_exit: dict[str, float | None] = {}
@@ -132,7 +134,7 @@ def replay(trade: dict, path: list[dict]) -> dict:
             continue
         after_exit[f"{H}h"] = round((later[-1]["c"] - exit_bar["o"]) * s / e * 100, 3)      # % the price went on our way after we left
     return {"held": held, "best_pct": best, "worst_pct": worst, "stopped_at_h": stopped_at_h, "after_exit_pct": after_exit,
-            "actual": round(trade.get("pnl_usd") or 0.0, 2), "hold_h": round((x_ts - o_ts) / 3600, 2), "bars": len(after), "at": time.time()}
+            "actual": round(trade.get("pnl_usd") or 0.0, 2), "hold_h": round((x_ts - o_ts) / 3600, 2), "bars": len(after), "at": time.time(), "v": REPLAY_V}
 
 
 async def record(book: str, trade: dict) -> dict | None:
@@ -155,7 +157,7 @@ async def record(book: str, trade: dict) -> dict | None:
 
 async def run(book: str, limit: int = BATCH) -> dict:
     """Fill in the controls for the book's newest closed trades that lack one (and whose window has passed)."""
-    done = set(kv.get_sync(_k("index", book)) or [])
+    done = {tid for tid in (kv.get_sync(_k("index", book)) or []) if (kv.get_sync(_k(tid)) or {}).get("v") == REPLAY_V}
     todo = [t for t in closed_trades(book) if t["id"] not in done and t["opened_ts"] + CONTROL_H * 3600 <= time.time()]
     out = []
     for t in todo[-limit:]:
@@ -206,4 +208,4 @@ def report(book: str) -> dict:
     return {"book": book, "horizon_h": horizon, "control_h": CONTROL_H, "horizons": [f"{H}h" for H in HORIZONS_H], "after_exit": [f"{H}h" for H in AFTER_EXIT_H],
             "all": agg(rows), "early": agg(early), "by_reason": by_reason,
             "rows": sorted(rows, key=lambda r: -r["opened_ts"])[:200], "books": BOOKS,
-            "pending": sum(1 for t in closed_trades(book) if t["id"] not in {r["trade_id"] for r in rows})}
+            "pending": sum(1 for t in closed_trades(book) if t["id"] not in {r["trade_id"] for r in rows if r.get("v") == REPLAY_V})}

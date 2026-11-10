@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from storage import state as kv
-from trading import book_switches, monitor
+from trading import book_switches, capital, monitor
 from trading import auction_levels as AL
 
 logger = logging.getLogger("experiments.auction")
@@ -48,7 +48,9 @@ VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "
 # session it scores (Monday 2026-11-09); the live book is unchanged.
 VARIANT_COST_BPS = 8.0                                            # a side: taker fee + slippage (research/auction_lab.COST_BPS)
 VARIANTS_KEEP = 2000
-RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "2.0"))           # 2% of the book at the stop (2026-11-01, was 1)
+RISK_PCT = float(os.getenv("AUCTION_RISK_PCT", "1.0"))           # 1% of the book at the stop (2026-11-10, was 2 from 11-01): $500 a stop
+                                                                 # was 3× a copy stop on a replay that is net negative; back to 1 until the
+                                                                 # chase-gate shadow reaches its verdict
 MAX_GROSS = float(os.getenv("AUCTION_MAX_GROSS", "2.0"))         # a trade is at most 2× the book in notional (2026-11-01, was 3): $60k on $30k
 MAX_LEVERAGE = int(os.getenv("AUCTION_MAX_LEVERAGE", "5"))
 MAX_OPEN = int(os.getenv("AUCTION_MAX_OPEN", "3"))               # 3 at once (was 4): at 2× each, three fill the book's margin at 5×
@@ -233,7 +235,10 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                 elif stop_atr is not None and stop_atr < MIN_STOP_ATR:
                     _log({"ts": now, "sym": sym, "event": "skipped", "why": f"stop only {stop_atr:.1f} ATR away (floor {MIN_STOP_ATR:g}; ATR {atr / px * 100:.2f}%)",
                           "level": entering["level_name"]})
+                elif (room := capital.coin_room(sym, entering["direction"], notional, BOOK))["notional"] <= 0:
+                    _log({"ts": now, "sym": sym, "event": "skipped", "why": room["why"], "level": entering["level_name"]})
                 elif notional >= 10 and good:
+                    notional = room["notional"]
                     from ops import calendar
                     end_et = datetime.fromtimestamp(now, ET).replace(hour=SESSION_END[0], minute=SESSION_END[1], second=0, microsecond=0)
                     t = w.open_trade(symbol=sym, direction=entering["direction"], entry_price=px, stop_loss=entering["stop"],
@@ -242,7 +247,7 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                                      oracle_reasoning=f"auction: accepted {entering['level_name']} @ {entering['level']:.4g}, grade {entering['grade']}/8, "
                                                       f"target {entering['target_name']} @ {entering['target']:.4g} ({entering['target_bps']:.0f} bps)",
                                      hold_duration="to the next level, the stop or %02d:%02d ET" % SESSION_END,
-                                     extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market",
+                                     extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market", "coin_cap": room["why"],
                                             "level_name": entering["level_name"], "level_px": entering["level"], "target_name": entering["target_name"],
                                             "entry_slot": "first_hour" if minute < _m(FIRST_HOUR_END) else "later",
                                             "grade": entering["grade"], "context": entering["context"], "near_event": calendar.near_event(sym, now),

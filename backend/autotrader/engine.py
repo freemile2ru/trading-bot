@@ -1119,11 +1119,19 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         lane_mult, lane_why = await _lane_mult(lane, symbol if not _is_hedge(extra) else None, direction)
         notional = min(max(equity * notional_pct / 100, equity * (risk_pct if risk_pct is not None else LANE_RISK_PCT) / max(stop_pct, 0.1)) * lane_mult,
                        equity * LANE_MAX_NOTIONAL_PCT / 100)
+    coin_cap = None
     if not _is_hedge(extra):
         capped = lanes.net_cap_reason(direction, notional, [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]], equity)
         if capped:
             logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, capped)
             return None
+        if lanes.LANE_BOOK.get(lane, "auto") == "auto":          # a lane of this ledger's own; a book's mirror was capped at the book
+            from trading import capital
+            room = await asyncio.to_thread(capital.coin_room, symbol, direction, notional, "auto")
+            if room["notional"] <= 0:
+                logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, room["why"])
+                return None
+            notional, coin_cap = room["notional"], room["why"]
     t = await asyncio.to_thread(
         w.open_trade, symbol=symbol, direction=direction, entry_price=price,
         stop_loss=price * (1 - s * stop_pct / 100), take_profit_1=price * (1 + s * 0.9), take_profit_2=price * (1 + s * 0.95),
@@ -1132,7 +1140,7 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         leverage=_mirror_leverage(stop_pct, symbol),
         oracle_reasoning=reasoning[:200], hold_duration=hold,
         extra={"strategy": "auto", "exit_policy": "manual", "shadows": False, "entry_type": "market", "claude_verdict": "skipped",
-               "market_price_at_decision": price, "lane_mult": lane_mult, "lane_why": lane_why,
+               "market_price_at_decision": price, "lane_mult": lane_mult, "lane_why": lane_why, "coin_cap": coin_cap,
                "regime_at_entry": await regime.current(), **extra})
     if t.get("error"):
         logger.info("%s leg %s %s refused: %s", lane, direction, symbol, t["error"])

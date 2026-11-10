@@ -89,3 +89,54 @@ def test_expected_uses_the_evidence(monkeypatch):
     assert target.expected("events", 25_000, 0)[0] == 40.0
     assert target.expected("weekly_rs", 30_000, 0)[0] == round(0.0136 / 7 * 30_000, 2)
     assert target.expected("auto", 10_000, 0) == (None, "no evidence of an edge")
+
+
+# ── The programme-wide per-coin cap ────────────────────────────────────────────────────────────────────────
+
+def _books(tmp_path, monkeypatch):
+    from autotrader import lanes
+    from experiments import books
+    from trading import history
+    ws = {n: PaperWallet(str(tmp_path / f"{n}.db"), label=n, initial_balance=50_000) for n in ("main", "auto", "copy_trading", "auction", "prop")}
+    monkeypatch.setattr(history, "WALLETS", {"main": ws["main"], "auto": ws["auto"]})
+    monkeypatch.setattr(books, "WALLETS", {"copy_trading": ws["copy_trading"], "auction": ws["auction"], "prop": ws["prop"]})
+    monkeypatch.setattr(capital, "TOTAL", 200_000.0)
+    monkeypatch.setattr(capital, "COIN_CAP_PCT", 4.0)                      # $8,000 a coin
+    monkeypatch.setattr(lanes, "LANE_BOOK", {"reversal": "auto", "cascade": "cascade"})
+    return ws
+
+
+def _short(w, symbol, notional, **extra):
+    return w.open_trade(symbol=symbol, direction="short", entry_price=1.0, stop_loss=1.1, take_profit_1=0.5, take_profit_2=0.4,
+                        notional_usd=notional, timeframe="1d", leverage=2, extra={"exit_policy": "manual", "shadows": False, **extra})
+
+
+def test_coin_exposure_is_signed_by_book_and_skips_mirrors_and_prop(tmp_path, monkeypatch):
+    ws = _books(tmp_path, monkeypatch)
+    _short(ws["copy_trading"], "ARBUSDT", 6_000)
+    _short(ws["auto"], "ARBUSDT", 1_500, lane="reversal")
+    _short(ws["auto"], "ARBUSDT", 9_000, lane="cascade")                   # a mirror of the cascade book: counted there, not here
+    _short(ws["prop"], "ARBUSDT", 20_000)                                   # a separate account
+    ws["main"].open_trade(symbol="ARBUSDT", direction="long", entry_price=1.0, stop_loss=0.9, take_profit_1=1.5, take_profit_2=1.6,
+                          notional_usd=1_000, timeframe="1d", leverage=2, extra={"exit_policy": "manual", "shadows": False})
+    assert capital.coin_exposure("ARBUSDT") == {"main": 1_000.0, "auto": -1_500.0, "copy_trading": -6_000.0}
+    assert capital.coin_exposure("ETHUSDT") == {}
+
+
+def test_the_first_book_on_a_coin_is_not_capped_a_second_is_cut_or_skipped(tmp_path, monkeypatch):
+    ws = _books(tmp_path, monkeypatch)
+    assert capital.coin_room("ARBUSDT", "short", 50_000, "auction")["notional"] == 50_000           # alone: its own sizing rules
+    _short(ws["copy_trading"], "ARBUSDT", 6_000)
+    assert capital.coin_room("ARBUSDT", "short", 7_000, "copy_trading")["notional"] == 7_000        # the same book adding: not a second book
+    assert capital.coin_room("ARBUSDT", "long", 7_000, "auto")["notional"] == 7_000                 # the other side nets off
+    r = capital.coin_room("ARBUSDT", "short", 3_000, "auto")                                       # $2,000 of room: cut
+    assert r["notional"] == 2_000 and "cut $3,000 → $2,000" in r["why"] and "copy_trading $6,000 already short" in r["why"]
+    r = capital.coin_room("ARBUSDT", "short", 5_000, "auto")                                       # less than half fits: skipped
+    assert r["notional"] == 0 and r["why"].startswith("coin cap:") and r["held"] == {"copy_trading": -6_000.0}
+    _short(ws["main"], "ARBUSDT", 1_000)
+    assert capital.coin_room("ARBUSDT", "short", 1_500, "auto")["notional"] == 1_000               # net −$7,000: $1,000 left
+
+
+def test_the_cap_never_blocks_a_leg_it_cannot_measure(monkeypatch):
+    monkeypatch.setattr(capital, "coin_exposure", lambda symbol: (_ for _ in ()).throw(RuntimeError("db locked")))
+    assert capital.coin_room("ARBUSDT", "short", 4_000, "auto") == {"notional": 4_000, "why": None, "held": {}}
