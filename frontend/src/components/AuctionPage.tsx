@@ -3,7 +3,7 @@ import { Crosshair, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
-import type { AuctionInstrument, AuctionSnapshot } from '../types/auction'
+import type { AuctionInstrument, AuctionSnapshot, StockFlowReport } from '../types/auction'
 import type { UnifiedTrade } from '../types/overview'
 import { SortHeader, useSort } from './ui/Sortable'
 import { AuctionChart } from './AuctionChart'
@@ -142,6 +142,47 @@ function TradesTable({ rows }: { rows: UnifiedTrade[] }) {
 }
 
 /** The mentor's system on its own page: a different project from the autotrader and the main wallet. */
+const SCORE_LABEL: Record<string, string> = { crypto: 'Crypto signs (fade crowding, flow and price)', stock: 'Stock signs (follow flow and price, fade funding)' }
+
+/** US stock perps' positioning recorded every 4h, and two long/short scores judged forward — nothing trades. */
+function StockFlow() {
+  const [d, setD] = useState<StockFlowReport | null>(null)
+  useEffect(() => { let live = true; api.auction.stockFlow().then(x => { if (live) setD(x) }).catch(() => {}); return () => { live = false } }, [])
+  if (!d) return null
+  const pct = (n: number | null | undefined) => n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+  return (
+    <section className="card space-y-2">
+      <h3 className="text-sm font-semibold text-white">Stock flow shadow</h3>
+      <p className="max-w-3xl text-xs text-gray-400">
+        Every 4 hours: open interest, taker flow, funding and top-trader share for the {d.names_last || 40} most-traded US stock perps, recorded so the
+        stock side gets the positioning history the crypto score was built from. Two pre-registered books, long the top 5 / short the bottom 5 for
+        24h after 8 bps a side and funding. Verdict at {d.verdict_days} days: positive in both halves with t ≥ 2 on one slot a day. Nothing trades.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-xs">
+          <thead className="text-left text-[10px] uppercase tracking-wider text-gray-500">
+            <tr><th className="pb-1">Score</th><th className="text-right">Slots</th><th className="text-right">Avg slot</th><th className="text-right">Halves</th><th className="text-right">Daily t</th><th className="text-right">Days</th><th className="text-right">Verdict</th></tr>
+          </thead>
+          <tbody>
+            {Object.entries(d.scores).map(([k, v]) => (
+              <tr key={k} className="border-t border-gray-800/60">
+                <td className="py-1.5 text-gray-300">{SCORE_LABEL[k] ?? k}</td>
+                <td className="text-right text-gray-400">{v.all.n}</td>
+                <td className={clsx('text-right', tone(v.all.mean_pct))}>{pct(v.all.mean_pct)}</td>
+                <td className="text-right text-gray-400">{v.halves_pct.map(pct).join(' / ')}</td>
+                <td className="text-right text-gray-400">{v.daily.t ?? '—'}</td>
+                <td className="text-right text-gray-400">{v.days}/{d.verdict_days}</td>
+                <td className={clsx('text-right', v.verdict === 'works' ? 'text-emerald-400' : 'text-gray-500')}>{v.verdict}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-500">{d.recorded_marks} snapshots recorded{d.last_mark ? `, the last ${new Date(d.last_mark * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}; a snapshot is scored 24 hours after it is taken.</p>
+    </section>
+  )
+}
+
 export function AuctionPage() {
   const [d, setD] = useState<AuctionSnapshot | null>(null)
   const [trades, setTrades] = useState<UnifiedTrade[]>([])
@@ -289,6 +330,7 @@ export function AuctionPage() {
         <div className="flex items-baseline gap-2"><h3 className="text-sm font-semibold text-white">Recent trades</h3><button onClick={() => { setView('trades'); window.history.replaceState(null, '', '#mentor/trades') }} className="text-[11px] text-blue-400 hover:text-blue-300">all trades →</button></div>
         <TradesTable rows={trades.slice(0, 12)} />
       </section>
+      <StockFlow />
       </>}
     </div>
   )

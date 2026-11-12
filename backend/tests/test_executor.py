@@ -28,6 +28,7 @@ def test_lane_of_recognises_every_lane_marker():
 
 
 def test_lane_budget_is_the_books_plan_entry_scaled_to_the_ledger(monkeypatch):
+    monkeypatch.setattr(engine, "CASCADE_IN_AUTO", True)                 # the lane is off by default since 2026-11-11
     monkeypatch.setattr(capital, "PLAN", {"auto": 50_000.0, "events": 8_000.0, "unlocks": 4_000.0, "weekly_rs": 1_000.0, "cascade": 500.0, "multi_factor": 1_000.0, "main": 500.0})
     kv.delete_sync(capital._k("plan"))
     # a $50k ledger: every lane gets its budget in full
@@ -59,6 +60,7 @@ def test_reversal_score_fades_what_the_scanner_likes():
 
 
 def test_mirror_wallet_book_opens_sizes_and_closes_with_the_books_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "CASCADE_IN_AUTO", True)                 # the lane is off by default since 2026-11-11
     src = PaperWallet(str(tmp_path / "src.db"), label="cascade", initial_balance=500)
     active = PaperWallet(str(tmp_path / "active.db"), label="auto", initial_balance=5_000)
     monkeypatch.setitem(books.WALLETS, "cascade", src)
@@ -116,6 +118,7 @@ def test_signal_ledgers_are_hidden_and_hold_no_plan_money(monkeypatch):
 
 
 def test_mirror_ignores_what_the_book_already_held_when_the_lane_began(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "CASCADE_IN_AUTO", True)                 # the lane is off by default since 2026-11-11
     src = PaperWallet(str(tmp_path / "src2.db"), label="cascade", initial_balance=500)
     active = PaperWallet(str(tmp_path / "active2.db"), label="auto", initial_balance=5_000)
     monkeypatch.setitem(books.WALLETS, "cascade", src)
@@ -173,6 +176,7 @@ def test_the_scanner_lane_is_retired_by_default():
 
 
 def test_a_mirror_leg_is_deferred_while_the_coin_is_being_dumped(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "CASCADE_IN_AUTO", True)                 # the lane is off by default since 2026-11-11
     """TRUMP, 2026-11-04 17:29 UTC: the factor basket bought a coin 5% down on the half hour on 5× volume and it fell
     another 5% in the next five minutes. A leg is not opened into a move running against it; the next tick retries."""
     from trading import tape

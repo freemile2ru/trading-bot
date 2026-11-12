@@ -519,6 +519,33 @@ async def control_report(book: str):
     return await asyncio.to_thread(control.report, book)
 
 
+@router.get("/stock-flow")
+async def stock_flow_report():
+    """US stock perps' positioning, recorded every 4h, and the crypto-signed and stock-signed scores judged forward."""
+    from experiments import stock_flow
+    return await asyncio.to_thread(stock_flow.report)
+
+
+@router.get("/index-shadow/{signal}")
+async def index_shadow_report(signal: str):
+    """The reversal / cascade signal scored three ways on the same windows — the picked coin, an equal-weight alt index and
+    BTC+ETH — by entry episode, against a random-entry baseline, with the pre-registered verdict (forward episodes only)."""
+    from experiments import index_shadow
+    if signal not in index_shadow.SIGNALS:
+        raise HTTPException(404, f"no index shadow for {signal}; signals: {', '.join(index_shadow.SIGNALS)}")
+    return await asyncio.to_thread(index_shadow.report, signal)
+
+
+@router.post("/index-shadow/{signal}/run")
+async def index_shadow_run(signal: str, limit: int = Query(50, ge=1, le=500)):
+    """Backfill the index shadow for the signal's closed trades."""
+    from experiments import index_shadow
+    if signal not in index_shadow.SIGNALS:
+        raise HTTPException(404, f"no index shadow for {signal}; signals: {', '.join(index_shadow.SIGNALS)}")
+    out = await index_shadow.run(signal, limit)
+    return {**out, "report": await asyncio.to_thread(index_shadow.report, signal)}
+
+
 @router.post("/control/{book}/run")
 async def control_run(book: str, limit: int = Query(50, ge=1, le=500)):
     """Backfill the controls for the book's closed trades whose 48-hour window has passed."""

@@ -89,10 +89,12 @@ def test_autotrader_hooks_present():
     from autotrader import engine
     src = open(engine.__file__).read()
     assert src.count("calendar.macro_blackout(") == 2          # _enter and _daily_minimum
-    assert src.count('"near_event": calendar.near_event(') == 2
-    from experiments import claude_swing
+    assert src.count('"near_event": calendar.near_event(') == 3   # _enter, the daily minimum, and every lane / mirror leg
+    from experiments import burst, cascade, claude_swing, copy_trading, prop
     s2 = open(claude_swing.__file__).read()
     assert "calendar.macro_blackout()" in s2 and '"near_event": calendar.near_event(sym)' in s2
+    for mod in (copy_trading, prop, cascade, burst):                   # every book stamps the tag (2026-11-10)
+        assert '"near_event":' in open(mod.__file__).read(), mod.__name__
 
 
 def test_page_lists_rules_and_splits_tagged_trades(monkeypatch):
@@ -105,7 +107,10 @@ def test_page_lists_rules_and_splits_tagged_trades(monkeypatch):
                                {"symbol": "ETHUSDT", "direction": "short", "near_event": None, "pnl_usd": -100.0, "risk_usd": 100.0,
                                 "opened_at": "2026-10-29T10:00:00", "closed_at": "2026-10-29T20:00:00", "close_reason": "stop_loss"},
                                {"symbol": "SOLUSDT", "direction": "short", "pnl_usd": -100.0, "risk_usd": 100.0,      # pre-tagging: ignored
-                                "opened_at": "2026-10-20T10:00:00", "closed_at": "2026-10-20T20:00:00"}],
+                                "opened_at": "2026-10-20T10:00:00", "closed_at": "2026-10-20T20:00:00"},
+                               {"symbol": "ZECUSDT", "direction": "short", "near_event": None, "pnl_usd": 20.0,      # no risk_usd: R from the stop
+                                "entry_price": 100.0, "stop_loss": 110.0, "quantity": 2.0,
+                                "opened_at": "2026-10-29T12:00:00", "closed_at": "2026-10-29T20:00:00", "close_reason": "expired"}],
                     "open": [{"symbol": "NVDAUSDT", "direction": "long", "near_event": "NVDA earnings (after the close)", "opened_at": "2026-10-30T10:00:00"}]}
 
     monkeypatch.setattr(calendar, "_wallets", lambda: {"auto": W()})
@@ -123,5 +128,5 @@ def test_page_lists_rules_and_splits_tagged_trades(monkeypatch):
     assert len(d["past"]) == calendar.PAST_MACRO and d["past"][0]["ts"] > d["past"][1]["ts"] and d["past"][0]["btc"]["day_pct"] == -3.1
     tr = d["trades"]
     assert tr["near"] == {"trades": 2, "closed": 1, "avg_r": 0.5, "pnl_usd": 50.0, "win_pct": 100}
-    assert tr["clear"] == {"trades": 1, "closed": 1, "avg_r": -1.0, "pnl_usd": -100.0, "win_pct": 0}
+    assert tr["clear"] == {"trades": 2, "closed": 2, "avg_r": 0.0, "pnl_usd": -80.0, "win_pct": 50}
     assert [r["symbol"] for r in tr["rows"]] == ["NVDAUSDT", "BTCUSDT"] and tr["rows"][0]["r"] is None

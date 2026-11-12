@@ -149,7 +149,10 @@ def status(now: float | None = None) -> dict:
 PAGE_AHEAD_DAYS = 365
 PAGE_PAST_DAYS = 120
 PAST_MACRO = 6
-HOOKED_BOOKS = ("auto", "auto_live", "claude_swing", "stocks_trend")
+# Every book stamps near_event at entry (2026-11-10; before that only the autotrader's scanner path, the Claude swing
+# and the stock trend books did, none of which trades on production — the report was empty there).
+HOOKED_BOOKS = ("main", "auto", "auto_live", "copy_trading", "copy_stocks", "copy_futures", "auction", "prop", "cascade", "burst_up", "burst_dip",
+                "weekly_rs", "claude_swing", "stocks_trend")
 
 
 def _rule(e: dict) -> str:
@@ -187,9 +190,13 @@ def _wallets() -> dict:
     from experiments import books
     from live import swing as live_swing
     from markets import engine as markets
+    from trading import history
     out = {f"auto{'_live' if w.label.endswith('_live') else ''}": w for w in live_swing.wallets("auto")}
-    out["claude_swing"] = books.WALLETS["claude_swing"]
+    out["main"] = history.WALLETS["main"]
     out["stocks_trend"] = markets.WALLETS["stocks_trend"]
+    for name in HOOKED_BOOKS:
+        if name in books.WALLETS:
+            out[name] = books.WALLETS[name]
     return out
 
 
@@ -201,7 +208,9 @@ def near_event_trades() -> dict:
         for t in all_t["closed"] + all_t["open"]:
             if "near_event" not in t:
                 continue
-            r = (t["pnl_usd"] / t["risk_usd"]) if t.get("closed_at") and t.get("risk_usd") else None
+            risk = t.get("risk_usd") or (abs(t["entry_price"] - t["stop_loss"]) * t["quantity"]
+                                         if t.get("entry_price") and t.get("stop_loss") and t.get("quantity") else None)
+            r = (t["pnl_usd"] / risk) if t.get("closed_at") and risk and t.get("pnl_usd") is not None else None
             row = {"book": book, "symbol": t["symbol"], "direction": t["direction"], "event": t.get("near_event"),
                    "opened_at": t.get("opened_at"), "closed_at": t.get("closed_at"), "pnl_usd": t.get("pnl_usd") if t.get("closed_at") else None,
                    "r": None if r is None else round(r, 2), "close_reason": t.get("close_reason")}
@@ -210,9 +219,11 @@ def near_event_trades() -> dict:
                 rows.append(row)
 
     def _sum(xs: list[dict]) -> dict:
-        done = [x for x in xs if x["r"] is not None]
-        return {"trades": len(xs), "closed": len(done), "avg_r": round(sum(x["r"] for x in done) / len(done), 2) if done else None,
-                "pnl_usd": round(sum(x["pnl_usd"] or 0 for x in done), 2), "win_pct": round(100 * sum(x["r"] > 0 for x in done) / len(done)) if done else None}
+        done = [x for x in xs if x["closed_at"]]
+        rs = [x["r"] for x in done if x["r"] is not None]
+        return {"trades": len(xs), "closed": len(done), "avg_r": round(sum(rs) / len(rs), 2) if rs else None,
+                "pnl_usd": round(sum(x["pnl_usd"] or 0 for x in done), 2),
+                "win_pct": round(100 * sum((x["pnl_usd"] or 0) > 0 for x in done) / len(done)) if done else None}
     rows.sort(key=lambda x: x["opened_at"] or "", reverse=True)
     return {"near": _sum(near), "clear": _sum(clear), "rows": rows[:50]}
 

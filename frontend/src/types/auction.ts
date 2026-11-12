@@ -53,3 +53,10 @@ export interface AuctionChartData {
             level?: string | null; target_name?: string | null; grade?: number | null; reason?: string | null; pnl_usd?: number | null; status: string }[]
   events_error?: string
 }
+
+/** Stock flow shadow (experiments/stock_flow.py): US stock perps' positioning recorded every 4h, two scores judged forward. */
+export interface StockFlowStat { n: number; mean_pct?: number | null; t?: number | null; pos_pct?: number }
+export interface StockFlowReport {
+  since: number; recorded_marks: number; scored_marks: number; verdict_days: number; last_mark: number | null; names_last: number
+  scores: Record<string, { signs: Record<string, number>; all: StockFlowStat; daily: StockFlowStat; halves_pct: (number | null)[]; days: number; verdict: string }>
+}

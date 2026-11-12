@@ -111,6 +111,16 @@ async def monitor_all() -> None:
     except Exception as e:
         logging.getLogger("experiments").warning("Control data failed: %s", e)
     try:
+        from experiments import index_shadow
+        await index_shadow.tick()                   # every 15 minutes: the reversal and cascade signals scored on the alt index
+    except Exception as e:
+        logging.getLogger("experiments").warning("Index shadow failed: %s", e)
+    try:
+        from experiments import stock_flow
+        await stock_flow.tick()                     # every 4h mark: US stock perps' positioning recorded, two scores judged forward
+    except Exception as e:
+        logging.getLogger("experiments").warning("Stock flow failed: %s", e)
+    try:
         from experiments import events
         await events.tick()
     except Exception as e:

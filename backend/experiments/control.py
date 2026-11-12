@@ -29,9 +29,10 @@ HORIZONS_H = (1, 2, 4, 8, 24, 48)
 AFTER_EXIT_H = (1, 4, 24)
 CONTROL_EVERY_S = int(os.getenv("CONTROL_EVERY_S", "900"))
 BATCH = int(os.getenv("CONTROL_BATCH", "20"))
-BOOKS = [b.strip() for b in os.getenv("CONTROL_BOOKS", "cascade,auto:cascade,auto:reversal,burst_up,burst_dip,prop,auction").split(",") if b.strip()]
+BOOKS = [b.strip() for b in os.getenv("CONTROL_BOOKS", "cascade,auto:cascade,auto:reversal,burst_up,burst_dip,prop,auction,weekly_rs,auto:weekly").split(",") if b.strip()]
 # Each book's own horizon: an exit before it is "early" in the report.
-HORIZON_OF = {"cascade": 4.0, "auto:cascade": 4.0, "burst_up": 4.0, "burst_dip": 4.0, "auto:reversal": 24.0, "prop": 24.0, "auction": 6.5}
+HORIZON_OF = {"cascade": 4.0, "auto:cascade": 4.0, "burst_up": 4.0, "burst_dip": 4.0, "auto:reversal": 24.0, "prop": 24.0, "auction": 6.5,
+              "weekly_rs": 168.0, "auto:weekly": 168.0}   # weekly legs live to the next Monday: the controls (≤ 48h) show the first two days
 REPLAY_V = 2                                                      # bump when replay() changes: older records are redone by the tick
 FEE_BPS = 5.0                                                     # taker, one side — the controls pay an exit like ours did
 INDEX_KEEP = 600

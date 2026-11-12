@@ -11,9 +11,9 @@ import type { MarketSummary } from '../types/markets'
 import type { GuardsStatus } from '../types/guards'
 import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '../types/ops'
 import type { CopyStatus } from '../types/copy'
-import type { AuctionChartData, AuctionSnapshot } from '../types/auction'
+import type { AuctionChartData, AuctionSnapshot, StockFlowReport } from '../types/auction'
 import type { PropStatus } from '../types/prop'
-import type { ControlReport } from '../types/control'
+import type { ControlReport, IndexShadowReport } from '../types/control'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
 
@@ -158,6 +158,9 @@ export const api = {
     report: (book: string) => get<ControlReport>(`/control/${encodeURIComponent(book)}`),
     run: (book: string, limit = 50) => post<{ recorded: number; pending: number; report: ControlReport }>(`/control/${encodeURIComponent(book)}/run?limit=${limit}`),
   },
+  indexShadow: {
+    report: (signal: string) => get<IndexShadowReport>(`/index-shadow/${signal}`),
+  },
   prop: {
     status: () => get<PropStatus>('/prop'),
     tick: () => post<{ tick: unknown; status: PropStatus }>('/prop/tick'),
@@ -167,6 +170,7 @@ export const api = {
     status: () => get<AuctionSnapshot>('/auction'),
     tick: () => post<{ events: unknown[]; snapshot: AuctionSnapshot }>('/auction/tick'),
     chart: (symbol: string, bars = 600) => get<AuctionChartData>(`/auction/chart/${symbol}?bars=${bars}`),
+    stockFlow: () => get<StockFlowReport>('/stock-flow'),
   },
   portfolio: {
     overview: (includeRetired = false) => get<PortfolioOverview>(`/portfolio/overview${includeRetired ? '?include_retired=true' : ''}`),

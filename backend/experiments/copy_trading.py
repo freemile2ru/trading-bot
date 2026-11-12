@@ -1087,6 +1087,7 @@ async def mirror(now: float | None = None) -> dict:
                 stop = stop_pct(L.get("profile"))
                 cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
                 notional = min(leg_notional(equity, stop, market) * size_x, equity * cap / 100)       # sized up, never past the cap
+                from ops import calendar
                 from trading import capital
                 room = capital.coin_room(r["symbol"], r["side"], notional, book)
                 if room["notional"] <= 0:
@@ -1107,7 +1108,7 @@ async def mirror(now: float | None = None) -> dict:
                                         "venue_x": venue_x, "venue_why": venue_why, "pattern_x": pattern_x, "pattern_why": pattern_why,
                                         "week_x": week_x, "week_why": week_why,
                                         "second_look_view": look["view"], "second_look_why": look["why"], "second_look_x": look["x"],
-                                        "coin_cap": room["why"], "coin_held": room["held"],
+                                        "coin_cap": room["why"], "coin_held": room["held"], "near_event": calendar.near_event(r["symbol"]),
                                         "second_look_claude": (look.get("claude") or {}).get("view"), "second_look_tape": look.get("features")})
                 if t.get("error"):
                     logger.info("Copy %s %s refused in %s: %s", r["side"], r["symbol"], book, t["error"])

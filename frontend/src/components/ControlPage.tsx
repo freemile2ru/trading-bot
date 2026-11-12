@@ -3,11 +3,11 @@ import { FlaskConical, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
-import type { ControlAgg, ControlReport, ControlRow } from '../types/control'
+import type { ControlAgg, ControlReport, ControlRow, IndexShadowReport, ShadowStat } from '../types/control'
 
 const LABELS: Record<string, string> = {
   cascade: 'Cascade book', 'auto:cascade': 'Autotrader · cascade lane', 'auto:reversal': 'Autotrader · reversal lane',
-  burst_up: 'Burst · up', burst_dip: 'Burst · dip', prop: 'Prop book', auction: 'Auction book',
+  burst_up: 'Burst · up', burst_dip: 'Burst · dip', prop: 'Prop book', auction: 'Auction book', weekly_rs: 'Weekly near-high book', 'auto:weekly': 'Autotrader · weekly lane',
 }
 
 function when(ts: number): string {
@@ -28,6 +28,60 @@ function AggRow({ label, a, horizons, after, note }: { label: string; a: Control
       <td className="text-right text-gray-400">{a.avg_hold_h?.toFixed(1)}h</td>
       <td className="text-right text-gray-500">{a.stopped_share_pct?.toFixed(0)}%</td>
     </tr>
+  )
+}
+
+const SIGNAL_LABEL: Record<string, string> = { reversal: 'Reversal score', cascade: 'Cascade fade' }
+
+function Stat({ s }: { s: ShadowStat | undefined }) {
+  if (!s?.n) return <td className="text-right text-gray-600">—</td>
+  return <td className={clsx('text-right', tone(s.mean_pct))} title={`t ${s.t ?? '—'} · ${s.pos_pct}% of episodes positive`}>{pct(s.mean_pct)}</td>
+}
+
+/** The reversal and cascade signals on the same windows three ways — the picked coin, the alt index, BTC+ETH — by episode. */
+function IndexShadow() {
+  const [reps, setReps] = useState<IndexShadowReport[]>([])
+  useEffect(() => {
+    let live = true
+    Promise.all(['reversal', 'cascade'].map(s => api.indexShadow.report(s).catch(() => null)))
+      .then(xs => { if (live) setReps(xs.filter((x): x is IndexShadowReport => !!x)) })
+    return () => { live = false }
+  }, [])
+  if (!reps.length) return null
+  const since = new Date(reps[0].since * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return (
+    <section className="card">
+      <h3 className="text-sm font-semibold text-white">Index shadow · coin or market?</h3>
+      <p className="mt-1 max-w-3xl text-xs text-gray-400">
+        Each closed reversal and cascade trade, scored on its own window three ways, net of a {reps[0].fee_rt_pct}% round trip: the coin we picked, an
+        equal-weight index of {reps[0].index.length} large alts, and BTC+ETH. Entries within two hours are one episode. The baseline holds the index for the
+        signal's median hold from every hour of the same period. Verdict on episodes from {since} at {reps[0].verdict_episodes}: the index must beat the coin
+        by {reps[0].min_gap_pct}% an episode with t ≥ 2 and both halves agreeing. Nothing here trades.
+      </p>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[760px] text-xs">
+          <thead className="text-left text-[10px] uppercase tracking-wider text-gray-500">
+            <tr><th className="pb-1">Signal</th><th className="text-right">Episodes</th><th className="text-right">What we made</th><th className="text-right">Coin</th>
+              <th className="text-right">Alt index</th><th className="text-right">BTC+ETH</th><th className="text-right">Random baseline</th><th className="text-right">Forward</th><th className="text-right">Verdict</th></tr>
+          </thead>
+          <tbody>
+            {reps.flatMap(r => (['short', 'long'] as const).filter(sd => r.sides[sd]).map(sd => {
+              const v = r.sides[sd]!
+              return (
+                <tr key={r.signal + sd} className="border-t border-gray-800/60">
+                  <td className="py-1.5 text-gray-300">{SIGNAL_LABEL[r.signal] ?? r.signal} · {sd}s<span className="text-gray-600"> · {v.trades} trades</span></td>
+                  <td className="text-right text-gray-400">{v.all.episodes}</td>
+                  <Stat s={v.all.actual_pct} /><Stat s={v.all.coin_pct} /><Stat s={v.all.index_pct} /><Stat s={v.all.majors_pct} />
+                  <td className={clsx('text-right', tone(v.baseline?.mean_pct))}>{v.baseline ? `${pct(v.baseline.mean_pct)} · ${v.baseline.hold_h}h` : '—'}</td>
+                  <td className="text-right text-gray-400">{v.forward.episodes}/{r.verdict_episodes}</td>
+                  <td className={clsx('text-right', v.verdict.verdict === 'index better' ? 'text-emerald-300' : v.verdict.verdict === 'measuring' ? 'text-gray-500' : 'text-gray-300')}>{v.verdict.verdict}</td>
+                </tr>
+              )
+            }))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 
@@ -124,6 +178,7 @@ export function ControlPage() {
           </div>
         </section>
       )}
+      <IndexShadow />
     </div>
   )
 }

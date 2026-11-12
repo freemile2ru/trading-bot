@@ -114,7 +114,12 @@ EVENT_HEDGE_STOP_PCT = 40.0
 # regime. The mirrors use the same per-leg size; the weekly basket mirrors through _mirror_wallet_book like the others.
 UNLOCKS_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_UNLOCKS", "false").lower() == "true"
 WEEKLY_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_WEEKLY", "false").lower() == "true"
-CASCADE_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_CASCADE", "false").lower() == "true"
+# The cascade lane was switched off on 2026-11-11 with the user: the cascade signal earns ~12 bps a trade before costs against
+# ~10 bps of fees on the book and on its mirror alike (25 mirrors: +$12 gross, $172 of costs), so size cannot rescue it.
+# The $500 cascade book keeps measuring, and research/index_shadow.py scores the signal on the alt index instead of the
+# cascaded coin (the market rebounds, the coin lags). Open mirrors are still closed with the book. AUTOTRADER_CASCADE=true
+# brings the lane back.
+CASCADE_IN_AUTO = os.getenv("AUTOTRADER_CASCADE", "false").lower() == "true"
 FACTOR_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_FACTOR", "false").lower() == "true"
 REVERSAL_IN_AUTO = EXECUTOR or os.getenv("AUTOTRADER_REVERSAL", "false").lower() == "true"
 # The scanner lane ("ta": the scanner's conviction with Claude's confirmation, the original autotrader) was retired on
@@ -1087,6 +1092,7 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
                            sized: dict | None = None) -> dict | None:
     """One leg of a mirrored position: market entry, a disaster stop, no targets, the book decides the exit. A `sized`
     plan (autotrader/sizing.py) fixes the notional and replaces the lane allocator's multiplier with its own reasons."""
+    from ops import calendar
     price = await monitor.live_price(symbol)
     if not price:
         return None
@@ -1141,7 +1147,7 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         oracle_reasoning=reasoning[:200], hold_duration=hold,
         extra={"strategy": "auto", "exit_policy": "manual", "shadows": False, "entry_type": "market", "claude_verdict": "skipped",
                "market_price_at_decision": price, "lane_mult": lane_mult, "lane_why": lane_why, "coin_cap": coin_cap,
-               "regime_at_entry": await regime.current(), **extra})
+               "near_event": calendar.near_event(symbol), "regime_at_entry": await regime.current(), **extra})
     if t.get("error"):
         logger.info("%s leg %s %s refused: %s", lane, direction, symbol, t["error"])
         return None
@@ -1254,7 +1260,7 @@ def _lane_budget(lane: str, equity: float) -> float:
     from trading import capital
     plan = capital.plan()
     budgets = {l: (plan.get(lanes.LANE_BOOK[l], 0.0) if lanes.LANE_BOOK[l] != "auto" else ENTRY_BUDGET_USD) for l in lanes.LANES
-               if l != "ta" or TA_LANE}                                   # the retired scanner lane reserves nothing
+               if (l != "ta" or TA_LANE) and (l != "cascade" or CASCADE_IN_AUTO)}   # a switched-off lane reserves nothing
     total = sum(budgets.values()) or 1.0
     mine = budgets.get(lane, 0.0)
     return mine if total <= equity else equity * mine / total
@@ -1267,21 +1273,24 @@ def _stop_pct_of(t: dict) -> float:
 
 async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
     """Mirror a paper-wallet signal book (cascade, multi-factor) on the active ledger: open what it opens, at the same
-    share of the lane's budget that the book used of its own equity; close when it closes, with its reason."""
-    if not enabled or await is_paused():
+    share of the lane's budget that the book used of its own equity; close when it closes, with its reason. A switched-off
+    lane opens nothing but still closes the mirrors it holds when the book closes them."""
+    if await is_paused():
         return
     from experiments import books as experiment_books_
     if not experiment_books_.ENABLED or book not in experiment_books_.WALLETS:
         return
+    key = kv.key("auto", f"{lane}_mirror")
+    mirrored = await kv.hgetall(key)
+    if not enabled and not mirrored:
+        return
     src = experiment_books_.WALLETS[book]
     sp = src.get_portfolio()
     src_open = {t["id"]: t for t in sp["open_trades"]}
-    key = kv.key("auto", f"{lane}_mirror")
-    mirrored = await kv.hgetall(key)
     # Only positions the book opens from now on are followed (2026-11-01): what it already held when this lane began — or
     # when the ledger changed — is entered late, at a different price, with its thesis partly spent, and is left alone.
     since_key = kv.key("auto", f"{lane}_since")
-    if not await kv.get(since_key):
+    if enabled and not await kv.get(since_key):
         await kv.set(since_key, {"at": time.time()}, 10 * 365 * 86400)
         for sid, t in src_open.items():
             if sid not in mirrored:
@@ -1292,7 +1301,7 @@ async def _mirror_wallet_book(book: str, lane: str, enabled: bool) -> None:
     budget = _lane_budget(lane, equity)
     held = {t["symbol"] for ww in _wallets() for t in ww.get_portfolio()["open_trades"]}
     now = time.time()
-    for sid, t in src_open.items():
+    for sid, t in (src_open.items() if enabled else ()):
         if sid in mirrored or t["symbol"] in held:
             continue                                        # already mirrored, or ended on its own (kept as "ended" so it isn't re-opened)
         late = mirror_too_late(t, now)

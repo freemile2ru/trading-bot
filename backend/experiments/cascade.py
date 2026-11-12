@@ -135,6 +135,7 @@ async def tick(now: float | None = None) -> list[dict]:
                                           f"(threshold ${q['threshold']:,.0f}), entered {ENTRY_DELAY_MIN:g} min later",
                          hold_duration=f"{HOLD_HOURS:g}h",
                          extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
+                                "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(q["symbol"]),
                                 "entry_type": "market", "cascade_notional": q["longs"] + q["shorts"], "cascade_bucket": q["bucket"],
                                 "entry_delay_min": ENTRY_DELAY_MIN, "rule": "v2"})
         if t.get("error"):

@@ -178,6 +178,7 @@ async def tick(now: float | None = None) -> list[dict]:
                          oracle_reasoning=f"{BOOKS[book]['label']}: {q['move_pct']:+.2f}% in 5 min ({q['sigma_x']}σ, {q['vol_x']}× volume), "
                                           f"entered {BOOKS[book]['delay_min']} min after", hold_duration=f"{HOLD_H:g}h",
                          extra={"strategy": book, "exit_policy": "manual", "shadows": True, "claude_verdict": "skipped", "entry_type": "market",
+                                "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(q["symbol"]),
                                 "burst_move_pct": q["move_pct"], "burst_sigma_x": q["sigma_x"], "burst_vol_x": q["vol_x"],
                                 "burst_trigger_ts": q["trigger_ts"], "entry_delay_min": BOOKS[book]["delay_min"], "rule": "v1"})
         if t.get("error"):

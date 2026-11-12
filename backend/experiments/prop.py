@@ -157,6 +157,7 @@ async def _enter(source: str, symbol: str, direction: str, px: float, stop: floa
                      notional_usd=notional, leverage=lev, timeframe="1d" if source == "reversal" else "5m", oracle_confidence=0,
                      oracle_reasoning=why[:200], hold_duration=f"{REVERSAL_HOLD_H:g}h" if source == "reversal" else "to the level, the stop or the close",
                      extra={"strategy": BOOK, "source": source, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market",
+                            "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(symbol),
                             "prop_attempt": st["attempt"], "hl_coin": coin, "leverage_cap": cap, "risk_pct": R.RISK_PCT[source],
                             "equity_at_entry": led["equity"], **extra})
     if t.get("error"):
