@@ -1384,6 +1384,12 @@ async def _reversal_lane(scans: list[dict]) -> None:
         await prop.mirror_reversal(picks, scores, now)
     except Exception as e:
         logger.warning("Prop book reversal mirror failed: %s", e)
+    if "long" not in REVERSAL_SIDES:
+        try:
+            from experiments import entry_cells               # the long leg the lane does not take, written down and scored 24h later
+            await entry_cells.shadow_reversal_longs(scores, REVERSAL_K, bucket, now)
+        except Exception as e:
+            logger.warning("Reversal long shadow failed: %s", e)
     w = _active()
     equity = w.get_portfolio()["total_equity"]
     all_open = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]

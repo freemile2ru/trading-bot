@@ -3,7 +3,7 @@ import { FlaskConical, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
-import type { ControlAgg, ControlReport, ControlRow, IndexShadowReport, ShadowStat } from '../types/control'
+import type { CellStat, ControlAgg, ControlReport, ControlRow, EntryCellsReport, IndexShadowReport, ShadowStat } from '../types/control'
 
 const LABELS: Record<string, string> = {
   cascade: 'Cascade book', 'auto:cascade': 'Autotrader · cascade lane', 'auto:reversal': 'Autotrader · reversal lane',
@@ -81,6 +81,105 @@ function IndexShadow() {
           </tbody>
         </table>
       </div>
+    </section>
+  )
+}
+
+function Cell({ s }: { s: CellStat | undefined }) {
+  if (!s?.n) return <td className="text-right text-gray-600">—</td>
+  return <td className={clsx('text-right', tone(s.mean_pct))} title={`t ${s.t ?? '—'} · ${s.pos_pct}% positive · ${s.sum_pct}% in all`}>{pct(s.mean_pct)}<span className="text-gray-600"> · {s.n}</span></td>
+}
+
+const FLAG_LABEL: Record<string, string> = { funding_paid: 'funding paid', btc_up: 'BTC up on the day', chasing_4h: 'coin up in the last 4h', us_open: '12–16 UTC' }
+
+/** The conditions at every crypto entry, scored forward: the long gate, the two short cells, the reversal lane's untaken long leg. */
+function EntryCells() {
+  const [d, setD] = useState<EntryCellsReport | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let live = true
+    api.entryCells.report().then(x => { if (live) setD(x) }).catch(() => null)
+    return () => { live = false }
+  }, [])
+  if (!d) return null
+  const since = new Date(d.since * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const run = async () => { setBusy(true); try { setD((await api.entryCells.run()).report) } finally { setBusy(false) } }
+  const verdictTone = (v: string) => v === 'measuring' ? 'text-gray-500' : v.includes('works') || v.includes('real') ? 'text-emerald-300' : 'text-gray-300'
+  const sh = d.reversal_long_shadow
+  return (
+    <section className="card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Entry cells · where the long losses sit</h3>
+          <p className="mt-1 max-w-3xl text-xs text-gray-400">
+            The 2026-11-12 entry research scored every closed trade on its bars: long entries were random (best excursion ÷ worst ≈ 1.0 at every window) and
+            the losses sat in four cells — funding paid ≥ {d.long.gate.funding_max_pct}%/8h, BTC up over the 24h before, the coin up in the last 4h, 12–16 UTC — while
+            alt shorts on a BTC +2% day and shorts opened 16–20 UTC were the best cells. Recorded here for every crypto entry from {since}; the backfill is shown,
+            not scored. Verdicts at {d.verdict_n}: the kept longs must beat the rejected (a cell its complement) by {d.min_gap_pct}% a trade, t ≥ 2, both halves agreeing. Nothing here trades.
+          </p>
+        </div>
+        <button onClick={run} disabled={busy} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-xs text-gray-200 disabled:opacity-50">
+          <RefreshCw className={clsx('h-3.5 w-3.5', busy && 'animate-spin')} /> Backfill{d.pending ? ` (${d.pending} waiting)` : ''}
+        </button>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[720px] text-xs">
+          <thead className="text-left text-[10px] uppercase tracking-wider text-gray-500">
+            <tr><th className="pb-1">Cell</th><th className="text-right">All · in</th><th className="text-right">All · out</th><th className="text-right">Forward · in</th><th className="text-right">Forward · out</th><th className="text-right">Gap</th><th className="text-right">Verdict</th></tr>
+          </thead>
+          <tbody>
+            <tr className="border-t border-gray-800/60">
+              <td className="py-1.5 text-gray-300">Long gate <span className="text-gray-600">· kept vs rejected</span></td>
+              <Cell s={d.long.all.kept} /><Cell s={d.long.all.rejected} /><Cell s={d.long.forward.kept} /><Cell s={d.long.forward.rejected} />
+              <td className={clsx('text-right', tone(d.long.verdict.gap_pct))}>{d.long.verdict.gap_pct != null ? `${pct(d.long.verdict.gap_pct)} · t ${d.long.verdict.t ?? '—'}` : `${d.long.verdict.have ?? 0}/${d.long.verdict.needed ?? d.verdict_n}`}</td>
+              <td className={clsx('text-right', verdictTone(d.long.verdict.verdict))}>{d.long.verdict.verdict}</td>
+            </tr>
+            {Object.entries(d.long.all.by_flag).map(([f, s]) => (
+              <tr key={f} className="border-t border-gray-800/30 text-gray-500">
+                <td className="py-1 pl-4">rejected for {FLAG_LABEL[f] ?? f}</td><Cell s={s} /><td /><Cell s={d.long.forward.by_flag[f]} /><td /><td /><td />
+              </tr>
+            ))}
+            {Object.entries(d.short_cells).map(([k, c]) => (
+              <tr key={k} className="border-t border-gray-800/60">
+                <td className="py-1.5 text-gray-300">Shorts · {c.label}</td>
+                <Cell s={c.all.in} /><Cell s={c.all.out} /><Cell s={c.forward.in} /><Cell s={c.forward.out} />
+                <td className={clsx('text-right', tone(c.verdict.gap_pct))}>{c.verdict.gap_pct != null ? `${pct(c.verdict.gap_pct)} · t ${c.verdict.t ?? '—'}` : `${c.verdict.have ?? 0}/${c.verdict.needed ?? d.verdict_n}`}</td>
+                <td className={clsx('text-right', verdictTone(c.verdict.verdict))}>{c.verdict.verdict}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-gray-800/60">
+              <td className="py-1.5 text-gray-300">Reversal long leg <span className="text-gray-600">· not taken, {sh.hold_h}h, coin / BTC-hedged</span></td>
+              <Cell s={sh.coin} /><Cell s={sh.hedged} /><td className="text-right text-gray-600">—</td><Cell s={sh.forward.hedged} />
+              <td className="text-right text-gray-400">{sh.forward.n}/{sh.needed}{sh.forward.halves_pct[0] != null ? ` · ${pct(sh.forward.halves_pct[0])} / ${pct(sh.forward.halves_pct[1])}` : ''}</td>
+              <td className={clsx('text-right', verdictTone(sh.verdict))}>{sh.verdict}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {d.recent.length > 0 && (
+        <details className="mt-3 text-xs">
+          <summary className="cursor-pointer text-gray-500">Recent entries · {d.recorded} recorded</summary>
+          <table className="mt-2 w-full min-w-[720px] text-xs">
+            <thead className="text-left text-[10px] uppercase tracking-wider text-gray-500">
+              <tr><th>When</th><th>Book</th><th>Trade</th><th className="text-right">Net</th><th className="text-right">Funding</th><th className="text-right">BTC 24h</th><th className="text-right">Coin 4h</th><th className="text-right">UTC</th><th>Cells</th></tr>
+            </thead>
+            <tbody>
+              {d.recent.map(r => (
+                <tr key={r.trade_id} className="border-t border-gray-800/40">
+                  <td className="py-1 text-gray-400">{when(r.opened_ts)}</td><td className="text-gray-400">{r.book}{r.lane ? `:${r.lane}` : ''}</td>
+                  <td className="text-gray-300">{r.direction} {r.symbol.replace('USDT', '')}</td>
+                  <td className={clsx('text-right', tone(r.actual_pct))}>{pct(r.actual_pct)}</td>
+                  <td className="text-right text-gray-400">{r.fund_pct == null ? '—' : `${r.fund_pct.toFixed(3)}%`}</td>
+                  <td className={clsx('text-right', tone(r.btc24_pct))}>{pct(r.btc24_pct, 1)}</td>
+                  <td className={clsx('text-right', tone(r.pre4_pct))}>{pct(r.pre4_pct, 1)}</td>
+                  <td className="text-right text-gray-500">{r.hour}h</td>
+                  <td className="text-gray-500">{r.direction === 'long' ? (r.kept ? 'kept' : (r.flags ?? []).map(f => FLAG_LABEL[f] ?? f).join(', ')) : (r.cells ?? []).map(c => d.short_cells[c]?.label ?? c).join(', ') || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
     </section>
   )
 }
@@ -178,6 +277,25 @@ export function ControlPage() {
           </div>
         </section>
       )}
+      {d?.all.e_ratio && (
+        <section className="card">
+          <h3 className="text-sm font-semibold text-white">Entry quality · E-ratio</h3>
+          <p className="mt-1 max-w-3xl text-xs text-gray-400">
+            Mean best excursion ÷ mean worst excursion after the entry, by window, from the replays above. A random entry scores about 1.0; above it the
+            entry is ahead of the price, below it behind. The 2026-11-12 research put all our longs at 1.07 / 0.98 / 0.92 and our shorts at 1.31 / 1.09 / 1.47.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-4 text-xs">
+            {Object.entries(d.all.e_ratio).map(([h, v]) => (
+              <div key={h} className="rounded-lg border border-gray-800 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">{h}</div>
+                <div className={clsx('text-base font-semibold', v == null ? 'text-gray-600' : v > 1.1 ? 'text-emerald-300' : v < 0.9 ? 'text-red-300' : 'text-gray-200')}>{v == null ? '—' : v.toFixed(2)}</div>
+              </div>
+            ))}
+            {d.early.e_ratio && d.early.n > 0 && <div className="self-center text-gray-500">early exits: {Object.entries(d.early.e_ratio).map(([h, v]) => `${h} ${v == null ? '—' : v.toFixed(2)}`).join(' · ')}</div>}
+          </div>
+        </section>
+      )}
+      <EntryCells />
       <IndexShadow />
     </div>
   )

@@ -546,6 +546,23 @@ async def index_shadow_run(signal: str, limit: int = Query(50, ge=1, le=500)):
     return {**out, "report": await asyncio.to_thread(index_shadow.report, signal)}
 
 
+@router.get("/entry-cells")
+async def entry_cells_report():
+    """The conditions at every crypto entry (funding, BTC's day, the coin's last 4h, the hour) scored forward: the long gate,
+    the two short cells and the reversal lane's untaken long leg, each with its pre-registered verdict."""
+    from experiments import entry_cells
+    return await asyncio.to_thread(entry_cells.report)
+
+
+@router.post("/entry-cells/run")
+async def entry_cells_run(limit: int = Query(50, ge=1, le=500)):
+    """Backfill the entry conditions for closed trades without a record, and settle the reversal long shadow."""
+    from experiments import entry_cells
+    out = [await entry_cells.run(b, limit) for b in entry_cells.BOOKS]
+    settled = await entry_cells.settle_shadow()
+    return {"runs": out, "settled": settled, "report": await asyncio.to_thread(entry_cells.report)}
+
+
 @router.post("/control/{book}/run")
 async def control_run(book: str, limit: int = Query(50, ge=1, le=500)):
     """Backfill the controls for the book's closed trades whose 48-hour window has passed."""

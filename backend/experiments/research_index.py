@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 from research.swing_lab import CACHE_DIR
 
@@ -325,6 +326,11 @@ RESEARCH: list[dict] = [
      "question": "On a gap-and-go session the auction book takes nothing (no retest, the chase gate). Does arming the day beyond the initial balance and entering the first EMA20 pullback pay, and what does the chase gate itself cost?",
      "finding": lambda d: f"{d['sessions']} sessions of {len(d['names'])} names ({d['period'][0]} → {d['period'][1]}), {d['cost_bps']} bps a side; " + "; ".join(f"{k}: {v['n']} trades, {v['won_pct']}% won, {v['net_per_trade_pct']:+.3f}% a trade ({v['first_half']['net_per_trade_pct']:+.3f} / {v['second_half']['net_per_trade_pct']:+.3f})" for k, v in d['arrangements'].items()),
      "decision": "trend_day rejected (2026-11-09) — both halves below zero, the pullback stop is hit two times in three; chase_gate goes forward as a shadow beside base (the gate removed net losers in the replay)", "book": "auction"},
+    # ── 2026-11-12: the entry research (docs/research/entry-research-2026-11-12.md) ──
+    {"key": "high_momentum", "title": "A long leg in liquid coins (near the 1-week high / 2-week momentum vs the dip-buy we do)", "script": "research/high_momentum_lab.py", "file": "high_momentum_results.json",
+     "question": "Our long entries are random (E-ratio ≈ 1.0 over 331 trades) and buy dips in liquid coins; Fičura 2023 finds the dip-buying weekly reversal only in illiquid coins and the distance from the 1-week high the stronger sort in liquid ones. Does a weekly long leg near the high, or on 2-week momentum, pay at our fees, alone or hedged with BTC?",
+     "finding": lambda d: f"{d['n_names']} coins, {d['weeks']} weeks ({datetime.fromtimestamp(d['from'], timezone.utc).date()} → {datetime.fromtimestamp(d['to'], timezone.utc).date()}), {d['cost_bps_side']} bps a side; " + "; ".join(f"{k}: {v['mean_pct']:+.2f}%/wk t {v['t']} ({v['halves_pct'][0]} / {v['halves_pct'][1]}) → {v['verdict']}" for k, v in d['books'].items() if k.endswith(('_hedged', '_long')) or k in ('btc', 'universe')),
+     "decision": "rejected (2026-11-12) — 199 weeks of 40 coins (a universe chosen by today's volume, which flatters every long leg): no hedged long leg clears zero with t ≥ 2 in both halves. Two-week momentum alone made +1.95%/wk (t 2.1) but the universe held equal-weight made +1.28%/wk and BTC +0.84%, so hedged it is +1.0%/wk at t 1.35; near-the-high hedged −0.09%/wk; the dip-buy hedged +0.66%/wk with the halves split (−0.77 / +2.07). The long side of liquid alts is market beta plus noise at our fees — no forward book", "book": None},
     {"key": "stock_open", "title": "Stock perps into the cash open (follow or fade the overnight gap)", "script": "research/stock_open_lab.py", "file": "stock_open_results.json",
      "question": "The perp prices the stock's overnight gap before the exchange opens (IMF 2026: 87–99% of it shows at the open): does the gap carry through the first hour or fade, and does either pay 16 bps?",
      "finding": lambda d: f"{d['names']} names, {d['sessions']} sessions ({d['period'][0]} → {d['period'][1]}); by gap size the first hour runs in the gap's direction " + ", ".join(f"{k}: {v['first_hour_in_gap_direction_bps']:+.0f} bps ({v['n']})" for k, v in d['by_gap_bucket'].items()) + "; stocks: chosen " + (f"{d['stocks']['chosen']['rule']} to {d['stocks']['chosen']['exit']} on gaps ≥ {d['stocks']['chosen']['min_gap'] * 100:.1f}%, first half {d['stocks']['chosen']['first_half']['per_session_pct']:+.3f}%/session, second half {d['stocks']['chosen']['second_half']['per_session_pct']:+.3f}% (95% {d['stocks']['chosen']['second_half']['ci95_session_pct']})" if d['stocks'].get('chosen') else "nothing"),

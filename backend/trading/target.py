@@ -88,34 +88,45 @@ def log_pair_equity(now: float | None = None) -> dict[str, float]:
 
 # ── Daily P&L from the equity curves ──────────────────────────────────────────
 
-def daily_pnl(series: list[tuple[float, float]], deposits: list[dict]) -> dict[str, float]:
+DEPOSIT_LAG_S = 5.0                       # a move's ledger entry can land a few seconds after the snapshot it caused
+_warned: set = set()                      # (book, day) suspect days already logged — once each, not every recomputation
+
+
+def daily_pnl(series: list[tuple[float, float]], deposits: list[dict], book: str = "") -> dict[str, float]:
     """{day: P&L} — the day's last equity less the previous day's, less capital deposited in between.
     A deposit only counts if the curve was already being recorded when it landed: a book whose curve
-    starts after the deposit has it in its first point, not in the day's move."""
-    if not series:
+    starts after the deposit has it in its first point, not in the day's move — except when the deposit
+    created the curve (a wallet's opening snapshot and the deposit's own snapshot in the same second, the
+    ledger stamped a moment before both), where the first point is the balance before it.
+    Each deposit is counted on one day only: the windows run (previous day's end, this day's end]."""
+    pts = [(ts, eq) for ts, eq in series if ts]
+    if not pts:
         return {}
     by_day: dict[str, tuple[float, float, float, float]] = {}       # day → (first_ts, first, last_ts, last)
-    for ts, eq in series:
-        if not ts:
-            continue
+    for ts, eq in pts:
         d = _day(ts)
         f_ts, first, _, _ = by_day.get(d, (ts, eq, ts, eq))
         by_day[d] = (f_ts, first, ts, eq)
+    t0 = pts[0][0]
+    born = len(pts) > 1 and pts[1][0] - t0 <= 1.0                  # the curve opened with a deposit's burst of snapshots
+    counted_to = t0 - (1.0 if born else 1e-6)                       # deposits after this, up to the window's end, count
     out, prev = {}, None                                             # prev: (ts, equity) of the last point so far
     for d in sorted(by_day):
         f_ts, first, l_ts, last = by_day[d]
         base_ts, base = prev if prev else (f_ts, first)
-        # A move's ledger entry can land a few seconds after the equity snapshot it caused: allow that.
-        dep = sum(x["amount"] for x in deposits if base_ts <= x["ts"] <= l_ts + 5)
+        end = l_ts + DEPOSIT_LAG_S
+        dep = sum(x["amount"] for x in deposits if counted_to < x["ts"] <= end)
+        counted_to = end
         pnl = last - base - dep
+        prev = (l_ts, last)
         if base > 0 and abs(pnl) > SUSPECT_DAY_FRAC * base:
             # A move of a third of the book in a day is a ledger artefact (a deposit the curve missed, a reset), not
             # trading — it is left out of the averages rather than allowed to trip the breaker.
-            logger.warning("Suspect day %s: %+.0f on a %.0f base — excluded from the averages", d, pnl, base)
-            prev = (l_ts, last)
+            if (book, d) not in _warned:
+                _warned.add((book, d))
+                logger.warning("Suspect day %s %s: %+.0f on a %.0f base — excluded from the averages", book or "?", d, pnl, base)
             continue
         out[d] = round(pnl, 2)
-        prev = (l_ts, last)
     return out
 
 
@@ -200,7 +211,7 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
     for name, m in pf["systems"].items():
         if name in ("all", "everything") or name.endswith("_live") or name in overview.RETIRED_SYSTEMS or name in overview.SIGNAL_SYSTEMS:   # aggregates / signal ledgers, not books
             continue
-        pnl = daily_pnl(overview._equity_series(name), [d for d in deps if d["book"] == name])
+        pnl = daily_pnl(overview._equity_series(name), [d for d in deps if d["book"] == name], name)
         exp, why = expected(name, m["equity"], now)
         row = {"book": name, "label": m["label"], "equity": m["equity"], "added": capital.added(name),
                "planned": capital.plan().get(name), "shortfall": capital.shortfall(name),

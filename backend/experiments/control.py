@@ -199,7 +199,14 @@ def report(book: str) -> dict:
         held = {f"{H}h": round(sum((r["held"].get(f"{H}h") if r["held"].get(f"{H}h") is not None else r["actual"]) for r in rs), 2) for H in HORIZONS_H}
         after = {f"{H}h": round(sum(r["after_exit_pct"].get(f"{H}h") or 0.0 for r in rs) / n, 3) for H in AFTER_EXIT_H}
         best4 = sum(r["best_pct"].get("4h") or 0.0 for r in rs) / n
-        return {"n": n, "actual": round(sum(r["actual"] for r in rs), 2), "wins": sum(1 for r in rs if r["actual"] > 0), "held": held,
+        # Entry quality (2026-11-12): the Turtle E-ratio — mean best excursion ÷ mean worst excursion by window, in % of
+        # the entry. A random entry scores ≈ 1.0; above it the entry is ahead of the price, below it behind.
+        e_ratio = {}
+        for H in ("1h", "4h", "24h"):
+            b = [r["best_pct"].get(H) for r in rs if r["best_pct"].get(H) is not None]
+            w = [-(r["worst_pct"].get(H) or 0.0) for r in rs if r["worst_pct"].get(H) is not None]
+            e_ratio[H] = round(sum(b) / sum(w), 2) if b and w and sum(w) > 0 else None
+        return {"n": n, "actual": round(sum(r["actual"] for r in rs), 2), "wins": sum(1 for r in rs if r["actual"] > 0), "held": held, "e_ratio": e_ratio,
                 "after_exit_avg_pct": after, "best_4h_avg_pct": round(best4, 3), "worst_4h_avg_pct": round(sum(r["worst_pct"].get("4h") or 0.0 for r in rs) / n, 3),
                 "stopped_share_pct": round(100 * sum(1 for r in rs if r["stopped_at_h"] is not None) / n, 1), "avg_hold_h": round(sum(r["hold_h"] for r in rs) / n, 2)}
     early = [r for r in rows if r["hold_h"] < horizon * 0.9]

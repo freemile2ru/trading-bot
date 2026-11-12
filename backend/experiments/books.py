@@ -121,6 +121,11 @@ async def monitor_all() -> None:
     except Exception as e:
         logging.getLogger("experiments").warning("Stock flow failed: %s", e)
     try:
+        from experiments import entry_cells
+        await entry_cells.tick()                    # every 15 minutes: the conditions at each entry (long gate, short cells, the reversal long leg)
+    except Exception as e:
+        logging.getLogger("experiments").warning("Entry cells failed: %s", e)
+    try:
         from experiments import events
         await events.tick()
     except Exception as e:

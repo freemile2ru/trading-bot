@@ -13,7 +13,7 @@ import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '
 import type { CopyStatus } from '../types/copy'
 import type { AuctionChartData, AuctionSnapshot, StockFlowReport } from '../types/auction'
 import type { PropStatus } from '../types/prop'
-import type { ControlReport, IndexShadowReport } from '../types/control'
+import type { ControlReport, EntryCellsReport, IndexShadowReport } from '../types/control'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
 
@@ -157,6 +157,10 @@ export const api = {
   control: {
     report: (book: string) => get<ControlReport>(`/control/${encodeURIComponent(book)}`),
     run: (book: string, limit = 50) => post<{ recorded: number; pending: number; report: ControlReport }>(`/control/${encodeURIComponent(book)}/run?limit=${limit}`),
+  },
+  entryCells: {
+    report: () => get<EntryCellsReport>('/entry-cells'),
+    run: () => post<{ report: EntryCellsReport }>('/entry-cells/run'),
   },
   indexShadow: {
     report: (signal: string) => get<IndexShadowReport>(`/index-shadow/${signal}`),

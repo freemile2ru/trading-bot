@@ -9,6 +9,28 @@ export interface ControlAgg {
   worst_4h_avg_pct?: number
   stopped_share_pct?: number
   avg_hold_h?: number
+  e_ratio?: Record<string, number | null>
+}
+
+/** Entry cells (experiments/entry_cells.py): the conditions at each crypto entry, scored forward. */
+export interface CellStat { n: number; mean_pct?: number; t?: number | null; pos_pct?: number; sum_pct?: number }
+export interface CellVerdict { verdict: string; have?: number; needed?: number; gap_pct?: number; t?: number | null; halves_pct?: number[] }
+export interface EntryCellsReport {
+  since: number; verdict_n: number; min_gap_pct: number; books: string[]; recorded: number; pending: number
+  long: {
+    gate: { funding_max_pct: number; btc24_max_pct: number; pre4_max_pct: number; hours_off: number[] }
+    all: { kept: CellStat; rejected: CellStat; by_flag: Record<string, CellStat> }
+    forward: { kept: CellStat; rejected: CellStat; by_flag: Record<string, CellStat> }
+    verdict: CellVerdict
+  }
+  short_cells: Record<string, { label: string; all: { in: CellStat; out: CellStat }; forward: { in: CellStat; out: CellStat }; verdict: CellVerdict }>
+  reversal_long_shadow: {
+    hold_h: number; written: number; settled: number; coin: CellStat; hedged: CellStat
+    forward: { n: number; hedged: CellStat; halves_pct: (number | null)[] }; verdict: string; needed: number
+    recent: { symbol: string; score: number; opened_ts: number; price: number; result: { coin_pct: number; btc_pct: number; hedged_pct: number } | null }[]
+  }
+  recent: { trade_id: string; book: string; lane: string | null; symbol: string; direction: 'long' | 'short'; opened_ts: number; actual_pct: number
+    fund_pct: number | null; btc24_pct: number | null; pre4_pct: number | null; hour: number; flags?: string[]; kept?: boolean; cells?: string[] }[]
 }
 
 export interface ControlRow {

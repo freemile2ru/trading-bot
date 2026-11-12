@@ -57,6 +57,21 @@ def test_daily_pnl_from_curve_takes_deposits_out():
     assert list(target.daily_pnl(late, deposits).values()) == [30.0]
 
 
+def test_daily_pnl_deposit_that_opened_the_curve_and_no_double_count():
+    d0 = 1_800_000_000.0
+    # a book created by a withdrawal: the ledger is stamped a moment before the wallet's opening snapshot (10k)
+    # and the withdrawal's own snapshot (1k) — the day is the trading after it, not −9k
+    born = [(d0 + 3600.0001, 10_000), (d0 + 3600.0002, 1_000), (d0 + 7200, 1_010)]
+    deps = [{"ts": d0 + 3600, "amount": -9_000, "book": "x"}]
+    assert list(target.daily_pnl(born, deps).values()) == [10.0]
+    # a deposit landing within the lag after one day's last point counts on that day only
+    series = [(d0 + 3600, 9_905), (d0 + 86400 - 2, 405),                          # day 1: −9.5k withdrawn 1s after its last point
+              (d0 + 86400 + 3600, 405), (d0 + 86400 + 7200, 5_905), (d0 + 86400 + 9000, 405)]   # day 2: +5.5k in, out again
+    deps = [{"ts": d0 + 86400 - 1, "amount": -9_500, "book": "x"},
+            {"ts": d0 + 86400 + 7199, "amount": 5_500, "book": "x"}, {"ts": d0 + 86400 + 8999, "amount": -5_500, "book": "x"}]
+    assert list(target.daily_pnl(series, deps).values()) == [0.0, 0.0]
+
+
 def test_breaker_trips_once_after_a_week(monkeypatch):
     _clean()
     kv.set_sync(capital._k("added", "carry"), 20_000.0)
