@@ -91,6 +91,8 @@ class Policy:
     lock_keep: float = 0.5                # …and keep this share of the peak open P&L (the stop ratchets with the peak)
     lock_arm_r: float = 1.0               # …but never before the trade is this many R up (2026-11-04: $100 on a $32k copy leg armed at +0.3%)…
     lock_arm_pct: float | None = None     # …or this share of the notional, whichever of the two is smaller (2026-11-05: 1R of a 10% stop never came)
+    lock_trail_atr: float | None = None   # 2026-11-14: once armed, trail the stop this many daily ATRs from the best price instead of keeping a
+                                          # share of the peak P&L (needs atr_pct on the trade; a trade's own lock_trail_atr overrides)
 
 
 POLICIES: dict[str, Policy] = {
@@ -120,6 +122,17 @@ POLICIES: dict[str, Policy] = {
     # actual by ≥ 0.03R a leg with a paired t ≥ 2 and both halves positive. The $5 floor is a noise guard on $1.5k legs.
     "manual_lock_tight": Policy("manual_lock_tight", breakeven=None, stale=False, max_hold_h=72,
                                 lock_arm_usd=5.0, lock_keep=0.80, lock_arm_pct=0.005),
+    # 2026-11-14 (the user, after a −4.5% alt day on which prod's ten reversal shorts were all right and the 65%-of-peak
+    # lock banked +$144 of +$1,061): the reversal legs' LIVE lock is now the ATR trail — armed at +1% of notional as
+    # before, then the stop trails 1 daily ATR from the best price (engine stamps lock_trail_atr=1.0 on each leg). Three
+    # independent reads said hold beats the lock: the 11-02 lab (+2.04%/leg held 24h vs every mid-life exit), the control
+    # data on prod's 40 legs (held 24h +$385 vs −$136), and that day (+$1,039 under the trail vs +$144). The old rule and
+    # a half-ATR trail run beside every sized leg as shadows, judged in lanes.reversal_exit_audit on the same terms as
+    # the tight lock (adopt/keep at 40 legs, ≥ 0.03R a leg, paired t ≥ 2, both halves).
+    "manual_lock_65": Policy("manual_lock_65", breakeven=None, stale=False, max_hold_h=72,
+                             lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01),
+    "manual_lock_trail_half": Policy("manual_lock_trail_half", breakeven=None, stale=False, max_hold_h=72,
+                                     lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01, lock_trail_atr=0.5),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
     # run forward on every new entry. Rule, set now: after 60 entries opened from 2026-10-20, adopt one as
@@ -142,9 +155,10 @@ POLICIES: dict[str, Policy] = {
                           max_hold_h=24, run_if_r=0.5, run_extend_h=24, run_cap_h=168),
 }
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
-SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", "manual_lock_tight"))).split(",")
+LOCK_SHADOWS = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")      # the lock variants shadowed beside every sized reversal leg
+SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", *LOCK_SHADOWS))).split(",")
                    if p in POLICIES]
-LOCK_TIGHT_SHADOW = os.getenv("EXIT_LOCK_TIGHT_SHADOW", "true").lower() != "false"   # the tight lock shadowed on every sized reversal leg
+LOCK_TIGHT_SHADOW = os.getenv("EXIT_LOCK_TIGHT_SHADOW", "true").lower() != "false"   # the lock variants shadowed on every sized reversal leg
 # The profit lock on the books that hold to their own rule: "live" stamps manual_lock on every manual trade (the
 # user's "all our trades" switch), "shadow" runs it beside each such trade and scores it in the shadow book.
 # Production runs it live on every book — the mentor's system and the main wallet included (2026-11-05); the local
@@ -225,7 +239,7 @@ def stamp(trade: dict, policy_name: str | None = None, now: float | None = None)
     # A "manual" trade is held until its owner closes it (you, Claude swing, a trend flip) — never by a
     # timeframe's clock. (Keyed on the timeframe, trend trades marked "1d" fell back to the 1h window
     # and were force-closed after 72 h — fixed 2026-10-12.)
-    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock", "manual_lock_tight") else \
+    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock", *LOCK_SHADOWS) else \
         WINDOWS.get(trade.get("timeframe") or "1h", WINDOWS["1h"])
     trade["exit_policy"] = p.name
     trade["opened_ts"] = now
@@ -354,7 +368,14 @@ def apply_bar(
         peak_pnl = (t["peak_price"] - t["entry_price"]) * s * t["quantity"] - t.get("fees_usd", 0.0) - t.get("funding_usd", 0.0)
         if peak_pnl >= lock_arm_usd(t, p):
             keep_frac = lock_keep(t, p)
-            keep = t["entry_price"] + s * (keep_frac * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
+            trail_atr = t.get("lock_trail_atr", p.lock_trail_atr)
+            if trail_atr and t.get("atr_pct"):
+                # The ATR trail (2026-11-14): on 2026-11-14 prod's ten reversal shorts were all right and the 65%-of-peak lock
+                # banked +$144 of a +$1,061 move. The stop sits trail_atr daily ATRs from the best price and ratchets with it.
+                keep = t["peak_price"] - s * trail_atr * t["atr_pct"] / 100 * t["peak_price"]
+                keep_frac = max(0.0, (keep - t["entry_price"]) * s * t["quantity"] / peak_pnl) if peak_pnl else 0.0
+            else:
+                keep = t["entry_price"] + s * (keep_frac * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
             # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
             # −$385) that "locked" a level above the market and the next tick stopped it out at the current price.
             if (keep - t["stop_loss"]) * s > 0 and (c - keep) * s > 0:
@@ -396,7 +417,7 @@ _SHADOW_KEYS = (
     "symbol", "direction", "entry_price", "stop_loss", "take_profit_1", "take_profit_2",
     "quantity", "timeframe", "leverage", "liquidation_price", "margin_usd", "risk_usd",
     "fees_usd", "checked_from_ms", "fill_bar_ms", "funding_through_ms",
-    "claude_verdict", "claude_confidence", "fa_at_entry", "maker_order_id",
+    "claude_verdict", "claude_confidence", "fa_at_entry", "maker_order_id", "atr_pct",
 )
 # Shadows of trades that were never taken — kept out of the exit-policy comparison.
 NOT_TAKEN = {"declined", "market_twin", "gated", "fade_twin"}
@@ -411,13 +432,13 @@ def make_shadows(trade: dict, wallet_label: str, policies: list[str] | None = No
     tight = LOCK_TIGHT_SHADOW and policies is None and trade.get("sizing") and trade.get("exit_policy") in ("manual", "manual_lock")
     if trade.get("shadows") is False and policies is None:
         # A manual-policy book still shadows the profit lock, so the user's rule is scored on its own trades.
-        policies = (["manual_lock"] if lock_shadow else []) + (["manual_lock_tight"] if tight else [])
+        policies = (["manual_lock"] if lock_shadow else []) + (list(LOCK_SHADOWS) if tight else [])
         if not policies:
             return []
     elif lock_shadow:
-        policies = [*SHADOW_POLICIES, "manual_lock"] + (["manual_lock_tight"] if tight else [])
+        policies = [*SHADOW_POLICIES, "manual_lock"] + (list(LOCK_SHADOWS) if tight else [])
     elif tight:
-        policies = [*SHADOW_POLICIES, "manual_lock_tight"]
+        policies = [*SHADOW_POLICIES, *LOCK_SHADOWS]
     shadows = []
     for name in policies or SHADOW_POLICIES:
         sh = {k: trade.get(k) for k in _SHADOW_KEYS}

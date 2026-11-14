@@ -138,6 +138,10 @@ REVERSAL_MAX_OPEN = int(os.getenv("AUTOTRADER_REVERSAL_MAX_OPEN", "12"))
 # after costs (t 4.9, both halves positive, 68% of slots) while buying the bottom LOST −0.4%/slot in both halves and under
 # both BTC trends. The first live day said the same: every short won, every long lost. Set "short,long" to run both.
 REVERSAL_SIDES = tuple(s.strip() for s in os.getenv("AUTOTRADER_REVERSAL_SIDES", "short").split(",") if s.strip() in ("short", "long"))
+# 2026-11-14: the legs' profit lock trails 1 daily ATR from the best price once armed (+1% of notional) instead of keeping
+# 65% of the peak — on the −4.5% alt day of 11-14 the ten shorts were all right and the 65% lock banked $144 of $1,061.
+# The 65% rule and a half-ATR trail run as shadows beside every leg (trading/exits.LOCK_SHADOWS). 0 restores the 65% keep.
+REVERSAL_LOCK_TRAIL_ATR = float(os.getenv("AUTOTRADER_LOCK_TRAIL_ATR", "1.0")) or None
 # Risk floor for every mirrored leg (2026-11-01, "real-world P&L numbers"): a leg risks at least LANE_RISK_PCT of the
 # ledger at its stop, so notional ≥ equity × LANE_RISK_PCT / stop%, never above LANE_MAX_NOTIONAL_PCT of the ledger.
 LANE_RISK_PCT = float(os.getenv("AUTOTRADER_LANE_RISK_PCT", "2"))    # 2% (set 3 for a day on 2026-11-01): the weekly and factor baskets mirror 9–17 legs at once
@@ -1420,7 +1424,7 @@ async def _reversal_lane(scans: list[dict]) -> None:
             f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)}); {plan['why']}",
             "until the hold check says otherwise", now + hold_check.HARD_CAP_H * 3600,
             {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym], "sizing": plan, "atr_pct": plan["atr_pct"],
-             "lock_arm_pct": plan["lock_arm_pct"] / 100, "risk_budget": rb if rb.get("on") else None},
+             "lock_arm_pct": plan["lock_arm_pct"] / 100, "lock_trail_atr": REVERSAL_LOCK_TRAIL_ATR, "risk_budget": rb if rb.get("on") else None},
             sized=plan)
         if ours:
             lane_open += 1

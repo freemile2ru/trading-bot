@@ -15,9 +15,10 @@ def _leg(**kw):
 
 def test_a_sized_reversal_leg_gets_the_tight_lock_shadow_and_other_manual_trades_do_not(monkeypatch):
     monkeypatch.setattr(exits, "LOCK_MODE", "live")
-    sh = exits.make_shadows(_leg(), "auto")
-    assert [s["exit_policy"] for s in sh] == ["manual_lock_tight"] and sh[0]["id"] == "leg1:manual_lock_tight"
-    assert sh[0]["expires_at"] == pytest.approx(1_794_700_000.0 + 72 * 3600)             # the lane's hard cap, not the 4h window
+    sh = exits.make_shadows(_leg(atr_pct=8.0), "auto")
+    assert [s["exit_policy"] for s in sh] == list(exits.LOCK_SHADOWS) and sh[-1]["id"] == "leg1:manual_lock_tight"
+    assert all(s["expires_at"] == pytest.approx(1_794_700_000.0 + 72 * 3600) for s in sh)   # the lane's hard cap, not the 4h window
+    assert all(s["atr_pct"] == 8.0 for s in sh)                                              # the trail shadows need the coin's ATR
     assert exits.make_shadows(_leg(sizing=None), "auto") == []                              # an unsized manual trade: nothing
     monkeypatch.setattr(exits, "LOCK_TIGHT_SHADOW", False)
     assert exits.make_shadows(_leg(), "auto") == []
@@ -43,3 +44,18 @@ def test_the_verdict_pairs_each_leg_with_its_shadow_and_waits_for_forty():
     flat = [{**r, "r": 0.06} for r in results]                                              # the shadow equals the actual: nothing to adopt
     assert lanes.tight_lock_verdict(legs, flat)["verdict"] == "keep the live lock"
     assert lanes.tight_lock_verdict([], [])["verdict"] == "measuring"
+
+
+def test_the_atr_trail_ratchets_the_stop_one_atr_from_the_best_price_once_armed():
+    t = exits.stamp({"direction": "short", "entry_price": 100.0, "stop_loss": 110.0, "take_profit_1": 50.0, "take_profit_2": 40.0, "quantity": 10.0,
+                     "notional_usd": 1000.0, "risk_usd": 100.0, "timeframe": "4h", "fees_usd": 0.0, "lock_arm_pct": 0.01, "lock_trail_atr": 1.0, "atr_pct": 8.0},
+                    "manual_lock", 1_794_700_000.0)
+    T0 = 1_794_700_000.0
+    assert exits.apply_bar(t, 100, 100.2, 99.5, 99.6, T0 + 300) is None and t["stop_loss"] == 110.0      # +0.5%: not armed (arm is 1% = $10)
+    assert exits.apply_bar(t, 99.6, 99.7, 98.0, 98.5, T0 + 600) is None                                   # low 98: +2% peak → armed
+    assert t["stop_loss"] == pytest.approx(98.0 * 1.08) and t["trailing"]                                 # the stop sits 1 ATR (8%) above the low
+    assert exits.apply_bar(t, 98.5, 99.0, 92.0, 93.0, T0 + 900) is None and t["stop_loss"] == pytest.approx(92.0 * 1.08)   # ratchets with the low
+    assert exits.apply_bar(t, 93.0, 99.5, 93.0, 99.4, T0 + 1200)[0] == "trailing_stop"                    # back up 1 ATR: out, still +0.6%
+    old = exits.stamp({**{k: v for k, v in t.items() if k not in ("lock_trail_atr",)}, "stop_loss": 110.0, "trailing": False, "stop_moved": False, "lock_keep": 0.65}, "manual_lock", T0)
+    exits.apply_bar(old, 99.6, 99.7, 98.0, 98.5, T0 + 600)
+    assert old["stop_loss"] == pytest.approx(100.0 - 0.65 * 2.0)                                           # the 65% keep: stop at 98.7 on a $20 peak

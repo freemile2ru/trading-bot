@@ -275,8 +275,7 @@ export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_tra
     hold?: { rule: string; grace_h: number; horizon_h: number; hard_cap_h: number }
     reversal_audit?: { n: number; actual: number; old_lock_cf: number; new_lock_cf: number; sized_n: number; sized_pnl: number
                        by_exit: Record<string, { n: number; pnl: number; wins: number }>
-                       tight_lock?: { policy: string; arm_pct: number; keep: number; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number
-                                      delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string } }
+                       tight_lock?: LockShadow; lock_shadows?: Record<string, LockShadow> }
     lanes: { lane: string; label: string; mult: number; why: string; open: number; enabled?: boolean
              all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell>
              sides?: Record<'long' | 'short', { mult: number; all: LaneCell; regime: LaneCell }> }[]
@@ -297,4 +296,10 @@ export interface CoinTrade {
 export interface CoinStatus {
   signals: { d1: number; d7: number; total: number; buys: number; sells: number; last: number } | null
   trades: CoinTrade[]
+}
+
+/** A profit-lock variant shadowed beside every sized reversal leg (autotrader/lanes.tight_lock_verdict). */
+export interface LockShadow {
+  policy: string; label?: string; arm_pct: number; keep: number; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number
+  delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string
 }
