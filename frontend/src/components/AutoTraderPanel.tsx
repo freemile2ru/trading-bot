@@ -489,7 +489,13 @@ export function AutoTraderPanel({
                 <> <span className="text-gray-400">Audit:</span> {auto.lanes.reversal_audit.n} closed legs {signed(auto.lanes.reversal_audit.actual)};
                   the old lock replayed on their peaks {signed(auto.lanes.reversal_audit.old_lock_cf)}, the new one {signed(auto.lanes.reversal_audit.new_lock_cf)} (upper bounds);
                   by exit {Object.entries(auto.lanes.reversal_audit.by_exit).map(([k, v]) => `${k} ${v.n} (${signed(v.pnl)})`).join(', ')}
-                  {auto.lanes.reversal_audit.sized_n > 0 && <>; sized here: {auto.lanes.reversal_audit.sized_n} legs {signed(auto.lanes.reversal_audit.sized_pnl)}</>}.</>
+                  {auto.lanes.reversal_audit.sized_n > 0 && <>; sized here: {auto.lanes.reversal_audit.sized_n} legs {signed(auto.lanes.reversal_audit.sized_pnl)}</>}.
+                  {auto.lanes.reversal_audit.tight_lock && (
+                    <> <span className="text-gray-400">Tight lock shadow</span> (arm {auto.lanes.reversal_audit.tight_lock.arm_pct}%, keep {Math.round(auto.lanes.reversal_audit.tight_lock.keep * 100)}%):{' '}
+                      {auto.lanes.reversal_audit.tight_lock.n}/{auto.lanes.reversal_audit.tight_lock.needed} legs, shadow {signed(auto.lanes.reversal_audit.tight_lock.shadow_usd)} vs actual {signed(auto.lanes.reversal_audit.tight_lock.actual_usd)}
+                      {auto.lanes.reversal_audit.tight_lock.delta_r != null && <> ({auto.lanes.reversal_audit.tight_lock.delta_r >= 0 ? '+' : ''}{auto.lanes.reversal_audit.tight_lock.delta_r.toFixed(3)}R a leg, t {auto.lanes.reversal_audit.tight_lock.t ?? '—'})</>}
+                      {' — '}<span className={auto.lanes.reversal_audit.tight_lock.verdict === 'adopt' ? 'text-emerald-300' : 'text-gray-400'}>{auto.lanes.reversal_audit.tight_lock.verdict}</span>.</>
+                  )}</>
               )}
             </div>
           )}

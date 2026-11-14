@@ -274,7 +274,9 @@ export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_tra
     sizing?: { rule: string; risk_pct: number; stop_atr: number; leg_cap_pct: number; heat_cap_pct: number; heat_used_usd: number; lock_arm_pct: number }
     hold?: { rule: string; grace_h: number; horizon_h: number; hard_cap_h: number }
     reversal_audit?: { n: number; actual: number; old_lock_cf: number; new_lock_cf: number; sized_n: number; sized_pnl: number
-                       by_exit: Record<string, { n: number; pnl: number; wins: number }> }
+                       by_exit: Record<string, { n: number; pnl: number; wins: number }>
+                       tight_lock?: { policy: string; arm_pct: number; keep: number; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number
+                                      delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string } }
     lanes: { lane: string; label: string; mult: number; why: string; open: number; enabled?: boolean
              all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell>
              sides?: Record<'long' | 'short', { mult: number; all: LaneCell; regime: LaneCell }> }[]

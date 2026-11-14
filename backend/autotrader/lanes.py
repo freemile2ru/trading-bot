@@ -192,7 +192,7 @@ def status(closed: list[dict], open_trades: list[dict], regime: dict | None) -> 
             "reversal_audit": reversal_exit_audit([t for t in closed if lane_of(t) == "reversal"])}
 
 
-def reversal_exit_audit(closed: list[dict]) -> dict:
+def reversal_exit_audit(closed: list[dict], shadow_results: list[dict] | None = None) -> dict:
     """The reversal legs' exits, actual against two lock rules replayed on each leg's recorded peak (an upper bound: the
     peak is a print, the lock acts from the next bar): the rule before 2026-11-09 (arm 3% of notional, keep 50%) and the
     one since (arm 1%, keep 65%). By exit reason, with the hold check's rules named where they closed a leg."""
@@ -215,4 +215,46 @@ def reversal_exit_audit(closed: list[dict]) -> dict:
         d["wins"] += 1 if (t.get("pnl_usd") or 0) > 0 else 0
     sized = [t for t in closed if t.get("sizing")]
     return {"n": len(closed), "actual": round(sum(t.get("pnl_usd") or 0.0 for t in closed), 2), "old_lock_cf": cf(3.0, 0.5), "new_lock_cf": cf(1.0, 0.65),
-            "by_exit": by_exit, "sized_n": len(sized), "sized_pnl": round(sum(t.get("pnl_usd") or 0.0 for t in sized), 2)}
+            "by_exit": by_exit, "sized_n": len(sized), "sized_pnl": round(sum(t.get("pnl_usd") or 0.0 for t in sized), 2),
+            "tight_lock": tight_lock_verdict(sized, shadow_results)}
+
+
+TIGHT_LOCK_N = 40
+TIGHT_LOCK_MIN_R = 0.03
+
+
+def tight_lock_verdict(sized: list[dict], shadow_results: list[dict] | None = None) -> dict:
+    """The manual_lock_tight shadow (arm 0.5% of notional, keep 80%) against the actual exit of every sized reversal leg
+    it ran beside — paired, in R of each leg's own risk. Pre-registered (2026-11-14): adopt after TIGHT_LOCK_N legs only
+    if the shadow beats the actual by ≥ TIGHT_LOCK_MIN_R a leg with paired t ≥ 2 and both halves positive."""
+    if shadow_results is None:
+        try:
+            from trading import history
+            shadow_results = history.WALLETS["auto"].shadow_report()["results"]
+        except Exception:
+            shadow_results = []
+    shadow = {r["trade_id"]: r for r in shadow_results if r.get("policy") == "manual_lock_tight"}
+    pairs = []
+    for t in sorted(sized, key=lambda t: t.get("opened_ts") or 0):
+        sh = shadow.get(t["id"])
+        if sh and t.get("risk_usd"):
+            pairs.append({"trade_id": t["id"], "symbol": t.get("symbol"), "opened_ts": t.get("opened_ts"), "actual_r": round((t.get("pnl_usd") or 0.0) / t["risk_usd"], 4),
+                          "shadow_r": round(sh["r"], 4), "actual_usd": round(t.get("pnl_usd") or 0.0, 2), "shadow_usd": round(sh["r"] * t["risk_usd"], 2),
+                          "actual_exit": t.get("hold_rule") or t.get("close_reason"), "shadow_exit": sh.get("reason")})
+    out = {"policy": "manual_lock_tight", "arm_pct": 0.5, "keep": 0.8, "n": len(pairs), "needed": TIGHT_LOCK_N, "min_r": TIGHT_LOCK_MIN_R,
+           "actual_usd": round(sum(p["actual_usd"] for p in pairs), 2), "shadow_usd": round(sum(p["shadow_usd"] for p in pairs), 2), "recent": pairs[-10:][::-1]}
+    if not pairs:
+        return {**out, "verdict": "measuring"}
+    d = [p["shadow_r"] - p["actual_r"] for p in pairs]
+    n = len(d)
+    m = sum(d) / n
+    sd = (sum((x - m) ** 2 for x in d) / (n - 1)) ** 0.5 if n > 1 else 0.0
+    t_stat = round(m / sd * n ** 0.5, 2) if sd else None
+    half = n // 2
+    halves = [round(sum(d[:half]) / half, 4) if half else None, round(sum(d[half:]) / (n - half), 4) if n - half else None]
+    out.update(delta_r=round(m, 4), t=t_stat, halves_r=halves)
+    if n < TIGHT_LOCK_N:
+        out["verdict"] = "measuring"
+    else:
+        out["verdict"] = "adopt" if m >= TIGHT_LOCK_MIN_R and (t_stat or 0) >= 2 and all(h is not None and h > 0 for h in halves) else "keep the live lock"
+    return out

@@ -112,6 +112,14 @@ POLICIES: dict[str, Policy] = {
     "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
                           lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
                           lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100),
+    # Shadow-only candidate (2026-11-14, the user: "build as measurement"): the reversal legs' wins are +0.6% of notional
+    # because the live lock arms at 1% and keeps 65% while the legs' peaks run 0.8–1.7% (median 1.15% on prod's 42 sized
+    # legs). Replaying arm/keep on those recorded peaks: arm 0.5% / keep 80% +$347 vs +$87 actual — in-sample on 42 legs,
+    # the same way 1%/65% was chosen on 11-09, so it runs as a shadow beside every sized reversal leg (make_shadows) and
+    # is judged in lanes.reversal_exit_audit. Rule, set now: adopt after 40 shadowed legs only if the shadow beats the
+    # actual by ≥ 0.03R a leg with a paired t ≥ 2 and both halves positive. The $5 floor is a noise guard on $1.5k legs.
+    "manual_lock_tight": Policy("manual_lock_tight", breakeven=None, stale=False, max_hold_h=72,
+                                lock_arm_usd=5.0, lock_keep=0.80, lock_arm_pct=0.005),
     # Shadow-only candidates from research/exit_rethink.py (2026-10-19): on 209 replayed decisions they
     # beat protect by +0.05 / +0.06R, too little and too uneven across halves to switch on — so they
     # run forward on every new entry. Rule, set now: after 60 entries opened from 2026-10-20, adopt one as
@@ -134,8 +142,9 @@ POLICIES: dict[str, Policy] = {
                           max_hold_h=24, run_if_r=0.5, run_extend_h=24, run_cap_h=168),
 }
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
-SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock"))).split(",")
+SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", "manual_lock_tight"))).split(",")
                    if p in POLICIES]
+LOCK_TIGHT_SHADOW = os.getenv("EXIT_LOCK_TIGHT_SHADOW", "true").lower() != "false"   # the tight lock shadowed on every sized reversal leg
 # The profit lock on the books that hold to their own rule: "live" stamps manual_lock on every manual trade (the
 # user's "all our trades" switch), "shadow" runs it beside each such trade and scores it in the shadow book.
 # Production runs it live on every book — the mentor's system and the main wallet included (2026-11-05); the local
@@ -216,7 +225,7 @@ def stamp(trade: dict, policy_name: str | None = None, now: float | None = None)
     # A "manual" trade is held until its owner closes it (you, Claude swing, a trend flip) — never by a
     # timeframe's clock. (Keyed on the timeframe, trend trades marked "1d" fell back to the 1h window
     # and were force-closed after 72 h — fixed 2026-10-12.)
-    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock") else \
+    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock", "manual_lock_tight") else \
         WINDOWS.get(trade.get("timeframe") or "1h", WINDOWS["1h"])
     trade["exit_policy"] = p.name
     trade["opened_ts"] = now
@@ -398,14 +407,17 @@ def make_shadows(trade: dict, wallet_label: str, policies: list[str] | None = No
     shadows=False gets none — the trend books hold for weeks on a daily rule, where intraday exit policies
     mean nothing (they had 100+ shadows fetching minute bars for nothing)."""
     lock_shadow = trade.get("exit_policy") == "manual" and LOCK_MODE == "shadow" and policies is None
+    # The tight lock runs beside every leg sized by autotrader/sizing.py (the reversal legs), whatever the lock mode.
+    tight = LOCK_TIGHT_SHADOW and policies is None and trade.get("sizing") and trade.get("exit_policy") in ("manual", "manual_lock")
     if trade.get("shadows") is False and policies is None:
         # A manual-policy book still shadows the profit lock, so the user's rule is scored on its own trades.
-        if lock_shadow:
-            policies = ["manual_lock"]
-        else:
+        policies = (["manual_lock"] if lock_shadow else []) + (["manual_lock_tight"] if tight else [])
+        if not policies:
             return []
     elif lock_shadow:
-        policies = [*SHADOW_POLICIES, "manual_lock"]
+        policies = [*SHADOW_POLICIES, "manual_lock"] + (["manual_lock_tight"] if tight else [])
+    elif tight:
+        policies = [*SHADOW_POLICIES, "manual_lock_tight"]
     shadows = []
     for name in policies or SHADOW_POLICIES:
         sh = {k: trade.get(k) for k in _SHADOW_KEYS}
