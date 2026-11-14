@@ -249,6 +249,11 @@ def report(now: float | None = None, max_age_s: float = 60) -> dict:
            "paused": capital.paused(), "trip_avg7": TRIP_AVG7, "plan": capital.plan(), "plan_note": kv.get_sync(capital._k("plan_note")), "deposits": deps[-20:],
            "auto": {"on": AUTO, "hour_utc": AUTO_HOUR_UTC, "last": kv.get_sync(kv.key("capital", "auto", "last"))},
            "measuring_since": min((r["since"] for r in books if r["since"]), default=None)}
+    try:
+        from trading import risk_budget
+        out["risk_budget"] = risk_budget.report(now)
+    except Exception as e:
+        logger.debug("risk budget unavailable: %s", e)
     _cache.update(at=now, report=out)
     return out
 

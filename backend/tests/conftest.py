@@ -10,6 +10,7 @@ os.environ["LIVE_ENV_FILE"] = ""          # ignore backend/.env entirely
 os.environ["EXPERIMENTS_ENABLED"] = "false"   # side experiments fetch live prices — tests opt in explicitly
 os.environ["NEWS_ENABLED"] = "false"          # the news loop scrapes the web
 os.environ["AUTOTRADER_DAILY_MIN"] = "false"  # forces an entry when idle — tests opt in explicitly
+os.environ.setdefault("DAILY_RISK_PCT", "0")  # the daily risk budget re-sizes every book and lifts the caps — tests opt in explicitly
 # Module-level wallets and books (main/auto paper, main/auto live, scalper) open their databases
 # at import. Point every one at a throwaway directory BEFORE any app module is imported — a test
 # once kill-switched the real live autotrader wallet and booked a fake close into swing_trading.db.

@@ -59,6 +59,15 @@ export function TargetPanel() {
           <div className="mt-2 h-2 rounded-full bg-gray-800 overflow-hidden"><div className={clsx('h-full rounded-full', t.avg7 >= r.target ? 'bg-emerald-500' : 'bg-blue-500')} style={{ width: `${pct7 * 100}%` }} /></div>
           <div className="mt-1 text-[11px] text-gray-500">{t.avg7 >= r.target ? 'on target' : `${fmtUsd(r.gap7, 0)}/day short of target`}{r.measuring_since && ` · measuring since ${r.measuring_since}`}</div>
           {r.target_why && <div className="mt-0.5 text-[10px] text-gray-600">Target = {r.target_why}. It rises as books earn their verdicts and the ladder funds them.</div>}
+          {r.risk_budget?.on && r.risk_budget.books && (
+            <div className={clsx('mt-2 rounded border px-2 py-1.5 text-[11px]', r.risk_budget.blocked ? 'border-red-800/60 bg-red-950/30' : 'border-gray-800')} title={Object.entries(r.risk_budget.books).map(([b, x]) => `${b}: ${x.share_pct}% = ${fmtUsd(x.share_usd, 0)}/day, ${fmtUsd(x.leg_risk_usd, 0)} a leg over ${x.legs_per_day} legs/day (record ${x.record_r >= 0 ? '+' : ''}${x.record_r.toFixed(3)}R over ${x.record_n})`).join('\n')}>
+              <span className="text-gray-400">Risk budget</span> <b className="text-gray-200">{fmtUsd(r.risk_budget.budget_usd, 0)}</b>/day ({r.risk_budget.pct}% of {fmtUsd(r.risk_budget.base_equity, 0)}) ·
+              used <span className={clsx(r.risk_budget.blocked ? 'text-red-300' : 'text-gray-300')}>{fmtUsd(r.risk_budget.used_usd, 0)}</span>{r.risk_budget.blocked && <b className="text-red-300"> · BLOCKED until 00:00 UTC</b>} ·
+              asks <span className="text-gray-300">{fmtUsd(r.risk_budget.target_usd, 0)}</span>/day ({r.risk_budget.needed_r != null && `${r.risk_budget.needed_r.toFixed(2)}R per $ risked`}) ·
+              the records say <span className={tone(r.risk_budget.expected_usd_day)}>{fmtUsdSigned(r.risk_budget.expected_usd_day, 0)}</span>/day ·
+              {Object.entries(r.risk_budget.books).map(([b, x]) => ` ${b.replace('auto:', '')} ${x.share_pct}% (${fmtUsd(x.leg_risk_usd, 0)} a leg)`).join(' ·')}
+            </div>
+          )}
         </div>
 
         <div className="min-w-[14rem]">

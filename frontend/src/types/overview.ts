@@ -253,6 +253,16 @@ export interface TargetReport {
   plan: Record<string, number>; plan_note?: { at: number; note: string } | null
   deposits: { ts: number; book: string; amount: number; note: string }[]
   measuring_since: string | null
+  risk_budget?: RiskBudget
+}
+
+/** The daily risk budget (trading/risk_budget.py): the day's loss allowance, its split by record, the day's use. */
+export interface RiskBudget {
+  on: boolean; pct: number; target_usd: number
+  base_book?: string; base_equity?: number; budget_usd?: number
+  books?: Record<string, { record_r: number; record_n: number; weight: number; legs_per_day: number; share_usd: number; share_pct: number; leg_risk_usd: number; expected_usd_day: number }>
+  day_pnl?: Record<string, number>; day_pnl_total?: number; used_usd?: number; left_usd?: number; blocked?: boolean
+  expected_usd_day?: number; needed_r?: number | null
 }
 
 /** What the allocator's rule would move (GET /api/portfolio/target/suggest) — advisory until applied. */

@@ -1398,14 +1398,20 @@ async def _reversal_lane(scans: list[dict]) -> None:
     # Sized by autotrader/sizing.py (2026-11-09): equal dollars of daily swing per coin, a stop in ATRs, the side's shrunken
     # record, a tilt for the slot's rank, a heat cap — and no clock: autotrader/hold_check.py decides the exit each minute.
     from autotrader import hold_check, sizing
+    from trading import risk_budget
     card = await asyncio.to_thread(lambda: lanes.scorecard(_lane_history()))
     regime_key = lanes.regime_key(await regime.current())
+    rb = await asyncio.to_thread(risk_budget.leg_risk, "auto:reversal", now)       # the day's budget share per leg (2026-11-14)
+    if rb.get("blocked"):
+        logger.warning("Autotrader reversal lane: slot skipped — %s", rb["why"])
+        return
     for rank, (sym, direction) in enumerate(picks):
         if sym in held or lane_open >= REVERSAL_MAX_OPEN:
             continue
         atr = await sizing.daily_atr_pct(sym, now)
         legs = [t for ww in _wallets() for t in ww.get_portfolio()["open_trades"]]
-        plan = sizing.plan_leg(equity, atr, sizing.cell_for(card, "reversal", regime_key, direction), rank, len(picks), legs, direction)
+        plan = sizing.plan_leg(equity, atr, sizing.cell_for(card, "reversal", regime_key, direction), rank, len(picks), legs, direction,
+                               risk_usd=rb.get("risk_usd"), heat_cap_usd=(rb["share_usd"] / sizing.STOP_ATR) if rb.get("on") else None)
         if not plan or plan.get("refused"):
             logger.info("reversal leg %s %s refused by sizing: %s", direction, sym, (plan or {}).get("refused"))
             continue
@@ -1414,7 +1420,7 @@ async def _reversal_lane(scans: list[dict]) -> None:
             f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)}); {plan['why']}",
             "until the hold check says otherwise", now + hold_check.HARD_CAP_H * 3600,
             {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym], "sizing": plan, "atr_pct": plan["atr_pct"],
-             "lock_arm_pct": plan["lock_arm_pct"] / 100},
+             "lock_arm_pct": plan["lock_arm_pct"] / 100, "risk_budget": rb if rb.get("on") else None},
             sized=plan)
         if ours:
             lane_open += 1

@@ -47,7 +47,8 @@ CELL_N = int(os.getenv("AUTOTRADER_LANE_CELL_N", "20"))      # rolling trades pe
 MIN_N = int(os.getenv("AUTOTRADER_LANE_MIN_N", "10"))        # trades before a cell can change the size
 MEASURE = float(os.getenv("AUTOTRADER_LANE_MEASURE_X", "0.25"))
 FULL = 1.0
-NET_CAP_PCT = float(os.getenv("AUTOTRADER_NET_CAP_PCT", "25"))   # |longs − shorts| of the ledger's equity, every position counted
+from trading import risk_budget as _risk_budget
+NET_CAP_PCT = float(os.getenv("AUTOTRADER_NET_CAP_PCT", "100" if _risk_budget.ENABLED else "25"))   # |longs − shorts| of the ledger's equity, every position counted; 25 without the daily risk budget (2026-11-14: a $5k/day budget on a short-only lane is ~$40k of shorts)
 RULE = (f"Each lane's size follows its last {CELL_N} trades on the same side in the current regime (then the regime, the coin, the side): "
         f"under {MIN_N} trades → equal size; average R > 0 → full size; ≤ 0 → {MEASURE:g}× measuring size. Set 2026-10-29, sides added "
         f"2026-11-02. Net exposure is capped at {NET_CAP_PCT:g}% of equity.")

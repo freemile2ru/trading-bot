@@ -33,7 +33,8 @@ logger = logging.getLogger("autotrader.sizing")
 RISK_PCT = float(os.getenv("AUTOTRADER_SIZE_RISK_PCT", "0.2"))      # % of the ledger as one daily ATR of swing, per leg
 STOP_ATR = float(os.getenv("AUTOTRADER_SIZE_STOP_ATR", "1.5"))      # the stop, in daily ATRs
 STOP_MIN_PCT, STOP_MAX_PCT = 3.0, 15.0
-LEG_CAP_PCT = float(os.getenv("AUTOTRADER_SIZE_LEG_CAP_PCT", "8"))   # % of the ledger, one leg (a 3% ATR coin wants 6.7% for $100 of swing on $50k)
+from trading import risk_budget as _risk_budget
+LEG_CAP_PCT = float(os.getenv("AUTOTRADER_SIZE_LEG_CAP_PCT", "25" if _risk_budget.ENABLED else "8"))   # % of the ledger, one leg; 8 without the daily risk budget (2026-11-14: a $555 risk at a 4.5% BTC stop is 25% of $50k)
 HEAT_CAP_PCT = float(os.getenv("AUTOTRADER_SIZE_HEAT_CAP_PCT", "1"))  # % of the ledger: the open legs' daily swings together
 SIDE_CAP = int(os.getenv("AUTOTRADER_SIZE_SIDE_CAP", "6"))
 SHRINK_N = 20
@@ -105,19 +106,24 @@ def heat_usd(open_legs: list[dict]) -> float:
     return sum(swing_usd(t) for t in open_legs)
 
 
-def plan_leg(equity: float, atr_pct: float | None, cell: dict | None, rank: int, n_picks: int, open_legs: list[dict], direction: str) -> dict | None:
-    """Everything a leg needs: notional, stop, and the reason for each part — or None with the refusal logged in it."""
+def plan_leg(equity: float, atr_pct: float | None, cell: dict | None, rank: int, n_picks: int, open_legs: list[dict], direction: str,
+             risk_usd: float | None = None, heat_cap_usd: float | None = None) -> dict | None:
+    """Everything a leg needs: notional, stop, and the reason for each part — or None with the refusal logged in it.
+    With `risk_usd` (trading/risk_budget.py, 2026-11-14) the leg is sized so its STOP_ATR stop loses that many dollars —
+    the day's budget share ÷ the legs a day — instead of RISK_PCT of the ledger; `heat_cap_usd` is then the share in
+    daily-swing dollars (the open legs' swings together may not pass it)."""
     atr = atr_pct or ATR_FALLBACK_PCT
     same_side = sum(1 for t in open_legs if t.get("direction") == direction)
     if same_side >= SIDE_CAP:
         return {"refused": f"{same_side} {direction}s already on (cap {SIDE_CAP})"}
-    base = equity * RISK_PCT / 100 / (atr / 100)
+    swing_usd_day = risk_usd / STOP_ATR if risk_usd else equity * RISK_PCT / 100
+    base = swing_usd_day / (atr / 100)
     mult, mwhy = edge_multiplier(cell)
     tilt, twhy = tilt_for(rank, n_picks)
     notional = min(base * mult * tilt, equity * LEG_CAP_PCT / 100)
     capped = notional < base * mult * tilt - 0.01
     used = heat_usd(open_legs)
-    cap = equity * HEAT_CAP_PCT / 100
+    cap = heat_cap_usd if heat_cap_usd else equity * HEAT_CAP_PCT / 100
     room = cap - used
     if room <= 0:
         return {"refused": f"heat cap: ${used:,.0f} of daily swing already on against a ${cap:,.0f} cap"}
@@ -128,11 +134,13 @@ def plan_leg(equity: float, atr_pct: float | None, cell: dict | None, rank: int,
         notional *= scaled
         swing = room
     stop_pct = max(STOP_MIN_PCT, min(STOP_MAX_PCT, STOP_ATR * atr))
-    why = (f"vol parity: ${equity * RISK_PCT / 100:,.0f} a day of swing ÷ {atr:.1f}% ATR = ${base:,.0f}; {mwhy}; {twhy}"
+    why = ((f"risk budget: ${risk_usd:,.0f} at a {STOP_ATR:g}-ATR stop = ${swing_usd_day:,.0f} a day of swing" if risk_usd else f"vol parity: ${swing_usd_day:,.0f} a day of swing")
+           + f" ÷ {atr:.1f}% ATR = ${base:,.0f}; {mwhy}; {twhy}"
            + (f"; capped at {LEG_CAP_PCT:g}% of the ledger" if capped else "") + (f"; scaled ×{scaled} into the heat room" if scaled else "")
            + f"; stop {stop_pct:.1f}% ({STOP_ATR:g} ATR)")
     return {"notional": round(notional, 2), "stop_pct": round(stop_pct, 3), "atr_pct": round(atr, 3), "atr_known": atr_pct is not None,
             "base_notional": round(base, 2), "edge_mult": mult, "edge_why": mwhy, "tilt": tilt, "tilt_why": twhy, "rank": rank, "n_picks": n_picks,
+            "budget_risk_usd": risk_usd,
             "heat_used_usd": round(used, 2), "heat_cap_usd": round(cap, 2), "swing_usd": round(swing, 2), "heat_scaled": scaled,
             "leg_capped": capped, "risk_pct": RISK_PCT, "stop_atr": STOP_ATR, "lock_arm_pct": LOCK_ARM_PCT, "why": why}
 

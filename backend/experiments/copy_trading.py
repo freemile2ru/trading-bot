@@ -122,8 +122,9 @@ LT_TURNOVER = (2.0, 60.0)                # Lighter: above ~60× a month the boar
 # loss is 1% gets a 2% stop and a $20k leg, where their typical 1.3% win is ~$260 and the stop −$400.
 RISK_PCT = float(os.getenv("COPY_RISK_PCT", "0.5"))                # 0.5 since 2026-11-04 (was 2): see the re-rule note below
 LEG_PCT = float(os.getenv("COPY_LEG_PCT", "10"))                  # floor: 10% of equity a copy (25% was the whole rule from 10-29 to 10-31)
-MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "25"))          # cap: a leg is never more than a quarter of the book (was the whole book until 2026-11-04)
-MAX_GROSS_PCT = float(os.getenv("COPY_MAX_GROSS_PCT", "150"))     # everything open in a book together: never more than 1.5× its equity
+from trading import risk_budget as _risk_budget                   # the daily risk budget (2026-11-14) scales the copy caps with it
+MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "100" if _risk_budget.ENABLED else "25"))   # cap: a leg is never more than this share of the book (a quarter until 2026-11-14; a $1.7k risk at a 2% stop is 2.5× a $33k book, so the whole book under the budget)
+MAX_GROSS_PCT = float(os.getenv("COPY_MAX_GROSS_PCT", "300" if _risk_budget.ENABLED else "150"))   # everything open in a book together (1.5× its equity until 2026-11-14)
 DAY_LOSS_HALT_PCT = float(os.getenv("COPY_DAY_LOSS_HALT_PCT", "3"))   # a book that has lost this much of itself today (closed) opens nothing more until the next UTC day
 # Sized by record (2026-11-04, the lane allocator's idea applied to the people we copy): on the research machine one
 # Hyperliquid wallet cost −$1,789 over 7 copies and the venue −$2,704 over 13, while Lighter's 43 copies lost −$561.
@@ -819,12 +820,14 @@ def stop_pct(profile: dict | None) -> float:
     return min(max(STOP_X * loss, STOP_PCT_MIN), DISASTER_PCT)
 
 
-def leg_notional(equity: float, stop: float | None = None, market: str | None = None) -> float:
-    """What one copy puts on: the risk rule (RISK_PCT of equity lost at the stop), floored at LEG_PCT and capped at
-    MAX_LEG_PCT of equity (MAX_LEG_PCT_BY_MARKET for stock and commodity perps)."""
+def leg_notional(equity: float, stop: float | None = None, market: str | None = None, risk_usd: float | None = None) -> float:
+    """What one copy puts on: the risk rule (RISK_PCT of equity lost at the stop — or, under the daily risk budget, the
+    book's `risk_usd` a leg), floored at LEG_PCT and capped at MAX_LEG_PCT of equity (MAX_LEG_PCT_BY_MARKET for stock
+    and commodity perps)."""
     stop = stop or DISASTER_PCT
     cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market or "", MAX_LEG_PCT))
-    return min(max(equity * RISK_PCT / stop, equity * LEG_PCT / 100), equity * cap / 100)
+    by_risk = risk_usd * 100 / stop if risk_usd else equity * RISK_PCT / stop
+    return min(max(by_risk, equity * LEG_PCT / 100), equity * cap / 100)
 
 
 def day_loss(portfolio: dict, now: float) -> float:
@@ -968,8 +971,11 @@ def book_room(w, now: float) -> str | None:
     if gross >= equity * MAX_GROSS_PCT / 100:
         return f"gross cap ({gross / equity * 100:.0f}% of the book already on)"
     lost = day_loss(p, now)
-    if lost >= equity * DAY_LOSS_HALT_PCT / 100:
-        return f"halted for the day (−${lost:,.0f} closed today, {lost / equity * 100:.1f}% of the book)"
+    from trading import risk_budget
+    rb = risk_budget.leg_risk(getattr(w, "label", "") or "", now)
+    limit = max(equity * DAY_LOSS_HALT_PCT / 100, rb.get("share_usd") or 0.0)      # under the budget, the book's own halt is its share of the day
+    if lost >= limit:
+        return f"halted for the day (−${lost:,.0f} closed today against ${limit:,.0f})"
     return None
 
 
@@ -1086,7 +1092,15 @@ async def mirror(now: float | None = None) -> dict:
                 size_x *= venue_x * pattern_x * week_x
                 stop = stop_pct(L.get("profile"))
                 cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
-                notional = min(leg_notional(equity, stop, market) * size_x, equity * cap / 100)       # sized up, never past the cap
+                from trading import risk_budget
+                rb = risk_budget.leg_risk(book, now)                                                    # the day's budget share per copy (2026-11-14)
+                if rb.get("blocked"):
+                    _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                                  "variant": variant, "reason": rb["why"], "mark": mark, "leader_entry": r["entry"],
+                                  "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+                    logger.info("Copy %s %s skipped: %s", r["side"], r["symbol"], rb["why"])
+                    continue
+                notional = min(leg_notional(equity, stop, market, rb.get("risk_usd")) * size_x, equity * cap / 100)   # sized up, never past the cap
                 from ops import calendar
                 from trading import capital
                 room = capital.coin_room(r["symbol"], r["side"], notional, book)
@@ -1101,7 +1115,7 @@ async def mirror(now: float | None = None) -> dict:
                                  take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=notional,
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
                                  extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
-                                        "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
+                                        "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "risk_budget": rb if rb.get("on") else None,
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
                                         "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,

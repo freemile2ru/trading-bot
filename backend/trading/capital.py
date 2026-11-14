@@ -43,7 +43,7 @@ logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
 TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "219500"))      # $49k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06) + $25k prop book (2026-11-09)
-TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "200"))    # $200/day since 2026-10-29 (0.4% of the $50k a day)
+TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "500"))    # $500/day since 2026-11-14 (the user: "$500 return per day" on $5k of daily risk); $200 from 2026-10-29
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
     "futures_trend": 5_500.0,
