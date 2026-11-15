@@ -24,6 +24,10 @@ export interface EntryCellsReport {
     verdict: CellVerdict
   }
   short_cells: Record<string, { label: string; all: { in: CellStat; out: CellStat }; forward: { in: CellStat; out: CellStat }; verdict: CellVerdict }>
+  gate?: {
+    live: boolean; refused: number; settled: number; would_have: CellStat; kept_forward: CellStat; by_flag: Record<string, number>; verdict: CellVerdict
+    recent: { book: string; symbol: string; opened_ts: number; price: number; flags: string[]; result: { coin_pct: number } | null }[]
+  }
   reversal_long_shadow: {
     hold_h: number; written: number; settled: number; coin: CellStat; hedged: CellStat
     forward: { n: number; hedged: CellStat; halves_pct: (number | null)[] }; verdict: string; needed: number

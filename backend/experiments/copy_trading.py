@@ -1081,6 +1081,15 @@ async def mirror(now: float | None = None) -> dict:
                               "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree, "second_look": {k: look[k] for k in ("view", "concerns", "claude")}})
                 logger.info("Copy %s %s vetoed by the second look: %s", r["side"], r["symbol"], look["why"])
                 continue
+            if r["side"] == "long":
+                from experiments import entry_cells                                                      # the live long gate (2026-11-14)
+                gated = await entry_cells.gate_long(book, r["symbol"], now, mark)
+                if gated:
+                    _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                                  "variant": variant, "reason": gated, "mark": mark, "leader_entry": r["entry"],
+                                  "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+                    logger.info("Copy long %s skipped: %s", r["symbol"], gated)
+                    continue
             if True:
                 s = 1 if r["side"] == "long" else -1
                 equity = w.get_portfolio()["total_equity"]

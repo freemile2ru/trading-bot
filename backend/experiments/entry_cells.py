@@ -47,6 +47,14 @@ GATE = {"funding_max_pct": 0.01, "btc24_max_pct": 0.0, "pre4_max_pct": 0.0, "hou
 SHORT_CELLS = {"btc_up_day": "BTC ≥ +2% over the 24h before the entry", "late_us": "opened 16–20 UTC"}
 SHADOW_HOLD_H = 24
 FEE_RT_PCT = 0.10
+# The long gate, LIVE from 2026-11-14 (the user: "work on improving the results for our longs … find the root cause and
+# fix"). The decomposition of 328 crypto longs: −1.03% a trade = the market's own move over the window −0.27% (t −2.2)
+# + the coin against the market −0.76% (t −2.0); when the market ROSE during a long our coins lagged it by −1.43%
+# (t −4.9) — we buy the laggards and they keep lagging. The four gate conditions separate the bleed: kept −0.2% vs
+# rejected −1.29% a trade (219 rejected, t −5.6; each flag alone t −3.9 … −5.0). Overfitting on four cuts is the risk,
+# so every gated long is written down at its price and scored 24h later: the reverse verdict below switches the gate
+# off if the longs it refused beat the longs it kept. LONG_GATE=false turns it off outright.
+LONG_GATE = os.getenv("LONG_GATE", "true").lower() != "false"
 EVERY_S = int(os.getenv("ENTRY_CELLS_EVERY_S", "900"))
 BATCH = int(os.getenv("ENTRY_CELLS_BATCH", "20"))
 STOCK_PERPS = {"SKHYNIXUSDT", "AMDUSDT", "NVDAUSDT", "TSLAUSDT", "QQQUSDT", "SPYUSDT", "INTCUSDT", "SAMSUNGUSDT", "MUUSDT", "CRCLUSDT", "COINUSDT",
@@ -182,6 +190,46 @@ def records(book: str | None = None) -> list[dict]:
     return [r for b in books for r in (kv.get_sync(_k(tid)) for tid in (kv.get_sync(_k("index", b)) or [])) if r]
 
 
+# ── The live long gate ────────────────────────────────────────────────────────
+
+async def gate_long(book: str, symbol: str, now: float, price: float) -> str | None:
+    """The reason a long is refused now (its failing conditions), or None when it passes or the gate is off. A refused
+    long is written down at `price` and scored SHADOW_HOLD_H later (settle_gated) so the gate can be judged against it."""
+    if not LONG_GATE or not is_crypto(symbol):
+        return None
+    c = await conditions(symbol, "long", now, price)
+    flags = gate_flags(c)
+    if not flags:
+        return None
+    key = f"{book}:{symbol}:{int(now // 900)}"                       # one record per book, coin and quarter hour
+    if not kv.get_sync(_k("gated", key)):
+        kv.set_sync(_k("gated", key), {"book": book, "symbol": symbol, "opened_ts": now, "price": price, "flags": flags, **c, "result": None})
+        idx = kv.get_sync(_k("gated", "index")) or []
+        kv.set_sync(_k("gated", "index"), (idx + [key])[-3000:])
+    return "long gate: " + ", ".join(flags) + " (" + ", ".join(f"{k} {c[k]}" for k in ("fund_pct", "btc24_pct", "pre4_pct", "hour") if c.get(k) is not None) + ")"
+
+
+async def settle_gated(now: float | None = None) -> int:
+    from experiments.index_shadow import price_at
+    now = now or time.time()
+    done = 0
+    for key in kv.get_sync(_k("gated", "index")) or []:
+        rec = kv.get_sync(_k("gated", key))
+        if not rec or rec.get("result") or rec["opened_ts"] + SHADOW_HOLD_H * 3600 + 300 > now:
+            continue
+        p1 = await price_at(rec["symbol"], rec["opened_ts"] + SHADOW_HOLD_H * 3600)
+        if not p1:
+            continue
+        rec["result"] = {"coin_pct": round((p1 / rec["price"] - 1) * 100 - FEE_RT_PCT, 4)}
+        kv.set_sync(_k("gated", key), rec)
+        done += 1
+    return done
+
+
+def gated_records() -> list[dict]:
+    return [r for r in (kv.get_sync(_k("gated", key)) for key in (kv.get_sync(_k("gated", "index")) or [])) if r]
+
+
 # ── The reversal lane's long leg, written down and scored ─────────────────────
 
 async def shadow_reversal_longs(scores: dict[str, float], k: int, bucket: int, now: float) -> int:
@@ -245,6 +293,10 @@ async def tick(now: float | None = None) -> None:
         await settle_shadow(now)
     except Exception as e:
         logger.warning("Reversal long shadow settle failed: %s", e)
+    try:
+        await settle_gated(now)
+    except Exception as e:
+        logger.warning("Gated longs settle failed: %s", e)
 
 
 # ── Statistics and verdicts ───────────────────────────────────────────────────
@@ -327,7 +379,17 @@ def report() -> dict:
               "coin": _stats([r["result"]["coin_pct"] for r in settled]), "hedged": _stats([r["result"]["hedged_pct"] for r in settled]),
               "forward": {"n": len(fwd_sh), "hedged": st, "halves_pct": sh_halves}, "verdict": sh_verdict, "needed": VERDICT_N,
               "recent": sorted(sh, key=lambda r: -r["opened_ts"])[:20]}
+    # The gate's own control: the longs it refused, scored 24h on, against the longs that passed and were taken (forward).
+    gated = gated_records()
+    settled = [r for r in gated if r.get("result")]
+    would = [{"opened_ts": r["opened_ts"], "actual_pct": r["result"]["coin_pct"]} for r in settled]
+    kept_fwd = [r for r in fwd_l if r.get("kept")]
+    rv = two_groups(would, kept_fwd, "a")
+    gate_ctl = {"live": LONG_GATE, "refused": len(gated), "settled": len(settled), "would_have": _stats([w["actual_pct"] for w in would]),
+                "kept_forward": _stats([r["actual_pct"] for r in kept_fwd]), "by_flag": {f: sum(1 for r in gated if f in (r.get("flags") or [])) for f in ("funding_paid", "btc_up", "chasing_4h", "us_open")},
+                "verdict": {**{k: x for k, x in rv.items() if k not in ("a", "b")}, "verdict": {"works": "gate wrong — switch it off", "no difference": "gate stands"}.get(rv["verdict"], rv["verdict"])},
+                "recent": sorted(gated, key=lambda r: -r["opened_ts"])[:15]}
     return {"since": SINCE, "verdict_n": VERDICT_N, "min_gap_pct": MIN_GAP_PCT, "books": BOOKS, "recorded": len(rows),
-            "long": long_out, "short_cells": cells, "reversal_long_shadow": shadow,
+            "long": long_out, "short_cells": cells, "reversal_long_shadow": shadow, "gate": gate_ctl,
             "recent": sorted(rows, key=lambda r: -r["opened_ts"])[:40],
             "pending": sum(len([t for t in closed_trades(b) if t["id"] not in {r["trade_id"] for r in rows}]) for b in BOOKS)}

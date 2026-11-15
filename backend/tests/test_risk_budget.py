@@ -31,6 +31,11 @@ def test_the_budget_splits_by_record_with_a_floor_and_stops_the_day(monkeypatch)
     assert rep["budget_usd"] == 5000.0 and rep["used_usd"] == 900.0 and rep["left_usd"] == 4100.0 and not rep["blocked"]
     b = rep["books"]
     assert b["auto:reversal"]["weight"] == rb.FLOOR_R and b["copy_stocks"]["weight"] == rb.FLOOR_R            # floored
+    rows["copy_stocks"] = _closed(9, 0.5, 165.0, now)                                                         # a hot nine-trade record still sits at the floor
+    assert rb.compute(now)["books"]["copy_stocks"]["weight"] == rb.FLOOR_R
+    rows["copy_stocks"] = _closed(10, 0.5, 165.0, now)
+    assert rb.compute(now)["books"]["copy_stocks"]["weight"] > rb.FLOOR_R
+    rows["copy_stocks"] = _closed(9, -0.1, 165.0, now)
     assert b["copy_trading"]["share_usd"] > b["auto:reversal"]["share_usd"] > 0
     assert sum(x["share_usd"] for x in b.values()) == pytest.approx(5000.0, abs=0.05)
     assert b["auto:reversal"]["leg_risk_usd"] == pytest.approx(b["auto:reversal"]["share_usd"] / b["auto:reversal"]["legs_per_day"], abs=0.01)

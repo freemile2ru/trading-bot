@@ -147,6 +147,15 @@ function EntryCells() {
                 <td className={clsx('text-right', verdictTone(c.verdict.verdict))}>{c.verdict.verdict}</td>
               </tr>
             ))}
+            {d.gate && (
+              <tr className="border-t border-gray-800/60">
+                <td className="py-1.5 text-gray-300">Long gate <b className={d.gate.live ? 'text-emerald-300' : 'text-gray-500'}>{d.gate.live ? 'LIVE' : 'off'}</b> <span className="text-gray-600">· refused {d.gate.refused} ({Object.entries(d.gate.by_flag).filter(([, n]) => n > 0).map(([f, n]) => `${FLAG_LABEL[f] ?? f} ${n}`).join(', ') || '—'}) · would-have 24h vs kept</span></td>
+                <td className="text-right text-gray-600">—</td><td className="text-right text-gray-600">—</td>
+                <Cell s={d.gate.would_have} /><Cell s={d.gate.kept_forward} />
+                <td className={clsx('text-right', tone(d.gate.verdict.gap_pct))}>{d.gate.verdict.gap_pct != null ? `${pct(d.gate.verdict.gap_pct)} · t ${d.gate.verdict.t ?? '—'}` : `${d.gate.verdict.have ?? 0}/${d.gate.verdict.needed ?? d.verdict_n}`}</td>
+                <td className={clsx('text-right', d.gate.verdict.verdict.startsWith('gate wrong') ? 'text-red-300' : d.gate.verdict.verdict === 'measuring' ? 'text-gray-500' : 'text-emerald-300')}>{d.gate.verdict.verdict}</td>
+              </tr>
+            )}
             <tr className="border-t border-gray-800/60">
               <td className="py-1.5 text-gray-300">Reversal long leg <span className="text-gray-600">· not taken, {sh.hold_h}h, coin / BTC-hedged</span></td>
               <Cell s={sh.coin} /><Cell s={sh.hedged} /><td className="text-right text-gray-600">—</td><Cell s={sh.forward.hedged} />

@@ -39,6 +39,7 @@ BOOKS = tuple(b.strip() for b in os.getenv("DAILY_RISK_BOOKS", "auto:reversal,co
 MIN_LEGS = {"auto:reversal": 4.0, "copy_trading": 1.0, "copy_stocks": 1.0}
 FLOOR_R = 0.02
 RECORD_N = 20
+MIN_RECORD_N = 10          # a book weighs above the floor only once it has this many closed trades (first prod read: copy_stocks took 55% of the day on 9 copies)
 SHRINK_N = 20
 LOOKBACK_DAYS = 14.0
 CACHE_S = 60.0
@@ -128,7 +129,8 @@ def compute(now: float | None = None) -> dict:
     for b in BOOKS:
         closed = closed_trades(b)
         r, n = record_r(closed)
-        books[b] = {"record_r": round(r, 4), "record_n": n, "weight": max(r, FLOOR_R), "legs_per_day": round(legs_per_day(b, closed, now), 2)}
+        books[b] = {"record_r": round(r, 4), "record_n": n, "weight": max(r, FLOOR_R) if n >= MIN_RECORD_N else FLOOR_R,
+                    "legs_per_day": round(legs_per_day(b, closed, now), 2)}
     total_w = sum(x["weight"] for x in books.values()) or 1.0
     expected = 0.0
     for b, x in books.items():

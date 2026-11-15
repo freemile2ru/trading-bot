@@ -1115,6 +1115,12 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         if waited:
             logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, waited)
             return None
+        if direction == "long":
+            from experiments import entry_cells                                                      # the live long gate (2026-11-14)
+            gated = await entry_cells.gate_long(f"auto:{lane}", symbol, time.time(), price)
+            if gated:
+                logger.info("%s leg long %s skipped: %s", lane, symbol, gated)
+                return None
         # Not into a move already running against the leg: the leg is tried again on the next tick (the mirror loop
         # re-offers it while the book still holds the position; a reversal pick is simply passed over).
         from trading import tape
