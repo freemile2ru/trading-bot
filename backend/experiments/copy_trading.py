@@ -1274,6 +1274,21 @@ def _book_summary(w, market: str, variant: str | None = None) -> dict:
                         "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in recent]}
 
 
+def bits_audit() -> dict:
+    """The "bits" shadow (trading/exits manual_lock_bits) against every closed copy it ran beside, paired in R — the lock
+    shadows' terms (autotrader/lanes.tight_lock_verdict): adopt after 40 copies only if it beats the live exit by ≥ 0.03R a
+    copy with paired t ≥ 2 and both halves positive."""
+    from autotrader import lanes
+    closed, results = [], []
+    for w in _unique_wallets():
+        closed += [t for t in w.all_trades()["closed"] if t.get("leader_id") and t.get("risk_usd")]
+        try:
+            results += w.shadow_report()["results"]
+        except Exception as e:
+            logger.debug("shadow report for %s unavailable: %s", getattr(w, "label", "?"), e)
+    return lanes.tight_lock_verdict(closed, results, "manual_lock_bits")
+
+
 def status() -> dict:
     wallets = _wallets()
     all_w = _all_wallets()
@@ -1310,6 +1325,7 @@ def status() -> dict:
             "skipped": [{**e, "market": market_of(e["symbol"]), "variant": e.get("variant") or "base"} for e in sk[-120:][::-1]],
             "skip_rule": {"judged": len(judged), "avg_outcome_pct": round(sum(e["outcome_pct"] for e in judged) / len(judged), 3) if judged else None,
                           "would_have_won_pct": round(100 * sum(e["outcome_pct"] > 0 for e in judged) / len(judged), 1) if judged else None},
+            "bits": bits_audit(),
             "config": config()}
 
 

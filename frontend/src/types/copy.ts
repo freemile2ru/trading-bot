@@ -44,6 +44,8 @@ export interface CopyStatus {
           second_look_view?: 'agree' | 'doubt' | 'disagree' | null; second_look_why?: string | null; second_look_x?: number | null }[]
   skipped: { ts: number; leader: string; venue?: string | null; symbol: string; market?: string; variant?: string; side: string; reason: string; mark: number | null; moved_pct?: number; age_h?: number; outcome_pct?: number; leader_roi?: number }[]
   skip_rule: { judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null }
+  /** The "bits" exit shadow (half out at +2%, half back at the entry) against the live lock, paired per copy. */
+  bits?: { policy: string; label?: string; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number; delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string }
   second_look?: { mode: 'veto' | 'record' | 'off'; claude: boolean; doubt_x: number
                   by_view: Record<'agree' | 'doubt' | 'disagree', { n: number; pnl: number; wins: number }>
                   vetoed: { n: number; judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null } }

@@ -586,6 +586,16 @@ class PaperWallet:
         state["balance"] = round(state["balance"] + trade["pnl_usd"], 2)
         trade_alerts.closed(self.label, trade)
         coin_lock.record_stop_out(self.label, trade)
+        # A shadow that only makes sense while the live trade is on (the copy "bits" variants: the leader's exit is the
+        # trade's end) closes with it when the live close was not the price's doing (leader closed, manual, consolidated).
+        if reason not in exits.PRICE_EXITS and exits.FOLLOW_LIVE_CLOSE:
+            still = []
+            for sh in state.get("shadows", []):
+                if sh.get("trade_id") == trade["id"] and sh.get("exit_policy") in exits.FOLLOW_LIVE_CLOSE:
+                    self._record_shadow(state, _close_trade(sh, price, "live_closed"))
+                else:
+                    still.append(sh)
+            state["shadows"] = still
         return trade
 
     # ── Funding ──────────────────────────────────────────────────────────────
