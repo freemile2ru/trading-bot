@@ -270,7 +270,9 @@ export interface TargetReport {
 export interface RiskBudget {
   on: boolean; pct: number; target_usd: number
   base_book?: string; base_equity?: number; budget_usd?: number
-  books?: Record<string, { record_r: number; record_n: number; weight: number; legs_per_day: number; share_usd: number; share_pct: number; leg_risk_usd: number; expected_usd_day: number }>
+  books?: Record<string, { record_r: number; record_n: number; weight: number; legs_per_day: number; share_usd: number; share_pct: number; leg_risk_usd: number; expected_usd_day: number
+    /** 2026-11-17: a leg's risk is scaled by min(1, closed trades / 40); leg_risk_full_usd is the unscaled figure. */
+    leg_risk_full_usd?: number; maturity?: number; record_total_n?: number }>
   day_pnl?: Record<string, number>; day_pnl_total?: number; used_usd?: number; left_usd?: number; blocked?: boolean
   expected_usd_day?: number; needed_r?: number | null
 }
