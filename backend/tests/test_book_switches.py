@@ -17,12 +17,12 @@ def client():
 def test_every_book_is_listed_and_starts_on(client):
     d = client.get("/api/books").json()
     names = [b["name"] for b in d["books"]]
-    assert names == ["main", "auto", "carry", "futures_trend", "weekly_rs", "copy_stocks", "auction", "carry_q", "cascade", "events", "copy_trading", "unlocks", "vol_premium", "burst_up", "burst_dip", "prop"]
+    assert names == ["main", "auto", "carry", "futures_trend", "weekly_rs", "copy_stocks", "auction", "carry_q", "cascade", "events", "copy_trading", "unlocks", "burst_up", "burst_dip", "burst_down", "burst_rip", "prop"]
     assert "claude_swing" not in names and not any(n.startswith("copy_crypto_") for n in names)      # retired / folded 2026-11-02
     main = d["books"][0]
     assert main["enabled"] and main["mode"] == "paper" and main["unavailable"] is None
     retired = [r["name"] for r in d["retired"]]
-    assert {"auto_rules", "signals_rules", "signals_claude", "hold72", "fade24", "impulse", "scalper"} <= set(retired)
+    assert {"auto_rules", "signals_rules", "signals_claude", "hold72", "fade24", "impulse", "scalper", "vol_premium"} <= set(retired)   # vol_premium retired 2026-11-17
 
 
 def test_books_turned_off_in_env_cannot_be_switched(client):

@@ -15,6 +15,8 @@ on a lucky one. These rules are set once and applied the same way to every book:
   carry         funding income per day on notional against the holdout's (BTC 1.0, ETH 0.57 bps/day),
                 judged after CARRY_DAYS: pass at ≥ half the expected rate, fail at ≤ 0, otherwise keep
                 going to twice CARRY_DAYS and then pass only if positive.
+  carry_q       the marked basis income per day on notional against the rate LOCKED at entry (2026-11-17), the same
+                clock and bars as carry: pass at ≥ half the locked rate after CARRY_DAYS, fail at ≤ 0.
   main          manual trading isn't a strategy — no verdict.
 
 The verdict is advice: nothing is switched off automatically. A "retire" shows on the Books tab.
@@ -112,6 +114,32 @@ def judge_carry(positions: list[dict]) -> dict:
     return {**base, "status": "unclear", "note": f"funding pays but below half the holdout's rate — keep going to {2 * CARRY_DAYS} days"}
 
 
+def judge_carry_q(positions: list[dict]) -> dict:
+    """Carry Q's verdict (2026-11-17: it had none, so the Books tab said "collecting, 0 trades" for ever): each position's
+    marked P&L per day on its notional against the annualised basis it locked at entry, on carry's clock."""
+    got, expected, days = [], [], 0.0
+    for p in positions:
+        d = p.get("days") or 0.0
+        if d <= 0 or not p.get("notional"):
+            continue
+        days = max(days, d)
+        got.append((p.get("pnl") or 0.0) / p["notional"] * 1e4 / d)
+        expected.append((p.get("basis_locked_pct") or 0.0) / 100 * 1e4 / 365)
+    live = round(sum(got) / len(got), 3) if got else None
+    exp = round(sum(expected) / len(expected), 3) if expected else None
+    base = {"rule": "carry_q", "days": round(days, 1), "target_days": CARRY_DAYS, "basis_bps_day": live,
+            "locked_bps_day": exp, "registered": "2026-11-17"}
+    if live is None or exp is None or days < CARRY_DAYS:
+        return {**base, "status": "collecting", "note": f"{days:.0f}/{CARRY_DAYS} days — no verdict before {CARRY_DAYS}"}
+    if live >= exp / 2:
+        return {**base, "status": "pass", "note": "the basis is paying at least half the rate locked at entry"}
+    if live <= 0:
+        return {**base, "status": "fail", "note": "the basis hasn't paid — retire it"}
+    if days >= 2 * CARRY_DAYS:
+        return {**base, "status": "pass", "note": "the basis pays, though below half the locked rate"}
+    return {**base, "status": "unclear", "note": f"the basis pays but below half the locked rate — keep going to {2 * CARRY_DAYS} days"}
+
+
 def for_books(rows: list[dict]) -> dict[str, dict]:
     """Every book's verdict from overview rows (any ledger mix the caller chose)."""
     rs: dict[str, list[tuple[float, float]]] = {}
@@ -129,6 +157,11 @@ def for_books(rows: list[dict]) -> dict[str, dict]:
     try:
         from experiments import carry
         out["carry"] = judge_carry(carry._rows("SELECT * FROM carry"))
+    except Exception:
+        pass
+    try:
+        from experiments import carry_q
+        out["carry_q"] = judge_carry_q(carry_q.status()["positions"])
     except Exception:
         pass
     return out

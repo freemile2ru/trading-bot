@@ -283,7 +283,7 @@ RESEARCH: list[dict] = [
      "finding": _monday, "decision": "rejected", "book": None},
     {"key": "vrp", "title": "Bitcoin / Ether volatility risk premium", "script": "research/vrp_lab.py", "file": "vrp_results.json",
      "question": "Is implied vol reliably above the vol that then happens, and what does a defined-risk short structure earn?",
-     "finding": _vrp, "decision": "promoted — the vol-premium condor book (paper, 40-trade verdict)", "book": "vol_premium"},
+     "finding": _vrp, "decision": "RETIRED from the forward book 2026-11-17 (the user's call): eight weekly condors on BTC/ETH/SOL since 10-27, five settled for −$508 (2 of 5 positive against the lab's 78%), the 11-06 week through both BTC's and ETH's wings, the open three marked −$216 — −$724 of $3,000 with 13 weeks to its 40-structure verdict. Revisit only if the implied-vol premium widens again. The lab's read: promoted — the vol-premium condor book (paper, 40-trade verdict)", "book": "vol_premium"},
     # ── earlier ──
     {"key": "event_study", "title": "Binance listing & delisting shorts", "script": "research/event_study_lab.py", "file": "event_study_results.json",
      "question": "What does a coin do against BTC in the month after Binance announces it (listing, new perp, delisting)?",

@@ -225,7 +225,8 @@ TIGHT_LOCK_N = 40
 TIGHT_LOCK_MIN_R = 0.03
 LOCK_SHADOW_POLICIES = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")
 LOCK_SHADOW_LABEL = {"manual_lock_65": "the old 65%-of-peak lock", "manual_lock_trail_half": "a ½-ATR trail", "manual_lock_tight": "arm 0.5% / keep 80%",
-                     "manual_lock_bits": "bits: half out at +2%, half back at the entry", "manual_lock_trail": "the 1-ATR trail"}
+                     "manual_lock_bits": "bits: half out at +2%, half back at the entry", "manual_lock_trail": "the 1-ATR trail",
+                     "manual_lock_floor": "the +2% breakeven floor"}
 
 
 def tight_lock_verdict(sized: list[dict], shadow_results: list[dict] | None = None, policy: str = "manual_lock_tight") -> dict:

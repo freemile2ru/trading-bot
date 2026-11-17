@@ -152,6 +152,13 @@ POLICIES: dict[str, Policy] = {
     # vs −$798 actual on the mirror). Arm +1% of notional, trail one daily ATR from the best price, the week's own cap.
     "manual_lock_trail": Policy("manual_lock_trail", breakeven=None, stale=False, max_hold_h=168,
                                 lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01, lock_trail_atr=1.0),
+    # 2026-11-17 (the user: "the break even stop should only be live in production, it should still be an experiment in
+    # local environment"): the copies' profit floor as a shadow — the live copy lock plus the stop to breakeven once +2%
+    # up. Runs beside every copy that does not carry the floor itself (local; on production the copies carry be_at_pct
+    # and the floor is live), judged by copy_trading.floor_audit on the lock shadows' terms.
+    "manual_lock_floor": Policy("manual_lock_floor", breakeven=None, stale=False,
+                                lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
+                                lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100, be_at_pct=2.0),
     "manual_lock_bits": Policy("manual_lock_bits", breakeven=None, stale=False,
                                lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
                                lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100, bits_out_pct=2.0, bits_frac=0.5, bits_readd=True),
@@ -179,10 +186,11 @@ POLICIES: dict[str, Policy] = {
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
 LOCK_SHADOWS = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")      # the lock variants shadowed beside every sized reversal leg
 COPY_SHADOWS = ("manual_lock_bits",)                                                   # shadowed beside every copy (a trade with a leader_id)
+FLOOR_SHADOW = "manual_lock_floor"                                                     # …and beside every copy that does not carry the floor itself
 WEEKLY_SHADOWS = ("manual_lock_trail",)                                                # shadowed beside every weekly leg (the book and the mirror)
-FOLLOW_LIVE_CLOSE = set(COPY_SHADOWS) | set(WEEKLY_SHADOWS)                            # shadows that end when their live trade ends for a non-price reason
+FOLLOW_LIVE_CLOSE = set(COPY_SHADOWS) | {FLOOR_SHADOW} | set(WEEKLY_SHADOWS)           # shadows that end when their live trade ends for a non-price reason
 PRICE_EXITS = {"stop_loss", "trailing_stop", "tightened_stop", "breakeven", "liquidated", "take_profit_1", "take_profit_2", "tp1_hit"}
-SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS, *WEEKLY_SHADOWS))).split(",")
+SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS, FLOOR_SHADOW, *WEEKLY_SHADOWS))).split(",")
                    if p in POLICIES]
 BITS_SHADOW = os.getenv("EXIT_BITS_SHADOW", "true").lower() != "false"
 LOCK_TIGHT_SHADOW = os.getenv("EXIT_LOCK_TIGHT_SHADOW", "true").lower() != "false"   # the lock variants shadowed on every sized reversal leg
@@ -502,7 +510,8 @@ def make_shadows(trade: dict, wallet_label: str, policies: list[str] | None = No
     tight = LOCK_TIGHT_SHADOW and policies is None and trade.get("sizing") and manual
     bits = BITS_SHADOW and policies is None and trade.get("leader_id") and manual
     weekly = policies is None and manual and trade.get("atr_pct") and (trade.get("strategy") == "weekly_rs" or trade.get("lane") == "weekly")
-    extra = (list(LOCK_SHADOWS) if tight else []) + (list(COPY_SHADOWS) if bits else []) + (list(WEEKLY_SHADOWS) if weekly else [])
+    floor = bits and not trade.get("be_at_pct")
+    extra = (list(LOCK_SHADOWS) if tight else []) + (list(COPY_SHADOWS) if bits else []) + ([FLOOR_SHADOW] if floor else []) + (list(WEEKLY_SHADOWS) if weekly else [])
     if trade.get("shadows") is False and policies is None:
         # A manual-policy book still shadows the profit lock, so the user's rule is scored on its own trades.
         policies = (["manual_lock"] if lock_shadow else []) + extra

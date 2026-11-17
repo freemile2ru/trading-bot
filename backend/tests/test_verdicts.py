@@ -19,6 +19,7 @@ def test_carry_verdict_compares_funding_with_the_holdout():
     assert verdicts.judge_carry(pos(10, 1.0))["status"] == "collecting"
     assert verdicts.judge_carry(pos(61, 61 * 0.8))["status"] == "pass"        # 0.8 bps/day vs 1.0 expected
     assert verdicts.judge_carry(pos(61, -2.0))["status"] == "fail"
+
     assert verdicts.judge_carry(pos(61, 61 * 0.2))["status"] == "unclear"
 
 
@@ -42,3 +43,14 @@ def test_rule_since_is_set_for_the_books_whose_rule_changed():
     assert verdicts.rule_since("burst_up") == 0.0 and verdicts.rule_since("main") == 0.0
     assert verdicts.rule_since("copy_trading") == verdicts.rule_since("copy_stocks") > 1.79e9 and verdicts.rule_since("cascade") > 1.79e9
     assert verdicts.rule_since("copy_crypto_wide") == verdicts.rule_since("copy_trading")     # the variants took the caps and the sizing too
+
+
+def test_carry_q_is_judged_on_its_locked_basis():
+    def pos(days, pnl, locked=4.5): return [{"symbol": "BTCUSDT", "notional": 10_000.0, "days": days, "pnl": pnl, "basis_locked_pct": locked}]
+    assert verdicts.judge_carry_q(pos(20, 30.0))["status"] == "collecting"
+    full = verdicts.judge_carry_q(pos(61, 10_000 * 0.045 * 61 / 365))                     # exactly the locked rate
+    assert full["status"] == "pass" and full["basis_bps_day"] == full["locked_bps_day"]
+    assert verdicts.judge_carry_q(pos(61, 10_000 * 0.045 * 61 / 365 * 0.3))["status"] == "unclear"
+    assert verdicts.judge_carry_q(pos(61, -5.0))["status"] == "fail"
+    assert verdicts.judge_carry_q(pos(130, 10_000 * 0.045 * 130 / 365 * 0.3))["status"] == "pass"
+    assert verdicts.judge_carry_q([])["status"] == "collecting"

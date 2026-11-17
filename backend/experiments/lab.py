@@ -64,6 +64,11 @@ DESCRIPTIONS = {
                  "The lab's healthiest line (+112 bps a trade, median +44, 54% winners, both halves positive) and the cascade book's "
                  "rule on a wider, price-triggered universe. Chosen after looking at the data, so a forward test from 2026-11-06, "
                  "judged on its own 40 trades.",
+    "burst_down": "The short mirror of burst_up (2026-11-17, the user: a short equivalent, then a trend switch between them): after a "
+                  "≥5% five-minute DOWN-burst, short 15 minutes later, held 4 hours, a 15% disaster stop only. Not a lab line — a pure "
+                  "forward test, judged on its own 40 trades; each leg records BTC's 24h move at entry for the read by regime.",
+    "burst_rip": "The short mirror of burst_dip (2026-11-17): after a ≥5% five-minute UP-burst, short 60 minutes later, held 4 hours, "
+                 "a 15% disaster stop only. Not a lab line — a pure forward test, judged on its own 40 trades.",
     "auction": "The mentor's NQ auction-level system on QQQ, NVDA, TSLA and AMD perps, 5-minute bars, New York session: accept beyond a "
                "session level, confirm, enter, stop under the acceptance bar, target the next level ≥ 50 bps away, grade ≥ 7 only, no trade "
                "near a macro release or earnings. Replay (research/auction_lab.py): −0.13% a trade at our costs — a forward test the user asked "

@@ -60,16 +60,16 @@ def test_the_trigger_is_the_labs_filter():
     assert burst.trigger(_frame(now, [99, 97.5, 96, 94.5, 94]))["dir"] == -1
 
 
-def test_an_up_burst_is_ridden_fifteen_minutes_later_by_the_up_book_only(book):
+def test_an_up_burst_is_ridden_fifteen_minutes_later_by_the_up_book_and_sold_an_hour_later_by_the_rip_book(book):
     ws, frames = book
     now = time.time()
     frames[SYM] = _frame(now, [101, 102.5, 104, 105.5, 106])
     assert asyncio.run(burst.tick(now)) == []                                         # queued, not traded
     q = burst.pending()
-    assert [x["book"] for x in q] == ["burst_up"] and q[0]["symbol"] == SYM
+    assert [x["book"] for x in q] == ["burst_up", "burst_rip"] and q[0]["symbol"] == SYM   # the long rule and its short mirror (2026-11-17)
     closed_at = int(frames[SYM].index[-1]) / 1000 + 60
-    assert q[0]["fire_at"] == pytest.approx(closed_at + 15 * 60)
-    assert asyncio.run(burst.tick(now + 60)) == [] and len(burst.pending()) == 1        # the same bar again: not queued twice
+    assert q[0]["fire_at"] == pytest.approx(closed_at + 15 * 60) and q[1]["fire_at"] == pytest.approx(closed_at + 3600)
+    assert asyncio.run(burst.tick(now + 60)) == [] and len(burst.pending()) == 2        # the same bar again: not queued twice
     assert asyncio.run(burst.tick(q[0]["fire_at"] - 30)) == []
     opened = asyncio.run(burst.tick(q[0]["fire_at"] + 20))
     assert len(opened) == 1 and opened[0]["direction"] == "long" and opened[0]["symbol"] == SYM and opened[0]["strategy"] == "burst_up"
@@ -78,7 +78,11 @@ def test_an_up_burst_is_ridden_fifteen_minutes_later_by_the_up_book_only(book):
     assert t["stop_loss"] == pytest.approx(106 * (1 - burst.STOP_PCT / 100)) and t["expires_at"] == pytest.approx(q[0]["fire_at"] + 20 + burst.HOLD_H * 3600)
     assert t["burst_move_pct"] == pytest.approx(6.0, abs=0.01) and t["entry_delay_min"] == 15
     assert t["exit_policy"] == "manual" and t["shadows"] is True                    # the lab's exit, every policy scored beside it
-    assert ws["burst_dip"].get_portfolio()["open_trades"] == [] and burst.pending() == []
+    assert ws["burst_dip"].get_portfolio()["open_trades"] == [] and [x["book"] for x in burst.pending()] == ["burst_rip"]
+    rip = asyncio.run(burst.tick(q[1]["fire_at"] + 20))                               # an hour on: the rip is sold
+    assert [(t["strategy"], t["direction"]) for t in rip] == [("burst_rip", "short")]
+    r = ws["burst_rip"].get_portfolio()["open_trades"][0]
+    assert r["stop_loss"] == pytest.approx(106 * (1 + burst.STOP_PCT / 100)) and r["take_profit_2"] < 106 and burst.pending() == []
 
 
 def test_a_down_burst_is_bought_an_hour_later_by_the_dip_book(book):
@@ -87,12 +91,16 @@ def test_a_down_burst_is_bought_an_hour_later_by_the_dip_book(book):
     frames[SYM] = _frame(now, [99, 97.5, 96, 94.5, 94])
     asyncio.run(burst.tick(now))
     q = burst.pending()
-    assert [x["book"] for x in q] == ["burst_dip"] and q[0]["dir"] == -1
+    assert [x["book"] for x in q] == ["burst_dip", "burst_down"] and q[0]["dir"] == -1
     closed_at = int(frames[SYM].index[-1]) / 1000 + 60
-    assert q[0]["fire_at"] == pytest.approx(closed_at + 3600)
+    assert q[0]["fire_at"] == pytest.approx(closed_at + 3600) and q[1]["fire_at"] == pytest.approx(closed_at + 15 * 60)
+    down = asyncio.run(burst.tick(q[1]["fire_at"] + 5))                               # 15 minutes on: the down-burst is ridden short
+    assert [(t["strategy"], t["direction"]) for t in down] == [("burst_down", "short")]
+    d = ws["burst_down"].get_portfolio()["open_trades"][0]
+    assert d["stop_loss"] == pytest.approx(106 * (1 + burst.STOP_PCT / 100)) and d["take_profit_2"] < d["entry_price"]   # the stop above a short, off the live price (the fill adds slippage)
     opened = asyncio.run(burst.tick(q[0]["fire_at"] + 5))
     assert [(t["strategy"], t["direction"]) for t in opened] == [("burst_dip", "long")]
-    assert ws["burst_up"].get_portfolio()["open_trades"] == []
+    assert ws["burst_up"].get_portfolio()["open_trades"] == [] and ws["burst_rip"].get_portfolio()["open_trades"] == []
 
 
 def test_a_fire_missed_by_more_than_ten_minutes_is_dropped_and_a_coin_fires_once_an_hour(book):
@@ -100,8 +108,8 @@ def test_a_fire_missed_by_more_than_ten_minutes_is_dropped_and_a_coin_fires_once
     now = time.time()
     frames[SYM] = _frame(now, [101, 102.5, 104, 105.5, 106])
     asyncio.run(burst.tick(now))
-    fire = burst.pending()[0]["fire_at"]
+    fire = burst.pending()[1]["fire_at"]                                                           # the later of the two fires (the rip, +60m)
     assert asyncio.run(burst.tick(fire + burst.LATE_S + 1)) == [] and burst.pending() == []      # the server was down: no late entry
-    assert ws["burst_up"].get_portfolio()["open_trades"] == []
+    assert ws["burst_up"].get_portfolio()["open_trades"] == [] and ws["burst_rip"].get_portfolio()["open_trades"] == []
     frames[SYM] = _frame(now + 120, [101, 102.5, 104, 105.5, 106])                                # a fresh bar two minutes on, still bursting
     assert asyncio.run(burst.tick(now + 120)) == [] and burst.pending() == []                      # inside the hour's cooldown: not queued

@@ -137,6 +137,15 @@ BOOKS = [
                     "The spike lab's healthiest line (+112 bps a trade, median +44, both halves positive) and the cascade book's rule "
                     "on a wider universe — a forward test from 2026-11-06, judged on its own 40 trades.",
      "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
+    {"name": "burst_down", "label": "Burst · ride the down-burst (+15m, 4h, short)", "kind": "experiment",
+     "description": "The short mirror of burst_up (2026-11-17): after a ≥5% five-minute down-burst on one of the 40 most-traded crypto "
+                    "perps, short 15 minutes later for 4 hours with a 15% disaster stop. Not in the spike lab — a pure forward test, "
+                    "judged on its own 40 trades; each leg carries BTC's 24h move at entry so the four burst books can be read by regime.",
+     "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
+    {"name": "burst_rip", "label": "Burst · sell the rip (+60m, 4h, short)", "kind": "experiment",
+     "description": "The short mirror of burst_dip (2026-11-17): after a ≥5% five-minute up-burst, short 60 minutes later for 4 hours "
+                    "with a 15% disaster stop. Not in the spike lab — a pure forward test, judged on its own 40 trades.",
+     "off_means": "No new legs; open ones run to their 4 hours or the disaster stop."},
     {"name": "prop", "label": "Prop · Propr Classic 1-Step $25K", "kind": "experiment",
      "description": "The reversal lane's picks and the auction book's entries run under Propr's Classic 1-Step $25K rulebook "
                     "(propr.xyz/rules: 10% target, 3% daily loss on the start-of-day balance, 6% static drawdown, 6 positions, "
@@ -156,6 +165,11 @@ BOOKS = [
 ]
 # Books switched off for good: kept out of the switch list (and always off), their records kept.
 RETIRED_BOOKS = {
+    "vol_premium": "Retired 2026-11-17 (the user's call on the review) — eight weekly iron condors since 10-27: five settled for −$508 "
+                   "(2 of 5 positive against the lab's 78%), the 11-06 week went through both BTC's and ETH's wings for −$279 and −$291, "
+                   "the three open ones marked −$216 with two days to run; −$724 of $3,000 with the premium's shape (each condor risks "
+                   "about six times its credit) and its 40-structure verdict 13 weeks away. The lab had already seen the premium thin in "
+                   "its second year. No new structures; the open ones settle at Friday's delivery on their own; the record stays.",
     "multi_factor": "Retired 2026-11-07 — flat after its 40-trade verdict: 46 closed trades, −0.06R a trade, −$14 net on $1k (37% won), "
                     "only 16% of the bootstrap's resampled means positive; the daily basket kept 17 legs on that earned nothing. Its open legs "
                     "were closed; its $1,000 plan entry was the autotrader's factor-lane budget (a signal ledger holds no money) and leaves "
@@ -225,7 +239,7 @@ def unavailable(name: str) -> str | None:
     """Why a book can't be switched at all (not promoted to this instance, or turned off in .env), or None."""
     if not promoted(name):
         return NOT_PROMOTED
-    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction", "prop") or name.startswith("copy_"):
+    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "burst_down", "burst_rip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction", "prop") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:
             return "EXPERIMENTS_ENABLED=false in .env"

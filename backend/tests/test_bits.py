@@ -19,7 +19,7 @@ def _copy(**kw):
 def test_a_copy_gets_the_bits_shadow_and_a_reversal_leg_does_not(monkeypatch):
     monkeypatch.setattr(exits, "LOCK_MODE", "live")
     sh = exits.make_shadows(_copy(), "copy_trading")
-    assert [s["exit_policy"] for s in sh] == ["manual_lock_bits"] and sh[0]["initial_quantity"] == 8000.0
+    assert [s["exit_policy"] for s in sh] == ["manual_lock_bits", "manual_lock_floor"] and sh[0]["initial_quantity"] == 8000.0   # no floor stamp: the floor shadow runs too
     leg = _copy(leader_id=None, sizing={"notional": 1500.0}, atr_pct=8.0)
     assert "manual_lock_bits" not in [s["exit_policy"] for s in exits.make_shadows(leg, "auto")]
     monkeypatch.setattr(exits, "BITS_SHADOW", False)
@@ -51,14 +51,15 @@ def test_the_bits_shadow_closes_with_the_live_copy_when_the_leader_closes(tmp_pa
                      timeframe="copy", leverage=5, extra={"strategy": "copy_trading", "exit_policy": "manual", "shadows": False, "leader_id": "0xabc", "leader": "x"})
     assert "error" not in t
     rep = w.shadow_report()
-    assert rep["open_shadows"] == 1
+    assert rep["open_shadows"] == 2                                                       # bits, and the floor shadow (no floor stamp: a local instance)
     w.close_trade_manually(t["id"], 2.97, reason="leader_closed")
     rep = w.shadow_report()
-    assert rep["open_shadows"] == 0 and [r["policy"] for r in rep["results"]] == ["manual_lock_bits"] and rep["results"][0]["reason"] == "live_closed"
+    assert rep["open_shadows"] == 0 and sorted(r["policy"] for r in rep["results"]) == ["manual_lock_bits", "manual_lock_floor"]
+    assert all(r["reason"] == "live_closed" for r in rep["results"])
     t2 = w.open_trade(symbol="NEARUSDT", direction="short", entry_price=3.0, stop_loss=3.12, take_profit_1=1.5, take_profit_2=1.2, notional_usd=3000.0,
                       timeframe="copy", leverage=5, extra={"strategy": "copy_trading", "exit_policy": "manual", "shadows": False, "leader_id": "0xabc", "leader": "x"})
-    w.close_trade_manually(t2["id"], 3.12, reason="stop_loss")                                                   # a price exit: the shadow runs on
-    assert w.shadow_report()["open_shadows"] == 1
+    w.close_trade_manually(t2["id"], 3.12, reason="stop_loss")                                                   # a price exit: the shadows run on
+    assert w.shadow_report()["open_shadows"] == 2
 
 
 def test_bits_audit_pairs_copies_with_their_shadows(monkeypatch):

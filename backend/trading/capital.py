@@ -42,17 +42,20 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "219500"))      # $49k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06) + $25k prop book (2026-11-09)
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "226500"))      # $49k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06) + $10k burst shorts − $3k vol premium (2026-11-17) + $25k prop book (2026-11-09)
 TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "500"))    # $500/day since 2026-11-14 (the user: "$500 return per day" on $5k of daily risk); $200 from 2026-10-29
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
     "futures_trend": 5_500.0,
-    "unlocks": 4_000.0, "vol_premium": 3_000.0,
+    "unlocks": 4_000.0,
     "auto": 50_000.0, "copy_trading": 32_750.0, "copy_stocks": 32_750.0,
     "weekly_rs": 1_000.0, "cascade": 500.0, "main": 1_000.0, "auction": 30_000.0,
     "burst_up": 5_000.0, "burst_dip": 5_000.0,
+    "burst_down": 5_000.0, "burst_rip": 5_000.0,                  # 2026-11-17: the short mirrors, new money, local only until a verdict
     "prop": 25_000.0,
 }
+# 2026-11-17: vol_premium retired (5 settled condors −$508, the open three −$216; see book_switches.RETIRED_BOOKS) — its $3,000
+# entry leaves the plan; what is left in its ledger ($2.2k) stays there as the record, nothing is moved by hand.
 # 2026-11-09: the prop book joins at $25,000 (new money) — Propr's Classic 1-Step account size, so its rules run at the
 # account's real scale (experiments/prop.py); promoted to production from the start, since the point is the Tokyo box.
 # 2026-11-07: multi_factor retired (46 trades, −0.06R, flat). It was a signal ledger: its $1,000 entry was the autotrader's
@@ -227,7 +230,7 @@ def resume() -> None:
 # the book and never cut; the prop book is a separate account, neither counted nor capped.
 COIN_CAP_PCT = float(os.getenv("COIN_CAP_PCT", "4"))            # of TOTAL: $8.8k on $219.5k
 COIN_CAP_MIN_FRAC = 0.5                                          # a leg cut below half of what was wanted is skipped
-COIN_CAP_BOOKS = ("main", "auto", "copy_trading", "copy_stocks", "copy_futures", "auction", "cascade", "burst_up", "burst_dip", "weekly_rs")
+COIN_CAP_BOOKS = ("main", "auto", "copy_trading", "copy_stocks", "copy_futures", "auction", "cascade", "burst_up", "burst_dip", "burst_down", "burst_rip", "weekly_rs")
 
 
 def coin_exposure(symbol: str) -> dict[str, float]:

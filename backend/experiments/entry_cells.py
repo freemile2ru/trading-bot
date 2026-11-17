@@ -259,6 +259,20 @@ async def gate_long(book: str, symbol: str, now: float, price: float) -> str | N
     return "long gate: " + ", ".join(flags) + " (" + ", ".join(f"{k} {c[k]}" for k in ("fund_pct", "btc24_pct", "pre4_pct", "hour") if c.get(k) is not None) + ")"
 
 
+async def refuse_long(book: str, symbol: str, now: float, price: float, why: str) -> None:
+    """A long refused for a reason other than the gate (2026-11-17: copy longs off on production) is written down and scored
+    like a gated one, under its own flag, so the record of what the switch cost or saved keeps accruing. The gate's own
+    verdict leaves these out (gated_records(gate_only=True))."""
+    if not is_crypto(symbol):
+        return
+    c = await conditions(symbol, "long", now, price)
+    key = f"{book}:{symbol}:{int(now // 900)}"
+    if not kv.get_sync(_k("gated", key)):
+        kv.set_sync(_k("gated", key), {"book": book, "symbol": symbol, "opened_ts": now, "price": price, "flags": [why], "switch": why, **c, "result": None})
+        idx = kv.get_sync(_k("gated", "index")) or []
+        kv.set_sync(_k("gated", "index"), (idx + [key])[-3000:])
+
+
 async def settle_gated(now: float | None = None) -> int:
     from experiments.index_shadow import price_at
     now = now or time.time()
@@ -276,8 +290,18 @@ async def settle_gated(now: float | None = None) -> int:
     return done
 
 
-def gated_records() -> list[dict]:
-    return [r for r in (kv.get_sync(_k("gated", key)) for key in (kv.get_sync(_k("gated", "index")) or [])) if r]
+def gated_records(gate_only: bool = True) -> list[dict]:
+    rows = [r for r in (kv.get_sync(_k("gated", key)) for key in (kv.get_sync(_k("gated", "index")) or [])) if r]
+    return [r for r in rows if not r.get("switch")] if gate_only else rows
+
+
+def switch_records(why: str | None = None) -> list[dict]:
+    """The longs a side switch refused (refuse_long), scored 24h on: {n, settled, mean_pct} and the rows."""
+    rows = [r for r in gated_records(gate_only=False) if r.get("switch") and (why is None or r["switch"] == why)]
+    done = [r for r in rows if r.get("result")]
+    pct = [r["result"]["coin_pct"] for r in done]
+    return {"n": len(rows), "settled": len(done), "mean_pct": round(sum(pct) / len(pct), 3) if pct else None,
+            "wins": sum(1 for x in pct if x > 0), "recent": [{k: r.get(k) for k in ("book", "symbol", "opened_ts", "price", "result")} for r in rows[-10:]]}
 
 
 # ── The reversal lane's long leg, written down and scored ─────────────────────

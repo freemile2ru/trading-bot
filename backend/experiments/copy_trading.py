@@ -156,6 +156,16 @@ MAX_HOLD_H = 7 * 24                                               # the only clo
 BE_PCT = float(os.getenv("COPY_BE_PCT", "2")) or None            # 2026-11-17 the profit floor: a copy that has been this % up never closes at a loss
                                                                   # (trading/exits be_at_pct; 0 switches it off). Set after the NEAR copy of 11-16 went
                                                                   # +$618 → −$420 under a lock that arms at 3%: replayed +$441 (prod, 44) / +$565 (local, 148).
+COPY_SIDES = os.getenv("COPY_SIDES", "short" if book_switches.PRODUCTION else "both")
+                                                                  # 2026-11-17 (the user: "turn off the copy longs in production until we have more
+                                                                  # data and winning streaks for local longs"): production copies shorts only; local
+                                                                  # keeps both so the long record keeps growing. Each refused long is written down and
+                                                                  # scored 24h on (entry_cells.refuse_long → switch_records("side_off")). Pre-registered
+                                                                  # way back: the local copy longs' last 20 at ≥ +0.1R with both halves positive.
+LONGS_BACK_R, LONGS_BACK_N = 0.1, 20
+BE_LIVE = book_switches.PRODUCTION or os.getenv("COPY_BE_LIVE", "false").lower() == "true"
+                                                                  # …live on production only (the user, 2026-11-17); locally it runs as the manual_lock_floor
+                                                                  # shadow beside every copy and is judged by floor_audit on the bits shadow's terms.
 SKIP_KEEP = 300
 WIDE_N = int(os.getenv("COPY_WIDE_N", "15"))                      # leaders a venue for the "wide" variant
 FAST_HOLD_H = float(os.getenv("COPY_FAST_HOLD_H", "24"))          # "fast" variant: leaders whose median hold is at most this
@@ -1084,6 +1094,14 @@ async def mirror(now: float | None = None) -> dict:
                               "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree, "second_look": {k: look[k] for k in ("view", "concerns", "claude")}})
                 logger.info("Copy %s %s vetoed by the second look: %s", r["side"], r["symbol"], look["why"])
                 continue
+            if r["side"] == "long" and COPY_SIDES == "short":
+                from experiments import entry_cells
+                await entry_cells.refuse_long(book, r["symbol"], now, mark, "side_off")
+                _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
+                              "variant": variant, "reason": "copy longs are off on this instance (2026-11-17) until the local long record earns them back", "mark": mark,
+                              "leader_entry": r["entry"], "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
+                logger.info("Copy long %s skipped: longs are off on this instance", r["symbol"])
+                continue
             if r["side"] == "long":
                 from experiments import entry_cells                                                      # the live long gate (2026-11-14)
                 gated = await entry_cells.gate_long(book, r["symbol"], now, mark)
@@ -1133,7 +1151,7 @@ async def mirror(now: float | None = None) -> dict:
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
                                  extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
                                         "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "risk_budget": rb if rb.get("on") else None, "btc_boost": boost,
-                                        "be_at_pct": BE_PCT,
+                                        "be_at_pct": BE_PCT if BE_LIVE else None,
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
                                         "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,
@@ -1153,8 +1171,7 @@ async def mirror(now: float | None = None) -> dict:
         r = all_rows.get(pid)
         L = next((x for x in Ls if x["id"] == t.get("leader_id")), None)
         age_h = (now - _ts(t.get("opened_at"))) / 3600
-        if BE_PCT and "be_at_pct" not in t:                      # a copy opened before the floor takes it (its peak has been tracked since entry)
-            w.annotate(t["id"], be_at_pct=BE_PCT)
+        _floor_stamp(w, t)
         reason = None
         if L is None:
             reason = "leader_dropped"
@@ -1285,10 +1302,20 @@ def _book_summary(w, market: str, variant: str | None = None) -> dict:
                         "closed_at": t.get("closed_at"), "moved_pct_at_entry": t.get("moved_pct_at_entry")} for t in recent]}
 
 
-def bits_audit() -> dict:
-    """The "bits" shadow (trading/exits manual_lock_bits) against every closed copy it ran beside, paired in R — the lock
-    shadows' terms (autotrader/lanes.tight_lock_verdict): adopt after 40 copies only if it beats the live exit by ≥ 0.03R a
-    copy with paired t ≥ 2 and both halves positive."""
+def _floor_stamp(w, t: dict) -> None:
+    """A running copy takes the floor where it is live (its peak has been tracked since entry) and loses the stamp where
+    it is not — so an instance switched between the two settles on its own rule within a poll. A stop already moved to
+    breakeven stays where it is."""
+    if BE_LIVE and BE_PCT and t.get("be_at_pct") is None:
+        w.annotate(t["id"], be_at_pct=BE_PCT)
+    elif not BE_LIVE and t.get("be_at_pct"):
+        w.annotate(t["id"], be_at_pct=None)
+
+
+def _copy_shadow_audit(policy: str) -> dict:
+    """A copy exit shadow against every closed copy it ran beside, paired in R — the lock shadows' terms
+    (autotrader/lanes.tight_lock_verdict): adopt after 40 copies only if it beats the live exit by ≥ 0.03R a copy with
+    paired t ≥ 2 and both halves positive."""
     from autotrader import lanes
     closed, results = [], []
     for w in _unique_wallets():
@@ -1297,7 +1324,32 @@ def bits_audit() -> dict:
             results += w.shadow_report()["results"]
         except Exception as e:
             logger.debug("shadow report for %s unavailable: %s", getattr(w, "label", "?"), e)
-    return lanes.tight_lock_verdict(closed, results, "manual_lock_bits")
+    return lanes.tight_lock_verdict(closed, results, policy)
+
+
+def longs_switch() -> dict:
+    """The copy-long switch: which sides this instance copies, the record the longs must earn to come back (the local copy
+    longs' last LONGS_BACK_N at ≥ LONGS_BACK_R with both halves positive), and the longs the switch refused, scored 24h on."""
+    from experiments import entry_cells
+    closed = [t for w in _unique_wallets() for t in w.all_trades()["closed"] if t.get("leader_id") and t.get("risk_usd") and t.get("direction") == "long"]
+    closed.sort(key=lambda t: _ts(t.get("closed_at")) if t.get("closed_at") else 0)
+    rs = [t["pnl_usd"] / t["risk_usd"] for t in closed[-LONGS_BACK_N:]]
+    half = len(rs) // 2
+    earned = len(rs) >= LONGS_BACK_N and sum(rs) / len(rs) >= LONGS_BACK_R and half and sum(rs[:half]) > 0 and sum(rs[half:]) > 0
+    return {"sides": COPY_SIDES, "longs_on": COPY_SIDES != "short", "needed_n": LONGS_BACK_N, "needed_r": LONGS_BACK_R,
+            "long_record": {"n": len(rs), "avg_r": round(sum(rs) / len(rs), 3) if rs else None, "halves_r": [round(sum(rs[:half]) / half, 3) if half else None, round(sum(rs[half:]) / (len(rs) - half), 3) if len(rs) - half else None], "earned": bool(earned)},
+            "refused": entry_cells.switch_records("side_off")}
+
+
+def bits_audit() -> dict:
+    """The "bits" shadow (trading/exits manual_lock_bits): half out at +2%, half back at the entry."""
+    return _copy_shadow_audit("manual_lock_bits")
+
+
+def floor_audit() -> dict:
+    """The profit-floor shadow (trading/exits manual_lock_floor) where the floor is not live (local): the live lock plus
+    the stop to breakeven once +2% up. On production the floor is live and this shadow does not run."""
+    return {**_copy_shadow_audit("manual_lock_floor"), "live": BE_LIVE}
 
 
 def status() -> dict:
@@ -1336,7 +1388,7 @@ def status() -> dict:
             "skipped": [{**e, "market": market_of(e["symbol"]), "variant": e.get("variant") or "base"} for e in sk[-120:][::-1]],
             "skip_rule": {"judged": len(judged), "avg_outcome_pct": round(sum(e["outcome_pct"] for e in judged) / len(judged), 3) if judged else None,
                           "would_have_won_pct": round(100 * sum(e["outcome_pct"] > 0 for e in judged) / len(judged), 1) if judged else None},
-            "bits": bits_audit(),
+            "bits": bits_audit(), "floor": floor_audit(), "longs": longs_switch(),
             "config": config()}
 
 
@@ -1393,7 +1445,7 @@ def config() -> dict:
             "pattern_up": PATTERN_UP, "pattern_down": PATTERN_DOWN, "week_n": WEEK_N, "week_days": WEEK_DAYS, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
             "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT,
             "leader_probation_n": LEADER_PROBATION_N, "leader_probation_days": LEADER_PROBATION_DAYS, "venue_measure_n": VENUE_MEASURE_N, "venue_measure_x": VENUE_MEASURE_X, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
-            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X, "be_pct": BE_PCT,
+            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X, "be_pct": BE_PCT, "be_live": BE_LIVE, "sides": COPY_SIDES,
             "second_look": {"mode": second_look.MODE, "claude": second_look.CLAUDE_ON, "doubt_x": second_look.DOUBT_X, "parabolic_pct": second_look.PARABOLIC_PCT,
                             "chase_pct": second_look.CHASE_PCT, "extreme_pct": second_look.EXTREME_PCT},
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,

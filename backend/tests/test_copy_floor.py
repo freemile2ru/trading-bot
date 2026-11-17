@@ -63,13 +63,26 @@ def test_a_long_copy_and_the_bits_shadow_carry_the_floor():
     assert [s["exit_policy"] for s in sh] == ["manual_lock_bits"] and sh[0]["be_at_pct"] == 2.0
 
 
-def test_a_running_copy_without_the_stamp_takes_the_floor_on_the_next_poll(tmp_path, monkeypatch):
+def test_the_floor_is_live_on_production_only_and_a_shadow_elsewhere(tmp_path, monkeypatch):
+    """2026-11-17 (the user): live on production, an experiment locally. The stamp follows BE_LIVE on every poll, and a
+    copy without the stamp runs the manual_lock_floor shadow beside bits."""
     from experiments import copy_trading as ct
     w = PaperWallet(str(tmp_path / "c.db"), label="copy_trading")
     w.reset_portfolio(50_000)
     t = w.open_trade(symbol="NEARUSDT", direction="short", entry_price=3.184, stop_loss=3.3124, take_profit_1=1.6, take_profit_2=1.3, notional_usd=5000,
                      timeframe="copy", leverage=5, extra={"strategy": "copy_trading", "exit_policy": "manual", "shadows": False, "leader_id": "0xabc", "leader": "x"})
+    assert ct.BE_PCT == 2.0 and ct.config()["be_pct"] == 2.0 and ct.BE_LIVE is False          # tests run as a local instance
     assert "be_at_pct" not in t
-    assert ct.BE_PCT == 2.0 and ct.config()["be_pct"] == 2.0
-    w.annotate(t["id"], be_at_pct=ct.BE_PCT)                                     # what the mirror's exit loop does for a pre-floor copy
+    assert [s["exit_policy"] for s in w._load()["shadows"]] == ["manual_lock_bits", "manual_lock_floor"]
+    floor = next(s for s in w._load()["shadows"] if s["exit_policy"] == "manual_lock_floor")
+    assert exits.policy_of(floor).be_at_pct == 2.0
+    ct._floor_stamp(w, t)                                                        # local: nothing to stamp
+    assert w.get_portfolio()["open_trades"][0].get("be_at_pct") is None
+    monkeypatch.setattr(ct, "BE_LIVE", True)                                     # production: the running copy takes the floor
+    ct._floor_stamp(w, w.get_portfolio()["open_trades"][0])
     assert w.get_portfolio()["open_trades"][0]["be_at_pct"] == 2.0
+    monkeypatch.setattr(ct, "BE_LIVE", False)                                    # …and loses it again where the floor is a shadow
+    ct._floor_stamp(w, w.get_portfolio()["open_trades"][0])
+    assert w.get_portfolio()["open_trades"][0]["be_at_pct"] is None
+    a = ct.floor_audit()
+    assert a["policy"] == "manual_lock_floor" and a["live"] is False and a["label"] == "the +2% breakeven floor"

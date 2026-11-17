@@ -46,6 +46,10 @@ export interface CopyStatus {
   skip_rule: { judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null }
   /** The "bits" exit shadow (half out at +2%, half back at the entry) against the live lock, paired per copy. */
   bits?: { policy: string; label?: string; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number; delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string }
+  /** The copy-long switch (2026-11-17): which sides this instance copies, the record longs must earn to return, the refused longs scored 24h on. */
+  longs?: { sides: string; longs_on: boolean; needed_n: number; needed_r: number; long_record: { n: number; avg_r: number | null; halves_r: (number | null)[]; earned: boolean }; refused: { n: number; settled: number; mean_pct: number | null; wins: number } }
+  /** The +2% breakeven floor: live on production (live: true), a shadow beside every copy elsewhere. */
+  floor?: { policy: string; label?: string; n: number; needed: number; min_r: number; actual_usd: number; shadow_usd: number; delta_r?: number; t?: number | null; halves_r?: (number | null)[]; verdict: string; live: boolean }
   second_look?: { mode: 'veto' | 'record' | 'off'; claude: boolean; doubt_x: number
                   by_view: Record<'agree' | 'doubt' | 'disagree', { n: number; pnl: number; wins: number }>
                   vetoed: { n: number; judged: number; avg_outcome_pct: number | null; would_have_won_pct: number | null } }

@@ -7,7 +7,7 @@ import type { CellStat, ControlAgg, ControlReport, ControlRow, EntryCellsReport,
 
 const LABELS: Record<string, string> = {
   cascade: 'Cascade book', 'auto:cascade': 'Autotrader · cascade lane', 'auto:reversal': 'Autotrader · reversal lane',
-  burst_up: 'Burst · up', burst_dip: 'Burst · dip', prop: 'Prop book', auction: 'Auction book', weekly_rs: 'Weekly near-high book', 'auto:weekly': 'Autotrader · weekly lane',
+  burst_up: 'Burst · up', burst_dip: 'Burst · dip', burst_down: 'Burst · down (short)', burst_rip: 'Burst · rip (short)', prop: 'Prop book', auction: 'Auction book', weekly_rs: 'Weekly near-high book', 'auto:weekly': 'Autotrader · weekly lane',
 }
 
 function when(ts: number): string {
