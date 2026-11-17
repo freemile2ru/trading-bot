@@ -6,7 +6,9 @@ uses, so live positions still act on Binance (real market close, real exchange s
   auto, auto_live      close · edit stop/target · cancel limit orders   (autotrader cooldowns apply)
   scalper(_live), impulse   retired — history only
   hold72               read-only (experiment) — its pairs are in their own ledger
-  experiment books     read-only — acting by hand would spoil the experiment
+  experiment books     close by hand (2026-11-17, the user: on production they are the books, not experiments);
+                       stops, targets and orders stay with the engine
+Every close is previewed first (GET …/preview): the live mark, the fill with slippage, the fee it costs and the net P&L.
 """
 import asyncio
 
@@ -39,6 +41,52 @@ def _refuse_experiment(system: str) -> None:
         raise HTTPException(409, "experiment books are managed by the experiment — acting by hand would spoil the test")
 
 
+def _book_wallet(system: str):
+    """The paper wallet of an experiment or markets book (None for the swing systems, pair books and scalpers)."""
+    from markets import engine as markets
+    return experiment_books.WALLETS.get(system) or markets.WALLETS.get(system)
+
+
+def _open_trade(system: str, trade_id: str) -> tuple[object, dict]:
+    w = _swing_wallet(system) if system in SWING else _book_wallet(system)
+    if w is None:
+        raise HTTPException(409, "pair books and retired scalpers have nothing to close by hand" if system in PAIR_BOOKS or system in ("scalper", "scalper_live", "impulse")
+                            else f"unknown system {system}")
+    trade = next((t for t in w.get_portfolio()["open_trades"] if t["id"] == trade_id), None)
+    if not trade:
+        raise HTTPException(404, "position not found")
+    return w, trade
+
+
+async def _mark(system: str, trade: dict) -> float:
+    return trade["current_price"] if system.endswith("_live") else (await monitor.live_price(trade["symbol"]) or trade["current_price"])
+
+
+@router.get("/{system}/{trade_id}/preview")
+async def preview(system: str, trade_id: str):
+    """What closing now would book: the mark, the fill after slippage, the closing fee, funding so far and the net P&L —
+    shown before the Close button asks for confirmation (2026-11-17)."""
+    import copy
+    from trading import futures
+    from trading.paper_trader import _refresh
+    _, trade = _open_trade(system, trade_id)
+    mark = await _mark(system, trade)
+    t = copy.deepcopy(trade)
+    fill = futures.slipped(mark, t["direction"], opening=False)
+    exit_fee = futures.fee(t["quantity"] * fill, maker=False)
+    fees_so_far = float(t.get("fees_usd") or 0.0)
+    t["fees_usd"] = round(fees_so_far + exit_fee, 4)
+    _refresh(t, fill)
+    s = 1 if t["direction"] == "long" else -1
+    gross = (fill - t["entry_price"]) * s * t["quantity"] + float(t.get("realized_pnl_usd") or 0.0)
+    return {"system": system, "id": trade_id, "symbol": t["symbol"], "direction": t["direction"], "quantity": t["quantity"],
+            "notional_usd": t.get("notional_usd"), "entry_price": t["entry_price"], "mark": mark, "fill": fill,
+            "gross_pnl": round(gross, 2), "fees_so_far": round(fees_so_far, 2), "exit_fee": round(exit_fee, 2),
+            "funding": round(float(t.get("funding_usd") or 0.0), 2), "net_pnl": round(float(t["pnl_usd"]), 2),
+            "margin_usd": t.get("margin_usd"), "live": system.endswith("_live"),
+            "note": "a live close fills at the exchange's price; the slippage and fee here are estimates" if system.endswith("_live") else None}
+
+
 def _row(system: str, trade: dict) -> dict:
     return {k: trade.get(k) for k in ("id", "symbol", "direction", "entry_price", "stop_loss", "take_profit_2",
                                       "current_price", "pnl_usd", "close_reason", "status")} | {"system": system}
@@ -46,21 +94,15 @@ def _row(system: str, trade: dict) -> dict:
 
 @router.post("/{system}/{trade_id}/close")
 async def close(system: str, trade_id: str):
-    _refuse_experiment(system)
     if system in ("auto", "auto_live"):
         from autotrader import engine as autotrader
         closed = await autotrader.close(trade_id)          # releases the coin, starts the cooldown
-    elif system in ("main", "main_live"):
-        wallet = _swing_wallet(system)
-        trade = next((t for t in wallet.get_portfolio()["open_trades"] if t["id"] == trade_id), None)
-        if not trade:
-            raise HTTPException(404, "position not found")
-        price = trade["current_price"] if system.endswith("_live") else (await monitor.live_price(trade["symbol"]) or trade["current_price"])
-        closed = await asyncio.to_thread(wallet.close_trade_manually, trade_id, price, "manual")
-    elif system in ("scalper", "scalper_live", "impulse"):
-        raise HTTPException(409, "this scalper was retired — its trades are history only")
     else:
-        raise HTTPException(404, f"unknown system {system}")
+        # The main wallet and every experiment / markets book: closed at the live mark, as "manual" — the record keeps
+        # the hand that closed it, and a copy's leader-bound shadows end with it (paper_trader._close_open).
+        wallet, trade = _open_trade(system, trade_id)
+        price = await _mark(system, trade)
+        closed = await asyncio.to_thread(wallet.close_trade_manually, trade_id, price, "manual")
     if not closed:
         raise HTTPException(502, "close failed — for live positions check the Live tab's activity log")
     return _row(system, closed)

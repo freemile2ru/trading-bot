@@ -6,6 +6,7 @@ import { fmtUsd, fmtUsdSigned } from '../../utils/format'
 import { useBinanceStream } from '../../hooks/useBinanceStream'
 import { SYSTEM_LABEL, isLive, positionActions, type SystemKey, type UnifiedOrder, type UnifiedTrade } from '../../types/overview'
 import { SortHeader, useSort } from '../ui/Sortable'
+import { CloseDialog } from './CloseDialog'
 
 // Same look as the Trade tab's account panel (Binance palette).
 const th = 'px-3 py-2 text-left font-normal text-[#848e9c] whitespace-nowrap'
@@ -92,11 +93,11 @@ function Positions({ rows, marks, onChanged, onOpen, onChart }: {
   const HEAD: [string, string][] = [['Symbol', 'symbol'], ['System', 'system'], ['Side', 'side'], ['Size', 'size'], ['Entry', 'entry'], ['Mark', 'mark'],
     ['Liq.', 'liq'], ['Margin', 'margin'], ['PnL (ROE)', 'pnl'], ['Stop / Target', 'stop'], ['Open for', 'open'], ['', '']]
 
+  // The Close button first shows what the close would book (CloseDialog: mark, fill, fees, net P&L) and only then asks.
+  const [closing, setClosing] = useState<UnifiedTrade | null>(null)
   async function close(p: UnifiedTrade) {
-    const live = isLive(p.system)
-    if (!confirm(`${live ? 'LIVE — this sends a real market order on Binance.\n\n' : ''}Close ${p.symbol} ${p.direction} (${SYSTEM_LABEL[p.system]}) at market?`)) return
     setBusy(key(p)); setErr(null)
-    try { await api.positions.close(p.system, p.id); onChanged(`${p.symbol} closed`) }
+    try { await api.positions.close(p.system, p.id); onChanged(`${p.symbol} closed`); setClosing(null) }
     catch (e) { setErr(e instanceof Error ? e.message : 'Close failed') }
     finally { setBusy(null) }
   }
@@ -115,6 +116,7 @@ function Positions({ rows, marks, onChanged, onOpen, onChart }: {
   if (!rows.length) return <p className="px-3 py-8 text-center text-[#848e9c]">No open positions.</p>
   return (
     <>
+      {closing && <CloseDialog trade={closing} busy={busy === key(closing)} onConfirm={() => close(closing)} onCancel={() => setClosing(null)} />}
       {err && <p className="px-3 pt-2 text-[#f6465d]">{err}</p>}
       <table className="w-full">
         <thead><tr>{HEAD.map(([h, k], i) => <th key={i} className={th}>{k ? <SortHeader k={k} sort={sorted.sort} onSort={sorted.toggle}>{h}</SortHeader> : h}</th>)}</tr></thead>
@@ -170,7 +172,7 @@ function Positions({ rows, marks, onChanged, onOpen, onChart }: {
                 <td className={clsx(td, 'text-[#848e9c]')}>{fmtOpen(p.hold_min)}</td>
                 <td className={td}>
                   {acts.close ? (
-                    <button onClick={() => close(p)} disabled={busy === key(p)}
+                    <button onClick={() => setClosing(p)} disabled={busy === key(p)}
                       className="px-2 py-0.5 rounded bg-[#2b3139] hover:bg-[#f6465d] hover:text-white disabled:opacity-40">
                       {busy === key(p) ? '…' : 'Close'}
                     </button>

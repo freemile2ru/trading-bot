@@ -1,7 +1,7 @@
 import type { OracleResponse, Portfolio, PaperTrade, Candle, OracleResult, SignalPackage } from '../types/oracle'
 import type { ExitComparison, HistoryFilters, HistoryInsights, HistoryResponse } from '../types/history'
 import type { AutoOrder, AutoSummary, AutoTrade, ScanSnapshot, WatchlistEntry } from '../types/signals'
-import type { PlanSuggestion, PortfolioOverview, SystemKey, TargetReport, TradeAnalytics, TradeFilters, TradeRecord, TradesResponse, UnifiedOrder } from '../types/overview'
+import type { ClosePreview, PlanSuggestion, PortfolioOverview, SystemKey, TargetReport, TradeAnalytics, TradeFilters, TradeRecord, TradesResponse, UnifiedOrder } from '../types/overview'
 import type { LiveActivity, LiveStatus, LiveSystem } from '../types/live'
 import type { LabSummary, SignalScores, StrategyLabResults, SwingReview } from '../types/lab'
 import type { RejectedResearch, RetiredExperiment } from '../types/retired'
@@ -99,6 +99,7 @@ export const api = {
     cancelOrder: (system: SystemKey, id: string) => del<unknown>(`/positions/orders/${system}/${id}`),
     orders: () => get<UnifiedOrder[]>('/positions/orders'),
     detail: (system: SystemKey, id: string) => get<TradeRecord>(`/positions/${system}/${id}`),
+    preview: (system: SystemKey, id: string) => get<ClosePreview>(`/positions/${system}/${id}/preview`),
   },
   debriefs: {
     summary: (system?: string) => get<DebriefSummary>(`/debriefs/summary${system ? `?system=${system}` : ''}`),

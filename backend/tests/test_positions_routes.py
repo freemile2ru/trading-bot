@@ -18,9 +18,11 @@ def client(tmp_path, monkeypatch):
     return TestClient(main.app), w
 
 
-def test_experiment_positions_are_hands_off(client):
+def test_experiment_books_close_by_hand_but_their_orders_and_levels_stay_with_the_engine(client):
+    # 2026-11-17: every book's open trade closes from the Trades tab (on production they are the books, not experiments);
+    # a trade that does not exist is a 404, orders and stops are still the engine's.
     c, _ = client
-    assert c.post("/api/positions/claude_swing/x/close").status_code == 409
+    assert c.post("/api/positions/claude_swing/x/close").status_code == 404
     assert c.delete("/api/positions/orders/signals_rules/x").status_code == 409
 
 

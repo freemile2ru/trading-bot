@@ -64,7 +64,17 @@ export type TradeRecord = Record<string, unknown> & { id: string; system: System
 export function positionActions(system: SystemKey): { close: boolean; levels: boolean; cancel: boolean; note?: string } {
   if (['main', 'main_live', 'auto', 'auto_live'].includes(system)) return { close: true, levels: true, cancel: true }
   if (['scalper', 'scalper_live', 'impulse'].includes(system)) return { close: false, levels: false, cancel: false, note: 'retired — history only' }
-  return { close: false, levels: false, cancel: false, note: 'experiment — hands off' }
+  if (PAIR_BOOKS.includes(system)) return { close: false, levels: false, cancel: false, note: 'two-leg book — its own ledger' }
+  // Every other book closes by hand (2026-11-17: on production they are the books, not experiments); the engine keeps its stops.
+  return { close: true, levels: false, cancel: false, note: 'stops with the engine' }
+}
+const PAIR_BOOKS: SystemKey[] = ['hold72', 'carry', 'fade24', 'events', 'carry_q', 'unlocks', 'vol_premium']
+
+/** What closing a position now would book (GET /api/positions/{system}/{id}/preview) — shown before the confirmation. */
+export interface ClosePreview {
+  system: SystemKey; id: string; symbol: string; direction: 'long' | 'short'; quantity: number; notional_usd: number | null
+  entry_price: number; mark: number; fill: number; gross_pnl: number; fees_so_far: number; exit_fee: number; funding: number
+  net_pnl: number; margin_usd: number | null; live: boolean; note: string | null
 }
 
 export interface TradeFilters {
