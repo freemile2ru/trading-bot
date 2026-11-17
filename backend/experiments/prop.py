@@ -17,6 +17,7 @@ API when that is on. The Lab judges it like any book on its 40 trades; the Prop 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -29,7 +30,11 @@ logger = logging.getLogger("experiments.prop")
 BOOK = "prop"
 LABEL = "Prop · Propr Classic 1-Step $25K"
 REVERSAL_STOP_PCT = 10.0                   # the lane's disaster stop
-REVERSAL_HOLD_H = 24.0
+# 2026-11-16 (the user: "go"): the legs carry the lane's ATR trail — the lock arms at +1% of notional, then the stop trails
+# one daily ATR from the best price — under a 72h cap instead of the 24h expiry. On the book's own 20 legs: 24h expiry
+# +$465, 48h +$1,091, the trail +$1,116 (the fourth independent read that the bell gives the shorts' move back).
+REVERSAL_HOLD_H = float(os.getenv("PROP_REVERSAL_HOLD_H", "72"))
+REVERSAL_TRAIL_ATR = float(os.getenv("PROP_LOCK_TRAIL_ATR", "1.0")) or None
 LOG_KEEP = 300
 UNIVERSE_TTL = 6 * 3600
 STATE_KEY = kv.key("prop", "state")
@@ -153,10 +158,14 @@ async def _enter(source: str, symbol: str, direction: str, px: float, stop: floa
         return None
     s = 1 if direction == "long" else -1
     tp = target if target else px * (1 + s * 0.9)
+    trail: dict = {}
+    if source == "reversal" and REVERSAL_TRAIL_ATR:
+        from autotrader import sizing
+        trail = {"exit_policy": "manual_lock", "lock_arm_pct": 0.01, "lock_trail_atr": REVERSAL_TRAIL_ATR, "atr_pct": await sizing.daily_atr_pct(symbol, now)}
     t = w.open_trade(symbol=symbol, direction=direction, entry_price=px, stop_loss=stop, take_profit_1=tp, take_profit_2=tp,
                      notional_usd=notional, leverage=lev, timeframe="1d" if source == "reversal" else "5m", oracle_confidence=0,
-                     oracle_reasoning=why[:200], hold_duration=f"{REVERSAL_HOLD_H:g}h" if source == "reversal" else "to the level, the stop or the close",
-                     extra={"strategy": BOOK, "source": source, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market",
+                     oracle_reasoning=why[:200], hold_duration=(f"the ATR trail, {REVERSAL_HOLD_H:g}h cap" if trail else f"{REVERSAL_HOLD_H:g}h") if source == "reversal" else "to the level, the stop or the close",
+                     extra={"strategy": BOOK, "source": source, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market", **trail,
                             "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(symbol),
                             "prop_attempt": st["attempt"], "hl_coin": coin, "leverage_cap": cap, "risk_pct": R.RISK_PCT[source],
                             "equity_at_entry": led["equity"], **extra})

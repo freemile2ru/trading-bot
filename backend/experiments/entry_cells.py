@@ -55,6 +55,15 @@ FEE_RT_PCT = 0.10
 # so every gated long is written down at its price and scored 24h later: the reverse verdict below switches the gate
 # off if the longs it refused beat the longs it kept. LONG_GATE=false turns it off outright.
 LONG_GATE = os.getenv("LONG_GATE", "true").lower() != "false"
+# The BTC-up-day short boost (2026-11-16, the data review): shorts opened with BTC ≥ +2% over the prior 24h made +2.5%
+# a trade (19, local) and +2.7% (8, prod) against ~+0.5% for other shorts. Pre-registered: ×BOOST_X on reversal and copy
+# shorts in that cell, LIVE only once the cell's forward verdict (short_cells.btc_up_day, 40 shorts in the cell, ≥ 0.5%
+# better than the rest, Welch t ≥ 2, both halves) says "cell real"; until then every short is stamped with what the
+# boost would have done, so the report can say what it would have added. BTC_BOOST=false keeps it off.
+BOOST_X = float(os.getenv("BTC_BOOST_X", "1.5"))
+BOOST_BTC24_PCT = 2.0
+BTC_BOOST = os.getenv("BTC_BOOST", "true").lower() != "false"
+_boost = {"at": 0.0, "live": False}
 EVERY_S = int(os.getenv("ENTRY_CELLS_EVERY_S", "900"))
 BATCH = int(os.getenv("ENTRY_CELLS_BATCH", "20"))
 STOCK_PERPS = {"SKHYNIXUSDT", "AMDUSDT", "NVDAUSDT", "TSLAUSDT", "QQQUSDT", "SPYUSDT", "INTCUSDT", "SAMSUNGUSDT", "MUUSDT", "CRCLUSDT", "COINUSDT",
@@ -159,7 +168,8 @@ async def record(book: str, trade: dict) -> dict | None:
         return None
     c = await conditions(trade["symbol"], trade["direction"], trade["opened_ts"], float(trade["entry_price"]))
     rec = {"v": V, "book": book, "lane": trade.get("lane"), "trade_id": trade["id"], "symbol": trade["symbol"], "direction": trade["direction"],
-           "opened_ts": trade["opened_ts"], "closed_ts": trade["closed_ts"], "actual_pct": round(100 * (trade.get("pnl_usd") or 0) / notional, 4), **c}
+           "opened_ts": trade["opened_ts"], "closed_ts": trade["closed_ts"], "actual_pct": round(100 * (trade.get("pnl_usd") or 0) / notional, 4),
+           "pnl_usd": round(trade.get("pnl_usd") or 0.0, 2), "boosted": bool((trade.get("btc_boost") or {}).get("x", 1.0) > 1.0), **c}
     if trade["direction"] == "long":
         rec["flags"] = gate_flags(c)
         rec["kept"] = not rec["flags"]
@@ -188,6 +198,46 @@ async def run(book: str, limit: int = BATCH) -> dict:
 def records(book: str | None = None) -> list[dict]:
     books = [book] if book else BOOKS
     return [r for b in books for r in (kv.get_sync(_k(tid)) for tid in (kv.get_sync(_k("index", b)) or [])) if r]
+
+
+# ── The BTC-up-day short boost ────────────────────────────────────────────────
+
+def btc_cell_live(now: float | None = None) -> bool:
+    """Whether the BTC-up-day short cell's forward verdict is in (cached five minutes)."""
+    now = now or time.time()
+    if now - _boost["at"] < 300:
+        return _boost["live"]
+    shorts = [r for r in records() if r["direction"] == "short" and r["opened_ts"] >= SINCE]
+    v = two_groups([r for r in shorts if "btc_up_day" in (r.get("cells") or [])], [r for r in shorts if "btc_up_day" not in (r.get("cells") or [])], "a")
+    _boost.update(at=now, live=v["verdict"] == "works")
+    return _boost["live"]
+
+
+async def btc24_pct(now: float) -> float | None:
+    from data.binance_client import FAPI
+    from data.http import get_json
+    from experiments.index_shadow import price_at
+    b = await get_json(f"{FAPI}/klines", params={"symbol": "BTCUSDT", "interval": "1h", "endTime": int(now * 1000) - 1, "limit": 25})
+    px = await price_at("BTCUSDT", now)
+    return round((px / float(b[0][4]) - 1) * 100, 3) if b and len(b) == 25 and px else None
+
+
+async def short_boost(now: float | None = None) -> dict:
+    """What a short opened now gets: ×BOOST_X when BTC is ≥ BOOST_BTC24_PCT up on the day AND the cell's verdict is in;
+    otherwise ×1.0, with the cell and the would-have recorded on the trade."""
+    now = now or time.time()
+    if not BTC_BOOST:
+        return {"x": 1.0, "in_cell": False, "live": False, "btc24_pct": None, "why": "BTC boost off"}
+    try:
+        b = await btc24_pct(now)
+    except Exception as e:
+        return {"x": 1.0, "in_cell": False, "live": False, "btc24_pct": None, "why": f"BTC tape unavailable ({e.__class__.__name__})"}
+    in_cell = b is not None and b >= BOOST_BTC24_PCT
+    live = btc_cell_live(now)
+    x = BOOST_X if in_cell and live else 1.0
+    why = (f"BTC {b:+.1f}% on the day: " if b is not None else "BTC unknown: ") + (f"×{x:g} (the cell's verdict is in)" if x > 1 else
+           ("in the BTC-up-day cell, ×1 until the cell's 40-short verdict" if in_cell else "not a BTC-up day"))
+    return {"x": x, "in_cell": in_cell, "live": live, "btc24_pct": b, "why": why}
 
 
 # ── The live long gate ────────────────────────────────────────────────────────
@@ -364,6 +414,10 @@ def report() -> dict:
         cells[cell] = {"label": label, "all": {"in": _stats([r["actual_pct"] for r in inside(shorts)]), "out": _stats([r["actual_pct"] for r in outside(shorts)])},
                        "forward": {"in": v["a"], "out": v["b"]}, "verdict": {**{k: x for k, x in v.items() if k not in ("a", "b")},
                                                                                "verdict": {"works": "cell real"}.get(v["verdict"], v["verdict"])}}
+        if cell == "btc_up_day":
+            fwd_in = inside(fwd_s)
+            cells[cell]["boost"] = {"x": BOOST_X, "on": BTC_BOOST, "live": BTC_BOOST and v["verdict"] == "works", "boosted_n": sum(1 for r in fwd_in if r.get("boosted")),
+                                    "would_add_usd_forward": round((BOOST_X - 1) * sum(r.get("pnl_usd") or 0.0 for r in fwd_in if not r.get("boosted")), 2)}
     sh = shadow_records()
     settled = [r for r in sh if r.get("result")]
     fwd_sh = [r for r in settled if r["opened_ts"] >= SINCE]

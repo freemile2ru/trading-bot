@@ -131,11 +131,16 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
         if not price:
             continue
         s = 1 if d == "long" else -1
+        try:
+            from autotrader import sizing
+            atr = await sizing.daily_atr_pct(sym, now)                       # for the ATR-trail shadow beside the leg (2026-11-16)
+        except Exception:
+            atr = None
         t = w.open_trade(symbol=sym, direction=d, entry_price=price, stop_loss=price * (1 - s * DISASTER_PCT / 100),
                          take_profit_1=price * (1 + s * 0.9), take_profit_2=price * (1 + s * 0.95),
                          notional_usd=equity * NOTIONAL_PCT / 100, timeframe="1w", leverage=LEVERAGE,
                          extra={"strategy": BOOK, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped",
-                                "score_from_7d_high": round(sc[sym], 4)})
+                                "score_from_7d_high": round(sc[sym], 4), "atr_pct": atr})
         if not t.get("error"):
             opened.append(f"{d} {sym}")
     kv.set_sync(_week_key(now), {"at": time.time(), "closed": closed, "opened": opened, "resized": resized}, 14 * 86400)

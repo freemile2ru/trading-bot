@@ -153,6 +153,9 @@ STOP_PCT_MIN = 2.0                                                # 2 since 2026
 FEE_GATE_X = float(os.getenv("COPY_FEE_GATE_X", "3"))             # what is left of the leader's median win must cover the round trip this many times
 REDUCE_FRAC = 0.5                                                 # the leader halves → we close this much and ride the rest to their close
 MAX_HOLD_H = 7 * 24                                               # the only clock, a backstop: the copy otherwise ends when the leader's position does
+BE_PCT = float(os.getenv("COPY_BE_PCT", "2")) or None            # 2026-11-17 the profit floor: a copy that has been this % up never closes at a loss
+                                                                  # (trading/exits be_at_pct; 0 switches it off). Set after the NEAR copy of 11-16 went
+                                                                  # +$618 → −$420 under a lock that arms at 3%: replayed +$441 (prod, 44) / +$565 (local, 148).
 SKIP_KEEP = 300
 WIDE_N = int(os.getenv("COPY_WIDE_N", "15"))                      # leaders a venue for the "wide" variant
 FAST_HOLD_H = float(os.getenv("COPY_FAST_HOLD_H", "24"))          # "fast" variant: leaders whose median hold is at most this
@@ -1099,6 +1102,11 @@ async def mirror(now: float | None = None) -> dict:
                 pattern_x, pattern_why = pattern_multiplier(rec, r["side"], r.get("leverage"), L["id"])
                 week_x, week_why = week_multiplier(L["id"], now)
                 size_x *= venue_x * pattern_x * week_x
+                boost = None
+                if r["side"] == "short":
+                    from experiments import entry_cells                                                  # the BTC-up-day cell (2026-11-16)
+                    boost = await entry_cells.short_boost(now)
+                    size_x *= boost["x"]
                 stop = stop_pct(L.get("profile"))
                 cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
                 from trading import risk_budget
@@ -1124,7 +1132,8 @@ async def mirror(now: float | None = None) -> dict:
                                  take_profit_1=mark * (1 + s * 0.5), take_profit_2=mark * (1 + s * 0.6), notional_usd=notional,
                                  timeframe="copy", leverage=max(1, min(int(r.get("leverage") or 1), MAX_LEVERAGE)),
                                  extra={"strategy": book, "market": market, "variant": variant, "routed_from": [v for v, _ in candidates], "routed_why": routed_why,
-                                        "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "risk_budget": rb if rb.get("on") else None,
+                                        "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "risk_budget": rb if rb.get("on") else None, "btc_boost": boost,
+                                        "be_at_pct": BE_PCT,
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
                                         "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,
@@ -1144,6 +1153,8 @@ async def mirror(now: float | None = None) -> dict:
         r = all_rows.get(pid)
         L = next((x for x in Ls if x["id"] == t.get("leader_id")), None)
         age_h = (now - _ts(t.get("opened_at"))) / 3600
+        if BE_PCT and "be_at_pct" not in t:                      # a copy opened before the floor takes it (its peak has been tracked since entry)
+            w.annotate(t["id"], be_at_pct=BE_PCT)
         reason = None
         if L is None:
             reason = "leader_dropped"
@@ -1382,7 +1393,7 @@ def config() -> dict:
             "pattern_up": PATTERN_UP, "pattern_down": PATTERN_DOWN, "week_n": WEEK_N, "week_days": WEEK_DAYS, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
             "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT,
             "leader_probation_n": LEADER_PROBATION_N, "leader_probation_days": LEADER_PROBATION_DAYS, "venue_measure_n": VENUE_MEASURE_N, "venue_measure_x": VENUE_MEASURE_X, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
-            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X,
+            "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X, "be_pct": BE_PCT,
             "second_look": {"mode": second_look.MODE, "claude": second_look.CLAUDE_ON, "doubt_x": second_look.DOUBT_X, "parabolic_pct": second_look.PARABOLIC_PCT,
                             "chase_pct": second_look.CHASE_PCT, "extreme_pct": second_look.EXTREME_PCT},
             "bar": {"min_copiers": MIN_COPIERS, "min_aum": MIN_AUM, "min_days": MIN_DAYS, "max_mdd": MAX_MDD, "min_win": MIN_WIN, "min_weeks_pos": MIN_WEEKS_POS,

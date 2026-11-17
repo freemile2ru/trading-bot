@@ -302,6 +302,14 @@ export function ControlPage() {
             ))}
             {d.early.e_ratio && d.early.n > 0 && <div className="self-center text-gray-500">early exits: {Object.entries(d.early.e_ratio).map(([h, v]) => `${h} ${v == null ? '—' : v.toFixed(2)}`).join(' · ')}</div>}
           </div>
+          {d.lock_shadows && Object.keys(d.lock_shadows).length > 0 && (
+            <div className="mt-3 text-xs text-gray-400">
+              <span className="text-gray-500">Exit shadows beside this book's trades, paired per trade (adopt at 40: ≥ 0.03R a trade better, t ≥ 2, both halves):</span>
+              {Object.values(d.lock_shadows).map(ls => (
+                <span key={ls.policy}> · <span className="text-gray-300">{ls.label ?? ls.policy}</span> {ls.n}/{ls.needed}, shadow {fmtUsdSigned(ls.shadow_usd, 0)} vs actual {fmtUsdSigned(ls.actual_usd, 0)}{ls.delta_r != null && ` (${ls.delta_r >= 0 ? '+' : ''}${ls.delta_r.toFixed(3)}R, t ${ls.t ?? '—'})`} — <span className={ls.verdict === 'adopt' ? 'text-emerald-300' : 'text-gray-500'}>{ls.verdict}</span></span>
+              ))}
+            </div>
+          )}
         </section>
       )}
       <EntryCells />

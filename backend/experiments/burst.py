@@ -44,6 +44,9 @@ logger = logging.getLogger("experiments.burst")
 BOOKS: dict[str, dict] = {
     "burst_up": {"bursts": 1, "delay_min": 15, "label": "Burst · ride the up-burst (+15m, 4h)"},
     "burst_dip": {"bursts": -1, "delay_min": 60, "label": "Burst · buy the dip (+60m, 4h)"},
+    # 2026-11-16: a 24h-hold twin of burst_up was built and withdrawn the same day — an independent review of the 45 legs found
+    # the held-24h gain (+$932 in the control replay) was two coin-days (AKE 11-13, JCT 11-08); without them held-24h is −$162
+    # and 58% of entries hit the 15% stop inside a day. A book may carry "hold_h" to override HOLD_H; none does.
 }
 THR_PCT = float(os.getenv("BURST_THR_PCT", "5"))
 SIGMA_X, VOL_X, WINDOW, COOLDOWN_MIN = 4.0, 3.0, 1440, 60
@@ -176,7 +179,7 @@ async def tick(now: float | None = None) -> list[dict]:
                          take_profit_1=price * 1.5, take_profit_2=price * 1.9, notional_usd=equity * LEG_PCT / 100,
                          timeframe="4h", oracle_confidence=0, leverage=LEVERAGE,
                          oracle_reasoning=f"{BOOKS[book]['label']}: {q['move_pct']:+.2f}% in 5 min ({q['sigma_x']}σ, {q['vol_x']}× volume), "
-                                          f"entered {BOOKS[book]['delay_min']} min after", hold_duration=f"{HOLD_H:g}h",
+                                          f"entered {BOOKS[book]['delay_min']} min after", hold_duration=f"{BOOKS[book].get('hold_h', HOLD_H):g}h",
                          extra={"strategy": book, "exit_policy": "manual", "shadows": True, "claude_verdict": "skipped", "entry_type": "market",
                                 "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(q["symbol"]),
                                 "burst_move_pct": q["move_pct"], "burst_sigma_x": q["sigma_x"], "burst_vol_x": q["vol_x"],
@@ -184,7 +187,7 @@ async def tick(now: float | None = None) -> list[dict]:
         if t.get("error"):
             logger.info("Burst %s %s refused: %s", book, q["symbol"], t["error"])
             continue
-        w.annotate(t["id"], expires_at=now + HOLD_H * 3600)
+        w.annotate(t["id"], expires_at=now + BOOKS[book].get("hold_h", HOLD_H) * 3600)
         opened.append(t)
         logger.info("%s: long %s @ %s, %+.2f%% burst %d min ago", BOOKS[book]["label"], q["symbol"], price, q["move_pct"], BOOKS[book]["delay_min"])
     if keep or queue:

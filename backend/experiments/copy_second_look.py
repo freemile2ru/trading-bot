@@ -36,8 +36,11 @@ from storage import state as kv
 
 logger = logging.getLogger("experiments.copy_second_look")
 
-MODE = os.getenv("COPY_SECOND_LOOK", "veto")                           # veto | record | off
-CLAUDE_ON = os.getenv("COPY_SECOND_LOOK_CLAUDE", "true").lower() == "true"
+# 2026-11-16 (the data review): record-only, no Claude. On 86 copies the Claude verdict carried no information — prod: the
+# copies it agreed with −$551 over 8, the ones it doubted +$327 over 20; local the reverse — and it never once disagreed.
+# The tape read still runs and is recorded on every copy; nothing is vetoed or halved. COPY_SECOND_LOOK=veto restores it.
+MODE = os.getenv("COPY_SECOND_LOOK", "record")                         # veto | record | off
+CLAUDE_ON = os.getenv("COPY_SECOND_LOOK_CLAUDE", "false").lower() == "true"
 CLAUDE_DAILY = int(os.getenv("COPY_SECOND_LOOK_CLAUDE_DAILY", "40"))
 DOUBT_X = float(os.getenv("COPY_SECOND_LOOK_DOUBT_X", "0.5"))
 PARABOLIC_PCT = float(os.getenv("COPY_SECOND_LOOK_PARABOLIC_PCT", "15"))

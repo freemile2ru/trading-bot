@@ -98,6 +98,8 @@ class Policy:
     bits_readd: bool = False              # …and buy that bit back when price returns to within bits_readd_band_pct of the entry while the
     bits_readd_band_pct: float = 0.3      # stop still sits below it (the lock has not locked a profit in), up to bits_readds_max times
     bits_readds_max: int = 2
+    be_at_pct: float | None = None        # 2026-11-17 profit floor: once the best price has been this % of the entry in profit, the stop never
+                                          # sits below the entry again (a trade's own be_at_pct overrides; the copies carry 2)
 
 
 POLICIES: dict[str, Policy] = {
@@ -145,6 +147,11 @@ POLICIES: dict[str, Policy] = {
     # +$840 against the live lock's +$589 (a 1% arm: −$822). In-sample and ~$6 a copy, so a shadow beside every copy
     # (COPY_SHADOWS), closed when the live copy closes for a non-price reason (leader closed, manual), judged by
     # copy_trading.bits_audit on the lock shadows' terms (40 copies, ≥ 0.03R a copy, paired t ≥ 2, both halves).
+    # 2026-11-16 (the data review): the lane's live trail as a shadow on the weekly book's legs (and the autotrader's
+    # weekly mirror), whose entries are ahead of price (E-ratio 1.7–1.9) and whose week-long holds lose it (held 4h +$644
+    # vs −$798 actual on the mirror). Arm +1% of notional, trail one daily ATR from the best price, the week's own cap.
+    "manual_lock_trail": Policy("manual_lock_trail", breakeven=None, stale=False, max_hold_h=168,
+                                lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01, lock_trail_atr=1.0),
     "manual_lock_bits": Policy("manual_lock_bits", breakeven=None, stale=False,
                                lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
                                lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100, bits_out_pct=2.0, bits_frac=0.5, bits_readd=True),
@@ -172,9 +179,10 @@ POLICIES: dict[str, Policy] = {
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
 LOCK_SHADOWS = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")      # the lock variants shadowed beside every sized reversal leg
 COPY_SHADOWS = ("manual_lock_bits",)                                                   # shadowed beside every copy (a trade with a leader_id)
-FOLLOW_LIVE_CLOSE = set(COPY_SHADOWS)                                                  # shadows that end when their live trade ends for a non-price reason
+WEEKLY_SHADOWS = ("manual_lock_trail",)                                                # shadowed beside every weekly leg (the book and the mirror)
+FOLLOW_LIVE_CLOSE = set(COPY_SHADOWS) | set(WEEKLY_SHADOWS)                            # shadows that end when their live trade ends for a non-price reason
 PRICE_EXITS = {"stop_loss", "trailing_stop", "tightened_stop", "breakeven", "liquidated", "take_profit_1", "take_profit_2", "tp1_hit"}
-SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS))).split(",")
+SHADOW_POLICIES = [p for p in os.getenv("EXIT_SHADOW_POLICIES", ",".join(k for k in POLICIES if k not in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS, *WEEKLY_SHADOWS))).split(",")
                    if p in POLICIES]
 BITS_SHADOW = os.getenv("EXIT_BITS_SHADOW", "true").lower() != "false"
 LOCK_TIGHT_SHADOW = os.getenv("EXIT_LOCK_TIGHT_SHADOW", "true").lower() != "false"   # the lock variants shadowed on every sized reversal leg
@@ -258,7 +266,7 @@ def stamp(trade: dict, policy_name: str | None = None, now: float | None = None)
     # A "manual" trade is held until its owner closes it (you, Claude swing, a trend flip) — never by a
     # timeframe's clock. (Keyed on the timeframe, trend trades marked "1d" fell back to the 1h window
     # and were force-closed after 72 h — fixed 2026-10-12.)
-    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS) else \
+    stale_s, max_hold_s = WINDOWS["manual"] if p.name in ("manual", "manual_lock", *LOCK_SHADOWS, *COPY_SHADOWS, *WEEKLY_SHADOWS) else \
         WINDOWS.get(trade.get("timeframe") or "1h", WINDOWS["1h"])
     trade["exit_policy"] = p.name
     trade["opened_ts"] = now
@@ -402,6 +410,19 @@ def apply_bar(
     # R-based breakeven (e.g. "protect": once +1R) — like the TP1 move, effective from the next bar.
     if p.breakeven and p.be_at_r is not None and t.get("peak_r", 0.0) >= p.be_at_r:
         _to_breakeven(t, p, t["stop_loss"], s)
+    # 5a. The profit floor (2026-11-17: a $24k NEAR copy went +$618 → −$420 → a −$944 print under a lock that arms at 3%
+    # and never did). Once the best price has been be_at_pct of the entry in profit, the stop moves to a true breakeven
+    # (entry + round-trip costs) and never sits below it again. Replayed on prod's 44 and local's 148 copies: +$441 and
+    # +$565 over the live lock, give-backs to a loss 3→1 and 6→2, and on prod it changed no trade but NEAR. Never a
+    # stop the price has already crossed (the HYPE lesson, 2026-11-02): set only while the price is past it.
+    be_pct = t.get("be_at_pct", p.be_at_pct)
+    if be_pct and t.get("quantity", 0) > 0 and (t["peak_price"] - ref) * s / ref * 100 >= be_pct:
+        floor = ref + s * cost_offset(ref)
+        if (floor - t["stop_loss"]) * s > 0 and (c - floor) * s > 0:
+            t.setdefault("original_stop_loss", stop)
+            t["stop_loss"] = round(floor, 8)
+            t["stop_moved"] = True
+            t["floored_ts"] = bar_end
     trailing = t.get("peak_r", 0.0) >= p.trail_at_r if p.trail_at_r is not None else t.get("tp1_done")
     if p.trail_r and trailing and r_unit:
         trail = t["peak_price"] - s * p.trail_r * r_unit
@@ -464,7 +485,7 @@ _SHADOW_KEYS = (
     "symbol", "direction", "entry_price", "stop_loss", "take_profit_1", "take_profit_2",
     "quantity", "timeframe", "leverage", "liquidation_price", "margin_usd", "risk_usd",
     "fees_usd", "checked_from_ms", "fill_bar_ms", "funding_through_ms",
-    "claude_verdict", "claude_confidence", "fa_at_entry", "maker_order_id", "atr_pct",
+    "claude_verdict", "claude_confidence", "fa_at_entry", "maker_order_id", "atr_pct", "be_at_pct",
 )
 # Shadows of trades that were never taken — kept out of the exit-policy comparison.
 NOT_TAKEN = {"declined", "market_twin", "gated", "fade_twin"}
@@ -480,7 +501,8 @@ def make_shadows(trade: dict, wallet_label: str, policies: list[str] | None = No
     # "bits" beside every copy (a trade that follows a leader).
     tight = LOCK_TIGHT_SHADOW and policies is None and trade.get("sizing") and manual
     bits = BITS_SHADOW and policies is None and trade.get("leader_id") and manual
-    extra = (list(LOCK_SHADOWS) if tight else []) + (list(COPY_SHADOWS) if bits else [])
+    weekly = policies is None and manual and trade.get("atr_pct") and (trade.get("strategy") == "weekly_rs" or trade.get("lane") == "weekly")
+    extra = (list(LOCK_SHADOWS) if tight else []) + (list(COPY_SHADOWS) if bits else []) + (list(WEEKLY_SHADOWS) if weekly else [])
     if trade.get("shadows") is False and policies is None:
         # A manual-policy book still shadows the profit lock, so the user's rule is scored on its own trades.
         policies = (["manual_lock"] if lock_shadow else []) + extra

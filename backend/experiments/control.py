@@ -187,6 +187,30 @@ def records(book: str) -> list[dict]:
     return [r for r in (kv.get_sync(_k(tid)) for tid in (kv.get_sync(_k("index", book)) or [])) if r]
 
 
+def _wallet(book: str):
+    if book.startswith("auto:"):
+        from trading import history
+        return history.WALLETS["auto"]
+    from experiments import books
+    return books.WALLETS.get(book)
+
+
+def lock_shadows(book: str) -> dict:
+    """Every profit-lock variant shadowed beside this book's trades (trading/exits manual_lock_*), each paired with the
+    actual exit in R by autotrader/lanes.tight_lock_verdict (adopt at 40 legs: ≥ 0.03R a leg better, paired t ≥ 2, both halves)."""
+    from autotrader import lanes
+    w = _wallet(book)
+    if w is None:
+        return {}
+    try:
+        results = w.shadow_report()["results"]
+    except Exception:
+        return {}
+    closed = [t for t in closed_trades(book) if t.get("risk_usd")]
+    policies = sorted({r["policy"] for r in results if str(r.get("policy", "")).startswith("manual_lock_") and r.get("trade_id") in {t["id"] for t in closed}})
+    return {p: lanes.tight_lock_verdict(closed, results, p) for p in policies}
+
+
 def report(book: str) -> dict:
     """Actual against each control, for the book and for its early exits; by exit reason; the rows."""
     rows = records(book)
@@ -213,7 +237,12 @@ def report(book: str) -> dict:
     by_reason: dict[str, dict] = {}
     for reason in sorted({r.get("hold_rule") or r.get("close_reason") or "?" for r in rows}):
         by_reason[reason] = agg([r for r in rows if (r.get("hold_rule") or r.get("close_reason") or "?") == reason])
+    try:
+        shadows = lock_shadows(book)
+    except Exception as e:
+        logger.debug("lock shadows for %s unavailable: %s", book, e)
+        shadows = {}
     return {"book": book, "horizon_h": horizon, "control_h": CONTROL_H, "horizons": [f"{H}h" for H in HORIZONS_H], "after_exit": [f"{H}h" for H in AFTER_EXIT_H],
-            "all": agg(rows), "early": agg(early), "by_reason": by_reason,
+            "all": agg(rows), "early": agg(early), "by_reason": by_reason, "lock_shadows": shadows,
             "rows": sorted(rows, key=lambda r: -r["opened_ts"])[:200], "books": BOOKS,
             "pending": sum(1 for t in closed_trades(book) if t["id"] not in {r["trade_id"] for r in rows if r.get("v") == REPLAY_V})}

@@ -40,6 +40,7 @@ MIN_LEGS = {"auto:reversal": 4.0, "copy_trading": 1.0, "copy_stocks": 1.0}
 FLOOR_R = 0.02
 RECORD_N = 20
 MIN_RECORD_N = 10          # a book weighs above the floor only once it has this many closed trades (first prod read: copy_stocks took 55% of the day on 9 copies)
+SHARE_CAP = float(os.getenv("DAILY_RISK_SHARE_CAP", "0.5"))   # no book takes more than this share of the day
 SHRINK_N = 20
 LOOKBACK_DAYS = 14.0
 CACHE_S = 60.0
@@ -132,10 +133,23 @@ def compute(now: float | None = None) -> dict:
         books[b] = {"record_r": round(r, 4), "record_n": n, "weight": max(r, FLOOR_R) if n >= MIN_RECORD_N else FLOOR_R,
                     "legs_per_day": round(legs_per_day(b, closed, now), 2)}
     total_w = sum(x["weight"] for x in books.values()) or 1.0
+    shares = {b: x["weight"] / total_w for b, x in books.items()}
+    # No book takes more than SHARE_CAP of the day (2026-11-16: copy_stocks held 62% on an 11-trade record); the excess
+    # goes to the others pro rata.
+    for _ in range(len(shares)):
+        over = {b: s - SHARE_CAP for b, s in shares.items() if s > SHARE_CAP + 1e-9}
+        if not over or len(shares) < 2:
+            break
+        rest = {b: s for b, s in shares.items() if b not in over}
+        rest_total = sum(rest.values()) or 1.0
+        for b in over:
+            shares[b] = SHARE_CAP
+        for b in rest:
+            shares[b] += sum(over.values()) * rest[b] / rest_total
     expected = 0.0
     for b, x in books.items():
-        x["share_usd"] = round(budget * x["weight"] / total_w, 2)
-        x["share_pct"] = round(100 * x["weight"] / total_w, 1)
+        x["share_usd"] = round(budget * shares[b], 2)
+        x["share_pct"] = round(100 * shares[b], 1)
         x["leg_risk_usd"] = round(x["share_usd"] / x["legs_per_day"], 2)
         x["expected_usd_day"] = round(x["share_usd"] * x["record_r"], 2)
         expected += x["expected_usd_day"]

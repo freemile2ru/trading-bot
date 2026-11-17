@@ -1148,6 +1148,12 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
                 logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, room["why"])
                 return None
             notional, coin_cap = room["notional"], room["why"]
+    if "atr_pct" not in extra:                                            # the ATR-trail shadows need the coin's daily ATR (2026-11-16)
+        try:
+            from autotrader import sizing
+            extra = {**extra, "atr_pct": await sizing.daily_atr_pct(symbol, time.time())}
+        except Exception:
+            pass
     t = await asyncio.to_thread(
         w.open_trade, symbol=symbol, direction=direction, entry_price=price,
         stop_loss=price * (1 - s * stop_pct / 100), take_profit_1=price * (1 + s * 0.9), take_profit_2=price * (1 + s * 0.95),
@@ -1415,6 +1421,11 @@ async def _reversal_lane(scans: list[dict]) -> None:
     if rb.get("blocked"):
         logger.warning("Autotrader reversal lane: slot skipped — %s", rb["why"])
         return
+    try:
+        from experiments import entry_cells
+        boost = await entry_cells.short_boost(now)                                # the BTC-up-day cell (2026-11-16): ×1.5 once its verdict is in
+    except Exception as e:
+        boost = {"x": 1.0, "in_cell": False, "live": False, "btc24_pct": None, "why": f"boost unavailable ({e.__class__.__name__})"}
     for rank, (sym, direction) in enumerate(picks):
         if sym in held or lane_open >= REVERSAL_MAX_OPEN:
             continue
@@ -1425,12 +1436,15 @@ async def _reversal_lane(scans: list[dict]) -> None:
         if not plan or plan.get("refused"):
             logger.info("reversal leg %s %s refused by sizing: %s", direction, sym, (plan or {}).get("refused"))
             continue
+        if direction == "short" and boost["x"] > 1.0:
+            plan = {**plan, "notional": round(plan["notional"] * boost["x"], 2), "why": plan["why"] + f"; {boost['why']}"}
         ours = await _open_mirror_leg(
             w, sym, direction, plan["stop_pct"], 0.0,
             f"reversal score {scores[sym]:+.3f}: {direction} {sym} (rank {'bottom' if direction == 'short' else 'top'} {REVERSAL_K} of {len(scores)}); {plan['why']}",
             "until the hold check says otherwise", now + hold_check.HARD_CAP_H * 3600,
             {"lane": "reversal", "reversal_id": f"{bucket}:{sym}", "reversal_score": scores[sym], "sizing": plan, "atr_pct": plan["atr_pct"],
-             "lock_arm_pct": plan["lock_arm_pct"] / 100, "lock_trail_atr": REVERSAL_LOCK_TRAIL_ATR, "risk_budget": rb if rb.get("on") else None},
+             "lock_arm_pct": plan["lock_arm_pct"] / 100, "lock_trail_atr": REVERSAL_LOCK_TRAIL_ATR, "risk_budget": rb if rb.get("on") else None,
+             "btc_boost": boost if direction == "short" else None},
             sized=plan)
         if ours:
             lane_open += 1

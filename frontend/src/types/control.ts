@@ -54,6 +54,7 @@ export interface ControlReport {
   all: ControlAgg
   early: ControlAgg
   by_reason: Record<string, ControlAgg>
+  lock_shadows?: Record<string, { policy: string; label?: string; n: number; needed: number; actual_usd: number; shadow_usd: number; delta_r?: number; t?: number | null; verdict: string }>
   rows: ControlRow[]
   books: string[]
   pending: number
