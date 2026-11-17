@@ -101,12 +101,14 @@ async def symbols():
 
 @router.get("/klines")
 async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), interval: str = "15m",
-                 days: float = Query(90, gt=0, le=365)):
+                 days: float = Query(90, gt=0, le=365), source: str = Query("venue", pattern="^(venue|mainnet)$")):
     """`days` of history (default 3 months), paged backwards 1,500 bars at a time from Binance,
-    capped at MAX_BARS so 1-minute charts stay responsive."""
+    capped at MAX_BARS so 1-minute charts stay responsive. `source=mainnet` reads mainnet whatever the venue: a paper
+    book's trade followed on the chart (2026-11-17) is marked at mainnet prices, which the testnet does not have."""
     if interval not in INTERVALS:
         raise HTTPException(400, f"interval must be one of {sorted(INTERVALS)}")
-    key = (_venue()["rest"], symbol, interval, days)
+    rest = MAINNET["rest"] if source == "mainnet" else _venue()["rest"]
+    key = (rest, symbol, interval, days)
     hit = _klines_cache.get(key)
     if hit and time.time() - hit[0] < 30:              # switching back to a timeframe is instant
         return hit[1]
@@ -115,7 +117,7 @@ async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), interval:
     start = (int(time.time() * 1000) // step_ms - want + 1) * step_ms
     # Pages are independent windows, so fetch them all at once (sequentially the testnet took ~15s).
     starts = [start + i * 1500 * step_ms for i in range(-(-want // 1500))]
-    pages = await asyncio.gather(*(get_json(f"{_venue()['rest']}/fapi/v1/klines",
+    pages = await asyncio.gather(*(get_json(f"{rest}/fapi/v1/klines",
                                             params={"symbol": symbol, "interval": interval, "limit": 1500, "startTime": st})
                                    for st in starts))
     rows = sorted((r for page in pages for r in page), key=lambda r: r[0])
@@ -132,8 +134,8 @@ async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), interval:
 
 
 @router.get("/ticker")
-async def ticker(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$")):
-    rest = _venue()["rest"]
+async def ticker(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), source: str = Query("venue", pattern="^(venue|mainnet)$")):
+    rest = MAINNET["rest"] if source == "mainnet" else _venue()["rest"]
     t, p = await asyncio.gather(get_json(f"{rest}/fapi/v1/ticker/24hr", params={"symbol": symbol}),
                                 get_json(f"{rest}/fapi/v1/premiumIndex", params={"symbol": symbol}))
     return {"last": float(t["lastPrice"]), "change_pct": float(t["priceChangePercent"]),

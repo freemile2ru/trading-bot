@@ -7,9 +7,16 @@ import { C, DEFAULT_INDICATORS, TradeChart, type Drawing, type Indicators, type 
 import { OrderBook, type Book, type Tape } from './OrderBook'
 import { OrderForm } from './OrderForm'
 import { AccountPanel } from './AccountPanel'
+import { FocusStrip, focusAnnotations, useFocusedTrade, type Focus } from './FocusedPosition'
+import { TradeDrawer } from '../TradeDrawer'
+import { isLive } from '../../types/overview'
 import type { Candle, SymbolInfo, Ticker, TradeAccount, Venue } from '../../types/trade'
 
+// A paper book's trade is marked at mainnet prices, so following one reads mainnet even when the terminal is on the testnet.
+const MAINNET_WS = { book: 'wss://fstream.binance.com/public/stream', market: 'wss://fstream.binance.com/market/stream' }
+
 const INTERVALS = ['1m', '5m', '15m', '1h', '4h', '1d']
+const INTERVAL_S: Record<string, number> = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }
 const IND_LABEL: Record<keyof Indicators, string> = {
   ma7: 'MA 7', ma25: 'MA 25', ma99: 'MA 99', ema20: 'EMA 20', ema50: 'EMA 50', bb: 'BB 20', volume: 'Vol', rsi: 'RSI 14',
 }
@@ -37,8 +44,9 @@ function store(key: string, v: unknown) { try { localStorage.setItem(key, JSON.s
 
 const decimals = (tick: number) => Math.max(0, Math.round(-Math.log10(tick)))
 
-/** Binance-style futures terminal: chart, book, order form, positions — paper or live (main wallet). */
-export function TradeTerminal() {
+/** Binance-style futures terminal: chart, book, order form, positions — paper or live (main wallet).
+ *  `focus` (from the Trades tab, #trade/<system>/<id>) plots one trade of any book on the chart and follows it live. */
+export function TradeTerminal({ focus = null, onClearFocus }: { focus?: Focus | null; onClearFocus?: () => void } = {}) {
   const [venue, setVenue] = useState<Venue | null>(null)
   const [symbols, setSymbols] = useState<SymbolInfo[]>([])
   const [symbol, setSymbol] = useState<string>(() => stored('trade.symbol', 'BTCUSDT'))
@@ -59,6 +67,11 @@ export function TradeTerminal() {
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const lastPrice = useRef<number | null>(null)
+  // The followed trade: its record is polled every few seconds (stop moves, locks, the close) and painted on the chart.
+  const { trade: focused, err: focusErr } = useFocusedTrade(focus)
+  const [record, setRecord] = useState(false)
+  const mainnet = !!focus && !isLive(focus.system)
+  useEffect(() => { if (focused?.symbol) { setSymbol(focused.symbol); setPicked(null) } }, [focused?.symbol])
   // Real browser fullscreen for the terminal (Esc or the button to leave).
   const root = useRef<HTMLDivElement>(null)
   const [full, setFull] = useState(false)
@@ -117,26 +130,30 @@ export function TradeTerminal() {
     let cancelled = false
     setCandles([]); setLive(null); setBook(null); setTape([]); setMark(null)
     lastPrice.current = null          // else the old coin's last trade shows (and prices orders) until a new one ticks
-    api.trade.klines(symbol, interval, interval === '1d' ? 365 : 90)   // 90 daily bars can't draw MA 99.then(c => { if (!cancelled) { setCandles(c); setError(null) } })
+    // 365 daily bars: 90 can't draw MA 99. (The .then had slipped inside this comment and no candles ever landed — 2026-11-17.)
+    api.trade.klines(symbol, interval, interval === '1d' ? 365 : 90, mainnet)
+      .then(c => { if (!cancelled) { setCandles(c); setError(null) } })
       .catch(e => !cancelled && setError(e instanceof Error ? e.message : 'No candles'))
     return () => { cancelled = true }
-  }, [symbol, interval, venue?.mode, venue?.env])
+  }, [symbol, interval, venue?.mode, venue?.env, mainnet])
 
   useEffect(() => {
     if (!venue) return
-    const load = () => api.trade.ticker(symbol).then(setTicker).catch(() => {})
+    const load = () => api.trade.ticker(symbol, mainnet).then(setTicker).catch(() => {})
     load()
     const id = setInterval(load, 10_000)
     return () => clearInterval(id)
-  }, [symbol, venue?.mode, venue?.env])
+  }, [symbol, venue?.mode, venue?.env, mainnet])
 
   // Live data straight from Binance.
   const lower = symbol.toLowerCase()
-  useBinanceStream(venue?.ws_book, [`${lower}@depth20@500ms`], (stream, d) => {
+  const wsBook = mainnet ? MAINNET_WS.book : venue?.ws_book
+  const wsMarket = mainnet ? MAINNET_WS.market : venue?.ws_market
+  useBinanceStream(wsBook, [`${lower}@depth20@500ms`], (stream, d) => {
     if (!stream.startsWith(`${lower}@`)) return
     setBook({ bids: (d.b ?? []).map((x: string[]) => [+x[0], +x[1]]), asks: (d.a ?? []).map((x: string[]) => [+x[0], +x[1]]) })
   })
-  useBinanceStream(venue?.ws_market, [`${lower}@aggTrade`, `${lower}@kline_${interval}`, `${lower}@markPrice@1s`], (stream, d) => {
+  useBinanceStream(wsMarket, [`${lower}@aggTrade`, `${lower}@kline_${interval}`, `${lower}@markPrice@1s`], (stream, d) => {
     // The old socket can deliver a few frames after a symbol or timeframe switch — drop them.
     if (!stream.startsWith(`${lower}@`) || (stream.includes('@kline_') && d.k?.i !== interval)) return
     if (stream.endsWith('@aggTrade')) {
@@ -157,7 +174,7 @@ export function TradeTerminal() {
   const levels = useMemo<Level[]>(() => {
     const out: Level[] = []
     for (const p of account?.positions ?? []) {
-      if (p.symbol !== symbol) continue
+      if (p.symbol !== symbol || (focus && p.id === focus.id)) continue       // the followed trade paints its own lines
       const tag = p.mode === 'live' ? 'LIVE ' : ''
       out.push({ price: p.entry_price, color: '#848e9c', title: `${tag}${p.direction} entry` })
       out.push({ price: p.stop_loss, color: C.down, title: `${tag}stop` })
@@ -176,7 +193,10 @@ export function TradeTerminal() {
       if (o.symbol === symbol) out.push({ price: o.limit_price, color: '#f0b90b', title: `${o.mode === 'live' ? 'LIVE ' : ''}limit ${o.direction}`, dashed: true })
     }
     return out
-  }, [account, symbol])
+  }, [account, symbol, focus])
+  const intervalS = INTERVAL_S[interval] ?? 900
+  const paint = useMemo(() => focusAnnotations(focused && focused.symbol === symbol ? focused : null, intervalS), [focused, symbol, intervalS])
+  const chartLevels = useMemo(() => [...levels, ...paint.levels], [levels, paint])
 
   const flash = (msg?: string) => {
     loadAccount()
@@ -210,6 +230,11 @@ export function TradeTerminal() {
         </button>
       </div>
 
+      {focus && (
+        <FocusStrip focus={focus} trade={focused} last={last} precision={dp} err={focusErr}
+          note={mainnet && venue?.mode === 'live' ? 'mainnet prices (a paper book)' : undefined}
+          onClear={() => onClearFocus?.()} onRecord={() => setRecord(true)} />
+      )}
       {error && <div className="text-xs px-3 py-2 rounded bg-[#f6465d]/10 text-[#f6465d]">{error}</div>}
       {toast && <div className="text-xs px-3 py-2 rounded bg-[#0ecb81]/10 text-[#0ecb81]">{toast}</div>}
 
@@ -250,8 +275,8 @@ export function TradeTerminal() {
                 className="p-1.5 rounded text-[#848e9c] hover:text-[#f6465d] hover:bg-[#2b3139] disabled:opacity-30"><Trash2 className="w-4 h-4" /></button>
             </div>
             <div className="flex-1 min-w-0">
-              <TradeChart candles={candles} live={live} indicators={ind} levels={levels} precision={dp}
-                tool={tool} drawings={drawings} onDraw={addDrawing} />
+              <TradeChart candles={candles} live={live} indicators={ind} levels={chartLevels} precision={dp}
+                tool={tool} drawings={drawings} onDraw={addDrawing} markers={paint.markers} segments={paint.segments} />
             </div>
           </div>
         </div>
@@ -268,6 +293,7 @@ export function TradeTerminal() {
       </div>
 
       <AccountPanel account={account} marks={marks} onChanged={flash} onPickSymbol={s => setSymbol(s)} />
+      {record && focus && <TradeDrawer system={focus.system} id={focus.id} onClose={() => setRecord(false)} />}
     </div>
   )
 }

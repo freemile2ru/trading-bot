@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { FileText } from 'lucide-react'
 import clsx from 'clsx'
 import { api } from '../../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../../utils/format'
@@ -27,11 +28,13 @@ const Side = ({ d, lev }: { d: string; lev?: number | null }) => (
   <span className={d === 'long' ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>{d === 'long' ? 'Long' : 'Short'}{lev ? ` ${lev}x` : ''}</span>
 )
 
-export function OpenPositions({ positions, orders, onChanged, onOpen }: {
+export function OpenPositions({ positions, orders, onChanged, onOpen, onChart }: {
   positions: UnifiedTrade[]
   orders: UnifiedOrder[]
   onChanged: (msg?: string) => void
   onOpen: (system: SystemKey, id: string) => void
+  /** Clicking a position opens it on the Trade tab's chart, levels and live P&L plotted (2026-11-17); the record stays a click away. */
+  onChart?: (system: SystemKey, id: string) => void
 }) {
   const [tab, setTab] = useState<'positions' | 'orders'>('positions')
   const [marks, setMarks] = useState<Record<string, number>>({})
@@ -54,7 +57,7 @@ export function OpenPositions({ positions, orders, onChanged, onOpen }: {
       </div>
       <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
         {tab === 'positions'
-          ? <Positions rows={positions} marks={marks} onChanged={onChanged} onOpen={onOpen} />
+          ? <Positions rows={positions} marks={marks} onChanged={onChanged} onOpen={onOpen} onChart={onChart} />
           : <Orders rows={orders} onChanged={onChanged} />}
       </div>
     </section>
@@ -73,8 +76,9 @@ function livePnl(p: UnifiedTrade, marks: Record<string, number>): { mark: number
   return { mark, pnl: (mark - p.entry_price) * s * p.quantity - (p.fees ?? 0) - (p.funding ?? 0) }
 }
 
-function Positions({ rows, marks, onChanged, onOpen }: {
+function Positions({ rows, marks, onChanged, onOpen, onChart }: {
   rows: UnifiedTrade[]; marks: Record<string, number>; onChanged: (m?: string) => void; onOpen: (s: SystemKey, id: string) => void
+  onChart?: (s: SystemKey, id: string) => void
 }) {
   const [edit, setEdit] = useState<{ key: string; sl: string; tp: string } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -123,7 +127,12 @@ function Positions({ rows, marks, onChanged, onOpen }: {
             return (
               <tr key={key(p)} className="border-t border-[#2b3139] hover:bg-white/[0.02]">
                 <td className={td}>
-                  <button onClick={() => onOpen(p.system, p.id)} className="font-semibold hover:text-[#f0b90b]" title="Open the trade's full record">{p.symbol}</button>
+                  {onChart ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <button onClick={() => onChart(p.system, p.id)} className="font-semibold hover:text-[#f0b90b]" title="Open on the Trade tab's chart — entry, stop, target and live P&L plotted">{p.symbol}</button>
+                      <button onClick={() => onOpen(p.system, p.id)} className="text-[#5e6673] hover:text-[#eaecef]" title="The trade's full record" aria-label="Open the trade's full record"><FileText className="w-3 h-3" /></button>
+                    </span>
+                  ) : <button onClick={() => onOpen(p.system, p.id)} className="font-semibold hover:text-[#f0b90b]" title="Open the trade's full record">{p.symbol}</button>}
                 </td>
                 <td className={td}><SystemTag s={p.system} /></td>
                 <td className={td}>

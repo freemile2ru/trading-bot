@@ -133,9 +133,9 @@ export const api = {
   trade: {
     venue: () => get<Venue>('/trade/venue'),
     symbols: () => get<SymbolInfo[]>('/trade/symbols'),
-    klines: (symbol: string, interval: string, days = 90) =>
-      get<TradeCandle[]>(`/trade/klines?symbol=${symbol}&interval=${interval}&days=${days}`),
-    ticker: (symbol: string) => get<Ticker>(`/trade/ticker?symbol=${symbol}`),
+    klines: (symbol: string, interval: string, days = 90, mainnet = false) =>
+      get<TradeCandle[]>(`/trade/klines?symbol=${symbol}&interval=${interval}&days=${days}${mainnet ? '&source=mainnet' : ''}`),
+    ticker: (symbol: string, mainnet = false) => get<Ticker>(`/trade/ticker?symbol=${symbol}${mainnet ? '&source=mainnet' : ''}`),
     account: () => get<TradeAccount>('/trade/account'),
     order: (req: OrderRequest) => post<{ mode: string; kind: string; id: string; warning?: string }>('/trade/order', req),
     cancel: (id: string) => del<unknown>(`/trade/order/${id}`),

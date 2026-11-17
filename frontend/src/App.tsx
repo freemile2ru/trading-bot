@@ -13,6 +13,7 @@ import { CalendarChip } from './components/CalendarChip'
 import { useOracle } from './hooks/useOracle'
 import { useAlarm } from './hooks/useAlarm'
 import { api } from './utils/api'
+import type { SystemKey } from './types/overview'
 import clsx from 'clsx'
 
 // Tabs other than All Signals load on first open — the chart libraries alone are most of the bundle.
@@ -34,6 +35,7 @@ const Portfolio = lazy(() => import('./components/Portfolio').then(m => ({ defau
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
 type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'prop' | 'control' | 'lab' | 'retired' | 'live' | 'books'
+type Focus = { system: SystemKey; id: string }
 
 export default function App() {
   // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
@@ -46,11 +48,27 @@ export default function App() {
     setTabState(t)
     if (window.location.hash.slice(1).split('/')[0] !== t) window.history.replaceState(null, '', `#${t}`)
   }, [])
+  // A trade followed on the Trade tab's chart lives in the hash too: #trade/<system>/<id> (opened from the Trades tab).
+  const focusFromHash = (): Focus | null => {
+    const [h, sys, id] = window.location.hash.slice(1).split('/')
+    return h === 'trade' && sys && id ? { system: sys as SystemKey, id } : null
+  }
+  const [tradeFocus, setTradeFocus] = useState<Focus | null>(focusFromHash)
+  const openOnChart = useCallback((system: SystemKey, id: string) => {
+    setTradeFocus({ system, id })
+    setTabState('trade')
+    window.history.replaceState(null, '', `#trade/${system}/${id}`)
+  }, [])
+  const clearFocus = useCallback(() => {
+    setTradeFocus(null)
+    window.history.replaceState(null, '', '#trade')
+  }, [])
   // In-page links (<a href="#live">) switch tabs too.
   useEffect(() => {
     const onHash = () => {
       const h = window.location.hash.slice(1).split('/')[0] as Tab
       if (TABS.includes(h)) setTabState(h)
+      if (h === 'trade') setTradeFocus(focusFromHash())
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -364,13 +382,13 @@ export default function App() {
           {/* Binance-style terminal: your own orders, paper or live (main wallet) */}
           {tab === 'news' && <NewsPage />}
           {tab === 'calendar' && <CalendarPage />}
-          {tab === 'trade' && <TradeTerminal />}
+          {tab === 'trade' && <TradeTerminal focus={tradeFocus} onClearFocus={clearFocus} />}
 
           {/* Portfolio tab */}
           {tab === 'portfolio' && <Portfolio onOpenTrades={() => setTab('trades')} />}
 
           {/* Every trade from every system */}
-          {tab === 'trades' && <TradesPage />}
+          {tab === 'trades' && <TradesPage onChart={openOnChart} />}
 
           {/* Trade history + backtest — both wallets */}
           {tab === 'history' && <TradeHistory />}

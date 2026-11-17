@@ -143,7 +143,7 @@ function Select({ value, onChange, children, label }: {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
-export function TradesPage() {
+export function TradesPage({ onChart }: { onChart?: (system: SystemKey, id: string) => void } = {}) {
   const [system, setSystem] = useState<SystemKey | ''>('')
   const [mode, setMode] = useState<'' | 'paper' | 'live'>('')
   const [filters, setFilters] = useState<TradeFilters>({ sort: 'closed_ts', order: 'desc', page: 1, page_size: 50 })
@@ -280,7 +280,7 @@ export function TradesPage() {
       {notice && <div className="text-sm px-4 py-2 rounded-lg border bg-emerald-900/30 border-emerald-800 text-emerald-300">{notice}</div>}
       <div className={clsx('relative transition-opacity', loading && 'opacity-50 pointer-events-none')} aria-busy={loading}>
         {loading && <LoadingBar />}
-        <OpenPositions positions={open?.rows ?? []} orders={orders} onChanged={changed} onOpen={(sys, id) => setDrawer({ system: sys, id })} />
+        <OpenPositions positions={open?.rows ?? []} orders={orders} onChanged={changed} onOpen={(sys, id) => setDrawer({ system: sys, id })} onChart={onChart} />
       </div>
 
       <section className="card p-0 overflow-hidden relative" aria-busy={loading}>

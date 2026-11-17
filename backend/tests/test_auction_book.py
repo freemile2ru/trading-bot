@@ -244,3 +244,18 @@ def test_the_forward_arrangements_score_the_days_real_bars_once(monkeypatch, boo
     fwd = auction.variants_forward()
     assert fwd["variants"]["open0"]["trades"] == len(rows) and fwd["variants"]["open0"]["status"] == "collecting"
     assert fwd["variants"]["grade9"]["trades"] == 0 and fwd["days"] == 1
+
+
+def test_the_live_rule_is_next_open_without_the_chase_gate_and_the_shadows_keep_the_retest():
+    """2026-11-17: retest + the 2% chase gate took 3 trades in ten sessions; the live entry is the next open, the gate is off
+    the live path (0), and the scored arrangements still carry retest, grade 6, next open and the gate under fixed keys."""
+    import os
+    if os.getenv("AUCTION_ENTRY") or os.getenv("AUCTION_MAX_FROM_OPEN_PCT"):
+        return
+    assert auction.VARIANT["entry"] == "next_open" and auction.MAX_FROM_OPEN_PCT == 0 and auction.CHASE_GATE_PCT == 2.0
+    v = auction.VARIANTS_FORWARD
+    assert set(v) == {"base", "grade6", "next_open", "chase_gate"}
+    assert v["base"]["entry"] == "retest" and v["grade6"]["entry"] == "retest" and v["grade6"]["min_grade"] == 6
+    assert v["next_open"]["entry"] == "next_open" and "max_from_open_pct" not in v["next_open"]
+    assert v["chase_gate"]["entry"] == "retest" and v["chase_gate"]["max_from_open_pct"] == 2.0 and v["chase_gate"]["since"] == 1794268800.0
+    assert all(x.get("label") for x in v.values())

@@ -5,7 +5,8 @@ with the filters built around its weaknesses — but the user wants it tested fo
 it runs at measuring size and is judged like every book, on its own 40 trades.
 
 The book (books.WALLETS["auction"]), every closed 5-minute bar in the New York cash session (09:30–16:00 ET):
-  setup     the study's acceptance → confirmation → entry sequence (VARIANT: target ≥ MIN_TARGET_BPS away, grade ≥ MIN_GRADE)
+  setup     the study's acceptance → confirmation → entry sequence (VARIANT: target ≥ MIN_TARGET_BPS away, grade ≥ MIN_GRADE;
+            the entry at the next open from 2026-11-17 — the retest wait took 3 trades in ten sessions)
   shadows   from 2026-11-07 the grade-6 and next-open arrangements (and the base one) are scored daily on the real bars (VARIANTS_FORWARD)
   gates     calendar first — nothing inside a macro-release blackout (FOMC, CPI, NFP…) or an earnings window for the
             name (ops/calendar); the trade is tagged with any nearby release for the exit-reason record
@@ -36,8 +37,13 @@ SYMBOLS = tuple(os.getenv("AUCTION_SYMBOLS", "QQQUSDT,NVDAUSDT,TSLAUSDT,AMDUSDT"
 # RETEST (price comes back to the level within 3 bars and closes beyond it again; stop under that bar), the target is the
 # level BEYOND the nearest. In the replay that was the only arrangement positive in both halves at futures costs
 # (+0.017% a trade); at Binance costs it still loses (−0.13%), so the minimum target distance and grade stay as gates.
+# 2026-11-17 (the user: "the Mentor tab still has 0 trades"): the live entry is the NEXT OPEN after confirmation and the
+# chase gate is off the live path. Forward since 11-07 the retest + chase-gate rule took 3 trades in six sessions (0 won);
+# retest without the gate 7 (one winner, AMD 11-09); next-open 23 (9 won, +0.41% a trade net, first hour +0.99% on 12) —
+# the only arrangement producing trades at a rate its 40-trade verdict can be reached at (two AMD trades carry its total,
+# so it is a test, not an edge). Retest and the gate keep running as scored arrangements (VARIANTS_FORWARD).
 VARIANT = {"min_target_bps": float(os.getenv("AUCTION_MIN_TARGET_BPS", "50")), "min_grade": int(os.getenv("AUCTION_MIN_GRADE", "7")),
-           "entry": os.getenv("AUCTION_ENTRY", "retest"), "target_mode": os.getenv("AUCTION_TARGET", "second")}
+           "entry": os.getenv("AUCTION_ENTRY", "next_open"), "target_mode": os.getenv("AUCTION_TARGET", "second")}
 # 2026-11-07: forward shadows of the arrangements the log kept skipping. In its first week the base rule took nothing on
 # four instruments (40 setups: 15 never confirmed, 8 no retest, 8 graded 6 against the floor of 7, 6 stand-downs); at that
 # rate its 40-trade verdict never comes. Each session day, once the cash close has passed, the study's own sequence
@@ -84,7 +90,10 @@ FIRST_HOUR_END = (10, 30)
 # already more than 2% from the session open in the trade's direction lost in both halves (−0.16%); the initial-balance
 # high and low were the worst level family (−0.14%, both halves) — they stay as targets, not as levels to accept.
 MIN_STOP_ATR = float(os.getenv("AUCTION_MIN_STOP_ATR", "1.0"))        # the stop must sit at least this many 14-bar ATRs from the entry
-MAX_FROM_OPEN_PCT = float(os.getenv("AUCTION_MAX_FROM_OPEN_PCT", "2.0"))   # no acceptance once price is this far from the session open, the trade's way
+MAX_FROM_OPEN_PCT = float(os.getenv("AUCTION_MAX_FROM_OPEN_PCT", "0"))     # no acceptance once price is this far from the session open, the trade's way
+                                                                           # (0 = off; live 2026-11-10 → 11-17 at 2%: it refused most acceptances on names
+                                                                           # that are 2–9% from the open by mid-morning — the chase_gate arrangement keeps scoring it)
+CHASE_GATE_PCT = 2.0
 # 2026-11-09, after a gap-and-go session (AMD +4%, TSLA +5%, NVDA +3% by mid-morning) on which the book took nothing — QQQ
 # confirmed twice and never retested, the other three were refused by the 2%-from-the-open chase gate. Two candidate
 # arrangements were written and replayed first (research/auction_trend_lab.py, 214 sessions of the four names):
@@ -94,9 +103,14 @@ MAX_FROM_OPEN_PCT = float(os.getenv("AUCTION_MAX_FROM_OPEN_PCT", "2.0"))   # no 
 # IB + 2× range) was REJECTED at the replay: 104 trades, 30% won, −0.13% a trade, both halves below zero — the pullback
 # stop is hit two times in three and the far extension is reached seven times. It is not scored forward.
 # chase_gate carries its own `since`, so the day it was written on is not scored for it.
-VARIANTS_FORWARD = {"base": dict(VARIANT), "grade6": {**VARIANT, "min_grade": 6}, "next_open": {**VARIANT, "entry": "next_open"},
-                    "chase_gate": {**VARIANT, "max_from_open_pct": MAX_FROM_OPEN_PCT, "since": 1794268800.0,
-                                   "label": "retest · grade ≥ 7 · target ≥ 50 bps · ≤ %g%% from the open (the live gate)" % MAX_FROM_OPEN_PCT}}
+# Keys are the names the scored rows carry: "base" is the retest arrangement (the live rule until 2026-11-17), "next_open"
+# the live rule from then; each is defined outright so a change of VARIANT never silently re-labels a shadow.
+_RETEST = {**VARIANT, "entry": "retest"}
+VARIANTS_FORWARD = {"base": {**_RETEST, "label": "retest · grade ≥ 7 · target ≥ 50 bps (the live rule until 11-17)"},
+                    "grade6": {**_RETEST, "min_grade": 6, "label": "retest · grade ≥ 6 · target ≥ 50 bps"},
+                    "next_open": {**VARIANT, "entry": "next_open", "label": "next open · grade ≥ 7 · target ≥ 50 bps (the live rule from 11-17)"},
+                    "chase_gate": {**_RETEST, "max_from_open_pct": CHASE_GATE_PCT, "since": 1794268800.0,
+                                   "label": "retest · grade ≥ 7 · target ≥ 50 bps · ≤ %g%% from the open (the live gate 11-10 → 11-17)" % CHASE_GATE_PCT}}
 VARIANTS_SINCE = 1794009600.0                                     # 2026-11-07 00:00 UTC (chase_gate: 2026-11-10)
 HISTORY_DAYS = 10                      # enough closed 30-minute candles for the HTF ATR and a prior week for its levels
 BAR_S = 300
@@ -302,7 +316,7 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
             sd = 1 if ups else -1
             open_px = _session_open(d, i)
             moved = (float(r["close"]) / open_px - 1) * 100 * sd if open_px else 0.0
-            if moved > MAX_FROM_OPEN_PCT:
+            if MAX_FROM_OPEN_PCT and moved > MAX_FROM_OPEN_PCT:
                 _log({"ts": now, "sym": sym, "event": "skipped", "why": f"price already {moved:.1f}% from the open the trade's way (limit {MAX_FROM_OPEN_PCT:g}%)",
                       "level": (max(ups) if ups else min(dns))[1]})
                 _set_state(sym, st)
