@@ -114,3 +114,11 @@ def test_production_runs_only_its_promoted_books(client, monkeypatch):
     assert not any(e["book"] == "carry" for e in moved) and capital.added("carry") == 0.0
     monkeypatch.setattr(book_switches, "PRODUCTION", False)
     assert book_switches.promoted("carry") and book_switches.unavailable("carry") != book_switches.NOT_PROMOTED
+
+
+def test_every_retired_book_is_out_of_the_totals():
+    """A book retired in book_switches must also be retired in the overview, or its trades keep counting in the Trades tab's
+    totals, the daily programme and the whole-portfolio curve (2026-11-17: multi_factor had slipped through for ten days)."""
+    from trading import overview
+    missing = set(book_switches.RETIRED_BOOKS) - set(overview.RETIRED_SYSTEMS)
+    assert not missing, missing
