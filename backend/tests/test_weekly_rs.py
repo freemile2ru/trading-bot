@@ -22,6 +22,7 @@ def w(tmp_path, monkeypatch):
     async def price(symbol):
         return 10.0
     monkeypatch.setattr(weekly_rs.monitor, "live_price", price)
+    monkeypatch.setattr(weekly_rs.sides, "longs_off", lambda book: False)              # the side switch (2026-11-17) has its own test below
     return wallet, scores
 
 
@@ -48,3 +49,18 @@ def test_next_week_keeps_holdovers_and_swaps_the_rest(w):
     from datetime import timedelta
     out = asyncio.run(weekly_rs.rebalance(now=MONDAY + timedelta(days=7)))
     assert "ETHUSDT" in out["closed"] and "short ETHUSDT" in out["opened"] and "long SOLUSDT" not in out["opened"]
+
+
+def test_the_side_switch_refuses_the_books_longs_and_writes_them_down(w, monkeypatch):
+    from experiments import entry_cells
+    wallet, scores = w
+    monkeypatch.setattr(weekly_rs.sides, "longs_off", lambda book: book == "weekly_rs")
+    written = []
+
+    async def refuse_long(book, symbol, now, price, why):
+        written.append((book, symbol, why))
+    monkeypatch.setattr(entry_cells, "refuse_long", refuse_long)
+    out = asyncio.run(weekly_rs.rebalance(now=MONDAY))
+    held = {t["symbol"]: t["direction"] for t in wallet.get_portfolio()["open_trades"]}
+    assert set(held.values()) == {"short"} and len(held) == 5 and len(out["opened"]) == 5
+    assert sorted(s for _, s, _ in written) == sorted(weekly_rs.UNIVERSE[:5]) and all(b == "weekly_rs" and why == "side_off" for b, _, why in written)

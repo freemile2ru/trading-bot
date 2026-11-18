@@ -20,7 +20,7 @@ def test_withdraw_takes_at_most_free_cash(tmp_path):
 
 
 def test_plan_adds_up_to_the_total():
-    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 226_500                 # +$10k burst books 2026-11-06, −$1k multi_factor 2026-11-07, +$25k prop 2026-11-09, +$10k burst shorts −$3k vol_premium 2026-11-17
+    assert round(sum(capital.PLAN.values())) == round(capital.TOTAL) == 286_500                 # +$50k composite 2026-11-18, +$10k reversal index leg 2026-11-17, +$10k burst books 2026-11-06, −$1k multi_factor 2026-11-07, +$25k prop 2026-11-09, +$10k burst shorts −$3k vol_premium 2026-11-17
     assert "vol_premium" not in capital.PLAN
     assert capital.PLAN["prop"] == 25_000.0
     assert capital.PLAN["burst_up"] == capital.PLAN["burst_dip"] == capital.PLAN["burst_down"] == capital.PLAN["burst_rip"] == 5_000.0

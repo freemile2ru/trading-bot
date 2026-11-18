@@ -30,6 +30,13 @@ def _scanner_lane_on(monkeypatch):
     monkeypatch.setattr(engine, "TA_LANE", True)
 
 
+@pytest.fixture(autouse=True)
+def _both_sides_on(monkeypatch):
+    """The side switch (2026-11-17) refuses the TA lane's longs; these tests are about the entry path, so both sides are on."""
+    from trading import sides
+    monkeypatch.setattr(sides, "longs_off", lambda book: False)
+
+
 
 @pytest.fixture
 def auto(tmp_path, monkeypatch):

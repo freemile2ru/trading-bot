@@ -41,6 +41,8 @@ FLOOR_R = 0.02
 RECORD_N = 20
 MIN_RECORD_N = 10          # a book weighs above the floor only once it has this many closed trades (first prod read: copy_stocks took 55% of the day on 9 copies)
 SHARE_CAP = float(os.getenv("DAILY_RISK_SHARE_CAP", "0.5"))   # no book takes more than this share of the day
+LEG_CAP_PCT = float(os.getenv("DAILY_RISK_LEG_CAP_PCT", "1"))   # no leg risks more than this share of its own book at the stop (2026-11-17: the budget
+                                                               # gave copy_stocks $2.5k a leg on a $33k book; a copy of LIT risked 2.1% of its book and lost it in 21 minutes)
 MATURITY_N = int(os.getenv("DAILY_RISK_MATURITY_N", "40"))    # 2026-11-17: a leg's risk is scaled by min(1, closed trades / MATURITY_N) — the history review
                                                               # found outcome falling with size on both instances because the budget put its largest legs on the
                                                               # thinnest records (copy_stocks 50% of the day, $2.5k a leg, on 12 trades; the auction book's two
@@ -97,6 +99,12 @@ def legs_per_day(book: str, closed: list[dict], now: float) -> float:
 
 def base_equity() -> float:
     w = _wallet(BASE_BOOK)
+    return float(w.get_portfolio()["total_equity"]) if w is not None else 0.0
+
+
+def book_equity(book: str) -> float:
+    """The equity of the book a leg sits in (the autotrader's ledger for its lanes)."""
+    w = _wallet(book)
     return float(w.get_portfolio()["total_equity"]) if w is not None else 0.0
 
 
@@ -158,7 +166,10 @@ def compute(now: float | None = None) -> dict:
         x["share_usd"] = round(budget * shares[b], 2)
         x["share_pct"] = round(100 * shares[b], 1)
         x["leg_risk_full_usd"] = round(x["share_usd"] / x["legs_per_day"], 2)
-        x["leg_risk_usd"] = round(x["leg_risk_full_usd"] * x["maturity"], 2)              # a thin record risks a thin leg
+        x["book_equity"] = round(book_equity(b), 2)
+        x["leg_cap_usd"] = round(x["book_equity"] * LEG_CAP_PCT / 100, 2)                   # no leg risks more than LEG_CAP_PCT of its book (2026-11-17)
+        x["leg_risk_usd"] = round(min(x["leg_risk_full_usd"] * x["maturity"], x["leg_cap_usd"]) if x["leg_cap_usd"] > 0 else x["leg_risk_full_usd"] * x["maturity"], 2)   # a thin record risks a thin leg
+        x["leg_capped"] = x["leg_risk_full_usd"] * x["maturity"] > x["leg_cap_usd"] > 0
         x["expected_usd_day"] = round(x["share_usd"] * x["record_r"] * x["maturity"], 2)
         expected += x["expected_usd_day"]
     pnl = day_pnl(now)
@@ -171,7 +182,7 @@ def compute(now: float | None = None) -> dict:
     return {"on": True, "pct": DAILY_RISK_PCT, "base_book": BASE_BOOK, "base_equity": round(equity, 2), "budget_usd": budget, "books": books,
             "day_pnl": pnl, "day_pnl_total": round(sum(pnl.values()), 2), "used_usd": used, "left_usd": round(max(0.0, budget - used), 2), "blocked": blocked,
             "target_usd": DAILY_TARGET_USD, "expected_usd_day": round(expected, 2), "needed_r": round(DAILY_TARGET_USD / budget, 3) if budget else None,
-            "floor_r": FLOOR_R, "record_n": RECORD_N, "maturity_n": MATURITY_N, "at": now}
+            "floor_r": FLOOR_R, "record_n": RECORD_N, "maturity_n": MATURITY_N, "leg_cap_pct": LEG_CAP_PCT, "at": now}
 
 
 def report(now: float | None = None, max_age_s: float = CACHE_S) -> dict:
@@ -196,8 +207,10 @@ def leg_risk(book: str, now: float | None = None) -> dict:
     x = rep["books"][book]
     mature = x["maturity"] >= 1.0
     return {"on": True, "risk_usd": x["leg_risk_usd"], "risk_full_usd": x["leg_risk_full_usd"], "maturity": x["maturity"], "record_total_n": x["record_total_n"],
+            "leg_cap_usd": x.get("leg_cap_usd"), "leg_capped": x.get("leg_capped", False),
             "share_usd": x["share_usd"], "legs_per_day": x["legs_per_day"], "record_r": x["record_r"],
             "budget_usd": rep["budget_usd"], "used_usd": rep["used_usd"], "blocked": rep["blocked"],
             "why": (f"risk budget: ${x['leg_risk_usd']:,.0f} a leg = {x['share_pct']:g}% of ${rep['budget_usd']:,.0f}/day (record {x['record_r']:+.3f}R over {x['record_n']}) "
                     f"÷ {x['legs_per_day']:g} legs a day" + ("" if mature else f" × {x['maturity']:.2f} ({x['record_total_n']} of {MATURITY_N} trades)")
+                    + (f", capped at {LEG_CAP_PCT:g}% of the book (${x['leg_cap_usd']:,.0f})" if x.get("leg_capped") else "")
                     + (f"; BLOCKED: −${rep['used_usd']:,.0f} on the day" if rep["blocked"] else f"; ${rep['left_usd']:,.0f} of the day left"))}

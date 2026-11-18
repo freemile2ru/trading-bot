@@ -42,7 +42,7 @@ from storage import state as kv
 logger = logging.getLogger("trading.capital")
 
 BASE = 10_000.0
-TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "226500"))      # $49k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06) + $10k burst shorts − $3k vol premium (2026-11-17) + $25k prop book (2026-11-09)
+TOTAL = float(os.getenv("CAPITAL_TOTAL_USD", "286500"))      # $49k across the books + $56.5k copy books + $30k mentor's book + $49k autotrader as executor (2026-11-01) + $10k burst books (2026-11-06) + $10k burst shorts − $3k vol premium (2026-11-17) + $25k prop book (2026-11-09) + $10k reversal index leg (2026-11-17) + $50k composite book (2026-11-18)
 TARGET_USD_DAY = float(os.getenv("DAILY_TARGET_USD", "500"))    # $500/day since 2026-11-14 (the user: "$500 return per day" on $5k of daily risk); $200 from 2026-10-29
 PLAN: dict[str, float] = {
     "carry": 8_000.0, "carry_q": 8_000.0, "events": 8_000.0,
@@ -53,6 +53,8 @@ PLAN: dict[str, float] = {
     "burst_up": 5_000.0, "burst_dip": 5_000.0,
     "burst_down": 5_000.0, "burst_rip": 5_000.0,                  # 2026-11-17: the short mirrors, new money, local only until a verdict
     "prop": 25_000.0,
+    "reversal_index": 10_000.0,                                   # 2026-11-17: the reversal signal in the alt index, local only until its verdict
+    "composite": 50_000.0,                                        # 2026-11-18: the single system — the short slices with a record as one book, local only until its verdict
 }
 # 2026-11-17: vol_premium retired (5 settled condors −$508, the open three −$216; see book_switches.RETIRED_BOOKS) — its $3,000
 # entry leaves the plan; what is left in its ledger ($2.2k) stays there as the record, nothing is moved by hand.

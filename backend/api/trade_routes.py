@@ -100,13 +100,19 @@ async def symbols():
 
 
 @router.get("/klines")
-async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), interval: str = "15m",
+async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}$"), interval: str = "15m",
                  days: float = Query(90, gt=0, le=365), source: str = Query("venue", pattern="^(venue|mainnet)$")):
     """`days` of history (default 3 months), paged backwards 1,500 bars at a time from Binance,
     capped at MAX_BARS so 1-minute charts stay responsive. `source=mainnet` reads mainnet whatever the venue: a paper
     book's trade followed on the chart (2026-11-17) is marked at mainnet prices, which the testnet does not have."""
     if interval not in INTERVALS:
         raise HTTPException(400, f"interval must be one of {sorted(INTERVALS)}")
+    from experiments import reversal_index
+    if symbol == reversal_index.SYMBOL:                   # the index book's synthetic symbol: bars from its components (2026-11-18)
+        want = min(MAX_BARS, 1500, int(days * 86400 / INTERVAL_S[interval]) + 1)
+        return await reversal_index.candles(interval, int(time.time() * 1000) - want * INTERVAL_S[interval] * 1000, int(time.time() * 1000))
+    if not symbol.endswith("USDT"):
+        raise HTTPException(400, "symbol must be a USDT perpetual")
     rest = MAINNET["rest"] if source == "mainnet" else _venue()["rest"]
     key = (rest, symbol, interval, days)
     hit = _klines_cache.get(key)
@@ -134,7 +140,12 @@ async def klines(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), interval:
 
 
 @router.get("/ticker")
-async def ticker(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}USDT$"), source: str = Query("venue", pattern="^(venue|mainnet)$")):
+async def ticker(symbol: str = Query(pattern=r"^[A-Z0-9]{2,20}$"), source: str = Query("venue", pattern="^(venue|mainnet)$")):
+    from experiments import reversal_index
+    if symbol == reversal_index.SYMBOL:
+        return await reversal_index.ticker()
+    if not symbol.endswith("USDT"):
+        raise HTTPException(400, "symbol must be a USDT perpetual")
     rest = MAINNET["rest"] if source == "mainnet" else _venue()["rest"]
     t, p = await asyncio.gather(get_json(f"{rest}/fapi/v1/ticker/24hr", params={"symbol": symbol}),
                                 get_json(f"{rest}/fapi/v1/premiumIndex", params={"symbol": symbol}))

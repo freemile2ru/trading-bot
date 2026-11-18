@@ -297,3 +297,43 @@ def test_a_copy_joining_a_coin_another_book_already_holds_is_cut_or_skipped(tmp_
         for k in ("leaders", "skipped"):
             kv.delete_sync(ct._k(k))
         kv.delete_sync(ct._k("seen", "L1"))
+
+
+def test_a_copy_never_risks_more_than_its_cap_and_the_budget_leg_is_not_multiplied_up(tmp_path, monkeypatch):
+    """2026-11-17: a LIT short risked 2.1% of its book — the budget's leg × 1.25 (shorts cell) × 1.25 (leader's week) — and
+    lost −$605 in 21 minutes. Under the budget the record multipliers only shrink, and the stop never costs more than
+    MAX_RISK_PCT of the book."""
+    from trading import risk_budget
+    rows = [_row("p1", "ETHUSDT", 5.0)]
+    w = _feed_book(tmp_path, monkeypatch, rows, {"ETHUSDT": 100.0})
+    monkeypatch.setattr(ct, "MAX_LEG_PCT", 100.0)                                                           # the budget instance's leg cap
+    monkeypatch.setattr(ct, "pattern_multiplier", lambda *a, **k: (1.25, "shorts +0.35R over 20 → ×1.25"))
+    monkeypatch.setattr(ct, "week_multiplier", lambda *a, **k: (1.25, "their week: 33/49 won → ×1.25"))
+    monkeypatch.setattr(risk_budget, "leg_risk", lambda book, now=None: {"on": True, "risk_usd": 300.0, "risk_full_usd": 300.0, "maturity": 1.0, "record_total_n": 116, "blocked": False, "why": "test"})
+    try:
+        out = asyncio.run(ct.mirror(NOW))
+        t = out["opened"][0]
+        assert t["size_x"] == pytest.approx(1.0) and t["risk_cap"]["size_x_full"] == pytest.approx(1.56)          # the ×1.56 never reached the leg
+        assert t["risk_cap"]["bound"] and t["risk_cap"]["pct"] == ct.MAX_RISK_PCT
+        assert t["notional_usd"] == pytest.approx(10_000 * ct.MAX_RISK_PCT / t["stop_pct"], rel=0.01)             # $5,000 at a 2% stop: the stop costs 1% of the book
+        assert t["risk_usd"] <= 10_000 * ct.MAX_RISK_PCT / 100 * 1.05                                               # (slippage on the fill is the only excess)
+    finally:
+        for k in ("leaders", "skipped"):
+            kv.delete_sync(ct._k(k))
+        kv.delete_sync(ct._k("seen", "L1"))
+
+
+def test_without_the_budget_the_multipliers_still_size_up_under_the_cap(tmp_path, monkeypatch):
+    rows = [_row("p1", "ETHUSDT", 5.0)]
+    w = _feed_book(tmp_path, monkeypatch, rows, {"ETHUSDT": 100.0})
+    monkeypatch.setattr(ct, "MAX_LEG_PCT", 100.0)
+    monkeypatch.setattr(ct, "pattern_multiplier", lambda *a, **k: (1.25, "up"))
+    monkeypatch.setattr(ct, "week_multiplier", lambda *a, **k: (1.25, "up"))
+    try:
+        t = asyncio.run(ct.mirror(NOW))["opened"][0]
+        assert t["size_x"] == pytest.approx(1.56) and not t["risk_cap"]["bound"]
+        assert t["notional_usd"] == pytest.approx(ct.leg_notional(10_000, t["stop_pct"], "crypto") * 1.5625, rel=0.01)
+    finally:
+        for k in ("leaders", "skipped"):
+            kv.delete_sync(ct._k(k))
+        kv.delete_sync(ct._k("seen", "L1"))

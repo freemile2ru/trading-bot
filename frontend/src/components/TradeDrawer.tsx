@@ -5,6 +5,7 @@ import { api } from '../utils/api'
 import { fmtUsd, fmtUsdSigned } from '../utils/format'
 import { SYSTEM_LABEL, type SystemKey, type TradeRecord } from '../types/overview'
 import { TradeDebriefBlock } from './DebriefViews'
+import { TradeReviewChart } from './TradeReviewChart'
 
 type Rec = Record<string, any>   // a stored trade: shape varies by system and age
 
@@ -151,7 +152,8 @@ function Story({ t }: { t: Rec }) {
   )
 }
 
-/** Side drawer with one trade's full record — opened from the Trades and History pages. */
+/** One trade's full record in a large centred modal — the chart like the Trade tab's, then the story (opened from the
+ *  Trades and History pages; a side drawer until 2026-11-18). */
 export function TradeDrawer({ system, id, onClose }: { system: SystemKey; id: string; onClose: () => void }) {
   const [t, setT] = useState<TradeRecord | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -170,9 +172,9 @@ export function TradeDrawer({ system, id, onClose }: { system: SystemKey; id: st
   }, [onClose])
   const r = t as Rec | null
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <aside className="relative w-full max-w-2xl h-full overflow-y-auto bg-gray-900 border-l border-gray-800 p-5 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-6" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <section className="relative w-[80vw] max-w-none h-[94vh] overflow-y-auto bg-gray-900 border border-gray-800 rounded-xl p-5 shadow-2xl">
         <div className="flex items-start gap-3 mb-4">
           <div>
             <div className="text-lg font-bold text-white">
@@ -184,6 +186,7 @@ export function TradeDrawer({ system, id, onClose }: { system: SystemKey; id: st
         </div>
         {err && <p className="text-sm text-red-400">{err}</p>}
         {!t && !err && <p className="text-sm text-gray-500">Loading…</p>}
+        {r && <div className="mb-5"><TradeReviewChart t={r} /></div>}
         {r && r.status !== 'open' && (
           <div className="mb-5">
             <div className="font-semibold text-gray-300 text-xs mb-1.5">Debrief</div>
@@ -191,7 +194,7 @@ export function TradeDrawer({ system, id, onClose }: { system: SystemKey; id: st
           </div>
         )}
         {r && <Story t={r} />}
-      </aside>
+      </section>
     </div>
   )
 }

@@ -1,6 +1,7 @@
 """FastAPI routes for the Crypto Trading Oracle."""
 
 import asyncio
+import re
 import json
 import logging
 import time
@@ -92,9 +93,14 @@ async def get_ohlcv(
     limit: int = Query(default=100, ge=10, le=500),
 ):
     """Return OHLCV candles for charting."""
-    symbol = await _validate_symbol(symbol)
     if interval not in VALID_INTERVALS:
         raise HTTPException(status_code=400, detail=f"Invalid interval '{interval}'. Valid: {sorted(VALID_INTERVALS)}")
+    from experiments import reversal_index
+    if symbol.upper() == reversal_index.SYMBOL:
+        sec = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400, "1w": 604800}[interval]
+        bars = await reversal_index.candles(interval, int(time.time() * 1000) - limit * sec * 1000, int(time.time() * 1000))
+        return {"symbol": reversal_index.SYMBOL, "interval": interval, "candles": bars[-limit:]}
+    symbol = await _validate_symbol(symbol)
     try:
         candles = await feeds.cached_ohlcv(symbol, interval, limit)
         return {
@@ -114,6 +120,49 @@ async def get_ohlcv(
         }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Binance fetch failed: {e}")
+
+
+@router.get("/ohlcv/{symbol}/range")
+async def get_ohlcv_range(
+    symbol: str,
+    start: float = Query(..., gt=0, description="unix seconds"),
+    end: float = Query(..., gt=0, description="unix seconds"),
+    interval: str | None = Query(None),
+):
+    """Candles around a window — a closed trade's review chart (2026-11-18). The interval is picked so the window plus
+    its padding is a few hundred bars unless the caller names one; the padding is half the window, at least 12 bars."""
+    symbol = symbol.upper()                      # the stock perps (AMDUSDT) are not spot pairs: the perp venue decides, not the spot list
+    if not re.fullmatch(r"[A-Z0-9_]{3,24}", symbol):
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if interval is not None and interval not in VALID_INTERVALS:
+        raise HTTPException(status_code=400, detail=f"Invalid interval '{interval}'. Valid: {sorted(VALID_INTERVALS)}")
+    steps = [("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1h", 3600), ("4h", 14400), ("1d", 86400)]
+    span = end - start
+    if interval is None:
+        interval, sec = next(((k, v) for k, v in steps if span * 2 / v <= 600), ("1d", 86400))
+    else:
+        sec = dict(steps).get(interval, 3600 if interval == "1w" else 3600)
+    pad = max(span * 0.5, 12 * sec)
+    from experiments import reversal_index
+    if symbol == reversal_index.SYMBOL:                   # the index book's synthetic symbol: bars from its components (2026-11-18)
+        bars = await reversal_index.candles(interval, int((start - pad) * 1000), int(min(end + pad, time.time()) * 1000))
+        if not bars:
+            raise HTTPException(status_code=404, detail=f"no candles for {symbol}")
+        return {"symbol": symbol, "interval": interval, "interval_s": sec, "candles": bars[-1500:]}
+    from data.derivatives_client import fetch_klines_range
+    try:
+        rows = await fetch_klines_range(symbol, interval, int((start - pad) * 1000), int(min(end + pad, time.time()) * 1000))
+    except Exception as e:
+        if "400" in str(e):
+            raise HTTPException(status_code=404, detail=f"no candles for {symbol} (not a Binance perpetual)")
+        raise HTTPException(status_code=502, detail=f"Binance fetch failed: {e}")
+    rows = rows[-1500:]
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no candles for {symbol} (not a Binance perpetual)")
+    return {"symbol": symbol, "interval": interval, "interval_s": sec,
+            "candles": [{"time": r[0] // 1000, "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]} for r in rows]}
 
 
 # ── Paper trading endpoints ───────────────────────────────────────────────────
@@ -370,7 +419,7 @@ async def trade_history(
 
 
 # Every system the Trades page can filter on — the trading books and the Lab's experiment books.
-SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|burst_up|burst_dip|prop|(stocks|futures)_(trend|rules|claude))$"
+SYSTEM_PATTERN = "^((main|auto|scalper|impulse)(_live)?|auto_rules|signals_claude|signals_rules|claude_swing|hold72|fade24|events|weekly_rs|cascade|carry|carry_q|unlocks|vol_premium|copy_trading|copy_stocks|copy_futures|copy_(crypto|stocks|futures)_(wide|fast|late)|multi_factor|auction|burst_up|burst_dip|burst_down|burst_rip|prop|reversal_index|composite|(stocks|futures)_(trend|rules|claude))$"
 
 
 @router.get("/trades/all")
@@ -592,6 +641,26 @@ async def prop_tick_now():
     """Read the account against its floors now (the loop does this every minute)."""
     from experiments import prop
     return {"tick": await prop.tick(), "status": await asyncio.to_thread(prop.status)}
+
+
+@router.get("/composite")
+async def composite_status():
+    """The One book tab: the single system's ledger against its floors, the daily record against the target, the legs, the log."""
+    from experiments import composite
+    return await asyncio.to_thread(composite.status)
+
+
+@router.post("/composite/reset")
+async def composite_reset(note: str = Query("reset", max_length=80)):
+    """Start the floors again from the plan's money: every open leg is closed, the record stays on the ledger."""
+    from experiments import composite
+    return await composite.reset(note)
+
+
+@router.post("/composite/tick")
+async def composite_tick_now():
+    from experiments import composite
+    return {"tick": await composite.tick(), "status": await asyncio.to_thread(composite.status)}
 
 
 @router.get("/auction")

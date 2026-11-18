@@ -36,6 +36,8 @@ const SYSTEM_TONE: Record<SystemKey, string> = {
   burst_dip: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-800 border-dashed',
   burst_down: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-800 border-dashed',
   burst_rip: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-800 border-dashed',
+  reversal_index: 'bg-cyan-950/60 text-cyan-300 border-cyan-800 border-dashed',
+  composite: 'bg-amber-950/60 text-amber-200 border-amber-700',
   prop: 'bg-lime-950/60 text-lime-300 border-lime-800 border-dashed',
   carry_q: 'bg-yellow-950/60 text-yellow-300 border-yellow-800 border-dashed',
   unlocks: 'bg-red-950/60 text-red-300 border-red-800 border-dashed',

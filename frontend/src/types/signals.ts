@@ -276,6 +276,13 @@ export interface AutoSummary extends Omit<Portfolio, 'open_trades' | 'closed_tra
     reversal_audit?: { n: number; actual: number; old_lock_cf: number; new_lock_cf: number; sized_n: number; sized_pnl: number
                        by_exit: Record<string, { n: number; pnl: number; wins: number }>
                        tight_lock?: LockShadow; lock_shadows?: Record<string, LockShadow> }
+    /** The side switch (2026-11-17): listed books open no long until their refused longs earn the side back. */
+    sides?: { rule: string; back_n: number; back_pct: number
+              books: Record<string, { longs_off: boolean; record: { n: number; settled: number; mean_pct: number | null; halves_pct: (number | null)[]; wins: number; earned: boolean } }> }
+    /** The reversal signal's index leg (experiments/reversal_index.py, 2026-11-17): paired with the coin legs of each slot, in R. */
+    index_leg?: { n: number; verdict_n: number; min_gap_r: number; verdict: string; open: number; stop_pct: number
+                  index: { n: number; mean: number | null; t: number | null }; coin: { n: number; mean: number | null; t: number | null }
+                  diff: { n: number; mean: number | null; t: number | null }; halves: (number | null)[]; index_pnl: number; coin_pnl: number }
     lanes: { lane: string; label: string; mult: number; why: string; open: number; enabled?: boolean
              all: LaneCell; regime_cell: LaneCell; regimes: Record<string, LaneCell>
              sides?: Record<'long' | 'short', { mult: number; all: LaneCell; regime: LaneCell }> }[]

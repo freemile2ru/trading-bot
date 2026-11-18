@@ -25,6 +25,7 @@ const RetiredPage = lazy(() => import('./components/RetiredPage').then(m => ({ d
 const LabPage = lazy(() => import('./components/LabPage').then(m => ({ default: m.LabPage })))
 const AuctionPage = lazy(() => import('./components/AuctionPage').then(m => ({ default: m.AuctionPage })))
 const PropPage = lazy(() => import('./components/PropPage').then(m => ({ default: m.PropPage })))
+const CompositePage = lazy(() => import('./components/CompositePage').then(m => ({ default: m.CompositePage })))
 const ControlPage = lazy(() => import('./components/ControlPage').then(m => ({ default: m.ControlPage })))
 const CopyPage = lazy(() => import('./components/CopyPage').then(m => ({ default: m.CopyPage })))
 const MarketsPage = lazy(() => import('./components/MarketsPage').then(m => ({ default: m.MarketsPage })))
@@ -34,12 +35,12 @@ const NewsPage = lazy(() => import('./components/NewsPage').then(m => ({ default
 const Portfolio = lazy(() => import('./components/Portfolio').then(m => ({ default: m.Portfolio })))
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
-type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'prop' | 'control' | 'lab' | 'retired' | 'live' | 'books'
+type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'prop' | 'one' | 'control' | 'lab' | 'retired' | 'live' | 'books'
 type Focus = { system: SystemKey; id: string }
 
 export default function App() {
   // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
-  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'mentor', 'prop', 'control', 'lab', 'retired', 'live', 'books', 'portfolio']
+  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'mentor', 'prop', 'one', 'control', 'lab', 'retired', 'live', 'books', 'portfolio']
   const [tab, setTabState] = useState<Tab>(() => {
     const h = window.location.hash.slice(1).split('/')[0] as Tab
     return TABS.includes(h) ? h : 'all'
@@ -303,6 +304,7 @@ export default function App() {
             ['copy', Users, 'Copy'],
             ['mentor', Crosshair, 'Mentor'],
             ['prop', Trophy, 'Prop'],
+            ['one', Layers, 'One book'],
             ['control', FlaskConical, 'Control'],
             ['lab', Microscope, 'Lab'],
             ['retired', Archive, 'Retired'],
@@ -401,6 +403,7 @@ export default function App() {
           {tab === 'copy' && <CopyPage />}
           {tab === 'mentor' && <AuctionPage />}
           {tab === 'prop' && <PropPage />}
+          {tab === 'one' && <CompositePage />}
           {tab === 'control' && <ControlPage />}
           {tab === 'books' && <BooksPage />}
           {tab === 'retired' && <RetiredPage />}

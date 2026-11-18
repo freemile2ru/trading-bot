@@ -36,7 +36,7 @@ export interface PropStatus {
   assess: PropAssess
   halted_day: string | null; halt_why: string | null; halts: number; flattens: number
   ours: { halt_daily_pct: number; flatten_daily_pct: number; halt_dd_pct: number; flatten_dd_pct: number
-          risk_pct: Record<string, number>; max_open_by_source: Record<string, number> }
+          risk_pct: Record<string, number>; max_open_by_source: Record<string, number>; max_margin_pct?: number; max_margin_usd?: number }
   leverage: { default: number; overrides: Record<string, number> }
   open: PropOpen[]
   closed_n: number; closed_pnl: number; wins: number

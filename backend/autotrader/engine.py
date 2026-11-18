@@ -30,7 +30,7 @@ from autotrader import lanes, strategy
 from storage import state as kv
 from oracle.claude_oracle import synthesize_trade
 from scanner import bus, escalation
-from trading import exits, monitor
+from trading import exits, monitor, sides
 from storage.db import SWING_DB
 from trading import book_switches, coin_lock, guards, regime
 from experiments import books as experiment_books
@@ -510,6 +510,9 @@ async def _enter(
         levels = {**atr_levels, "sl_pct": abs(entry - atr_levels["stop_loss"]) / entry * 100}
     else:
         levels = strategy.build_levels(direction, entry, scan, fast)
+    if direction == "long" and sides.longs_off("auto:ta"):                                          # the side switch (2026-11-17)
+        logger.info("Auto-entry long %s skipped — %s", scan["symbol"], await sides.refuse("auto:ta", scan["symbol"], time.time(), price))
+        return None
     lane_mult, lane_why = await _lane_mult("ta", scan["symbol"], direction)
     size = strategy.position_size_pct(levels["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * lane_mult
     if size < 1.0:
@@ -977,6 +980,9 @@ async def _daily_minimum(by_symbol: dict[str, dict], held: set[str], orders: dic
         note(f"{scan['symbol']}: no {'price' if not price else 'fast-timeframe data'}")
         return None
     lv = strategy.build_levels(direction, price, scan, fast)
+    if direction == "long" and sides.longs_off("auto:ta"):                                          # the side switch (2026-11-17)
+        note(f"long {scan['symbol']} skipped: {await sides.refuse('auto:ta', scan['symbol'], now, price)}")
+        return None
     lane_mult, lane_why = await _lane_mult("ta", scan["symbol"], direction)
     size = strategy.position_size_pct(lv["sl_pct"], _gross_pct()) * guards.risk_mult(_v().name) * DAILY_MIN_RISK_X * lane_mult
     if size <= 0:
@@ -1115,6 +1121,9 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         if waited:
             logger.info("%s leg %s %s skipped: %s", lane, direction, symbol, waited)
             return None
+        if direction == "long" and sides.longs_off(f"auto:{lane}"):                                    # the side switch (2026-11-17)
+            logger.info("%s leg long %s skipped: %s", lane, symbol, await sides.refuse(f"auto:{lane}", symbol, time.time(), price))
+            return None
         if direction == "long":
             from experiments import entry_cells                                                      # the live long gate (2026-11-14)
             gated = await entry_cells.gate_long(f"auto:{lane}", symbol, time.time(), price)
@@ -1169,6 +1178,12 @@ async def _open_mirror_leg(w: PaperWallet, symbol: str, direction: str, stop_pct
         return None
     if expires_at:
         await asyncio.to_thread(w.annotate, t["id"], expires_at=expires_at)        # the book closes it first
+    if not _is_hedge(extra) and lane in ("weekly", "factor", "unlocks", "events"):
+        try:
+            from experiments import composite                                     # the one book mirrors the lane's short (2026-11-18)
+            await composite.mirror(lane, t)
+        except Exception as e:
+            logger.warning("Composite book %s mirror failed: %s", lane, e)
     return t
 
 
@@ -1400,6 +1415,11 @@ async def _reversal_lane(scans: list[dict]) -> None:
         await prop.mirror_reversal(picks, scores, now)
     except Exception as e:
         logger.warning("Prop book reversal mirror failed: %s", e)
+    try:
+        from experiments import composite                 # the one book takes the short picks straight from the scores (2026-11-18)
+        await composite.mirror_reversal(picks, scores, now)
+    except Exception as e:
+        logger.warning("Composite book reversal mirror failed: %s", e)
     if "long" not in REVERSAL_SIDES:
         try:
             from experiments import entry_cells               # the long leg the lane does not take, written down and scored 24h later
@@ -1462,6 +1482,12 @@ async def _lanes_report() -> dict:
     rep["executor"] = EXECUTOR
     for l in rep["lanes"]:
         l["enabled"] = on.get(l["lane"], True)
+    try:
+        rep["sides"] = await asyncio.to_thread(sides.report)                                          # the side switch (2026-11-17)
+        from experiments import reversal_index
+        rep["index_leg"] = await asyncio.to_thread(reversal_index.audit)                              # the index leg beside the coin legs (2026-11-17)
+    except Exception as e:
+        logger.warning("Lanes report extras failed: %s", e)
     return rep
 
 

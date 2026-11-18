@@ -81,6 +81,7 @@ export function PropPage() {
               ({d.leverage.default}×, {Object.entries(d.leverage.overrides).map(([k, v]) => `${k} ${v}×`).join(', ')}), its {d.plan.max_open} positions, its
               floors. The book acts first — no entries at {d.ours.halt_daily_pct}% of a day or {d.ours.halt_dd_pct}% down, everything closed at
               {' '}{d.ours.flatten_daily_pct}% or {d.ours.flatten_dd_pct}% — and records where the firm would have ended the account.
+              {d.ours.max_margin_pct != null && <> No leg puts up more than {d.ours.max_margin_pct}% of the account as margin ({fmtUsd(d.ours.max_margin_usd ?? 0, 0)}).</>}
               {' '}<a className="text-blue-400 hover:underline" href={d.plan.source} target="_blank" rel="noreferrer">rulebook</a>
             </p>
           </div>

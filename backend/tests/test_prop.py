@@ -40,8 +40,12 @@ def test_the_floors_and_our_actions_sit_where_the_rulebook_says():
 def test_sizing_risks_the_registered_fraction_and_respects_the_leverage_cap():
     notional, lev = R.size(25_000, 100.0, 90.0, "reversal", 2)                       # 0.4% at a 10% stop → $1,000
     assert notional == 1_000.0 and lev == 2
-    notional, lev = R.size(25_000, 100.0, 99.8, "auction", 2)                        # 1% at a 0.2% stop would be $125k: capped at cap/2 of equity
-    assert notional == 25_000.0 and lev == 2
+    notional, lev = R.size(25_000, 100.0, 99.8, "auction", 2)                        # 1% at a 0.2% stop would be $125k: the margin cap binds
+    assert notional == 1_000.0 and lev == 2                                           # 2% of the account as margin at 2× = $1,000 of notional
+    notional, lev = R.size(25_000, 100.0, 98.54, "auction", 2)                       # the AMD trade of 11-17 (1.46% stop) wanted $17.1k
+    assert notional == 1_000.0 and R.margin_cap(25_000, 5) == 2_500.0               # BTC/ETH at 5× carry $2,500 on the same $500 of margin
+    notional, lev = R.size(25_000, 100.0, 95.0, "reversal", 2)                       # a 5% stop at 0.4%: $2,000 wanted, $1,000 allowed
+    assert notional == 1_000.0
     assert R.quantity(1_000.0, 123.456, 2) == "8.10" and R.quantity(100.0, 0.00123, 0) == "81300"
 
 
@@ -98,8 +102,27 @@ def test_the_books_own_caps_hold_before_the_firms(book):
     assert refused and "our cap 4" in refused[-1]["why"]
 
 
-def test_a_losing_day_halts_then_flattens_and_the_firms_breach_is_recorded(book):
+def test_a_leg_never_puts_up_more_than_the_margin_cap(book):
     w, prices = book
+    now = time.time()
+    prices["NVDAUSDT"] = 200.0
+
+    async def u(now=None):
+        return UNIVERSE
+    prop.universe = u
+    # an auction long at a 1.5% stop wants $16.7k of notional for its 1% of risk (the AMD trade of 11-17): $1,000 at 2× is what it gets
+    t = asyncio.run(prop.mirror_auction("NVDAUSDT", "long", 200.0, 197.0, 210.0, now + 7200, "auction test", {"level_name": "ONH"}, now))
+    assert t and t["notional_usd"] == pytest.approx(1_000.0, rel=0.01) and t["margin_usd"] == pytest.approx(500.0, rel=0.01)
+    assert t["margin_cap"]["bound"] and t["margin_cap"]["pct"] == 2.0 and t["margin_cap"]["wanted_notional"] == pytest.approx(16_667, rel=0.01)
+    assert t["risk_usd"] == pytest.approx(15.0, abs=0.5)                                       # fees ride on the stop
+    s = prop.status()
+    assert s["ours"]["max_margin_pct"] == 2.0 and s["ours"]["max_margin_usd"] == 500.0 and s["open"][0]["margin"] == pytest.approx(500.0, rel=0.01)
+    assert [e for e in s["log"] if e["event"] == "opened"][0]["margin_capped"] is True
+
+
+def test_a_losing_day_halts_then_flattens_and_the_firms_breach_is_recorded(book, monkeypatch):
+    w, prices = book
+    monkeypatch.setattr(R, "MAX_MARGIN_PCT", 25.0)      # the floors are the subject here: let the auction legs run at their risk size (the cap has its own tests)
     now = time.time()
     coins = ["ZECUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]
     for c in coins:

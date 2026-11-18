@@ -17,6 +17,10 @@ Our own rules, pre-registered 2026-11-09 before the book's first trade: the firm
 acts first — no new entries once today's loss reaches 1.5% or the drawdown 4%; everything closed at 2.25% today or 5%
 total (three quarters of each limit, room for the minute between ticks). A reversal leg risks 0.4% of the account at
 its 10% stop, an auction trade 1% at its level stop; at most 4 reversal legs and 2 auction trades of the firm's 6.
+2026-11-18: no leg puts up more than MAX_MARGIN_PCT of the account as margin (2% = $500 on the $25K card, the reversal
+legs' usual $1,000 of notional at 2×). An AMD auction short on 11-17 was sized to its 1% of risk against a 1.46% level
+stop: $17,785 of notional, $8,892 of margin — 70% of the account on one name — and lost $283 when the level broke. The
+risk rule stays; the margin cap binds first whenever the stop is tighter than RISK_PCT × leverage / MAX_MARGIN_PCT.
 The equity the rules see is the firm's: starting balance + realised P&L since the attempt began + floating P&L.
 """
 from __future__ import annotations
@@ -32,6 +36,7 @@ LEVERAGE = {"BTC": 5, "ETH": 5}
 HALT_DAILY_PCT, FLATTEN_DAILY_PCT = 1.5, 2.25         # ours, of the firm's 3%
 HALT_DD_PCT, FLATTEN_DD_PCT = 4.0, 5.0                # ours, of the firm's 6%
 RISK_PCT = {"reversal": 0.4, "auction": 1.0}          # % of the account at the stop, per source
+MAX_MARGIN_PCT = 2.0                                  # of the account as margin on one leg: $500 on $25K (2026-11-18, the AMD trade)
 MAX_OPEN_BY_SOURCE = {"reversal": 4, "auction": 2}
 # Binance's "1000X" perps are Hyperliquid's "kX".
 THOUSANDS = {"1000PEPE": "kPEPE", "1000SHIB": "kSHIB", "1000BONK": "kBONK", "1000FLOKI": "kFLOKI", "1000LUNC": "kLUNC",
@@ -98,13 +103,18 @@ def target_progress_pct(balance: float, start: float) -> float:
     return round((balance - start) / (start * PLAN["target_pct"] / 100) * 100, 1) if start else 0.0
 
 
+def margin_cap(equity: float, cap: int) -> float:
+    """The most notional a leg may carry at the asset's leverage cap with MAX_MARGIN_PCT of the account as margin."""
+    return equity * MAX_MARGIN_PCT / 100 * cap
+
+
 def size(equity: float, px: float, stop_px: float, source: str, cap: int) -> tuple[float, int]:
-    """Notional and leverage for a leg: RISK_PCT of the account at the stop, never more than half the leverage cap's
-    worth of the account (two positions of one class can't outrun the margin), at the asset's cap."""
+    """Notional and leverage for a leg: RISK_PCT of the account at the stop, never more than margin_cap() of notional
+    (MAX_MARGIN_PCT of the account as margin at the asset's leverage cap), at the asset's cap."""
     stop_frac = abs(px - stop_px) / px if px else 0.0
     if stop_frac <= 0:
         return 0.0, cap
-    notional = min(equity * RISK_PCT[source] / 100 / stop_frac, equity * cap / 2)
+    notional = min(equity * RISK_PCT[source] / 100 / stop_frac, margin_cap(equity, cap))
     return round(notional, 2), cap
 
 

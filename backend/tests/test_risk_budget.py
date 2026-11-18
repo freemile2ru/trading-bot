@@ -24,6 +24,7 @@ def test_the_budget_splits_by_record_with_a_floor_and_stops_the_day(monkeypatch)
     rows = {"auto:reversal": _closed(20, 0.016, 150.0, now), "copy_trading": _closed(20, 0.18, 165.0, now), "copy_stocks": _closed(9, -0.1, 165.0, now)}
     monkeypatch.setattr(rb, "closed_trades", lambda b: rows[b])
     monkeypatch.setattr(rb, "base_equity", lambda: 50_000.0)
+    monkeypatch.setattr(rb, "book_equity", lambda b: 50_000.0)
     monkeypatch.setattr(rb, "day_pnl", lambda now_: {"auto": -1200.0, "copy_trading": 300.0, "copy_stocks": 0.0})
     monkeypatch.setattr(rb, "ENABLED", True)
     monkeypatch.setattr(rb, "DAILY_RISK_PCT", 10.0)
@@ -87,3 +88,27 @@ def test_a_thin_record_risks_a_thin_leg(monkeypatch):
     assert leg["maturity"] == 0.3 and leg["risk_usd"] == b["copy_stocks"]["leg_risk_usd"] and leg["risk_full_usd"] == b["copy_stocks"]["leg_risk_full_usd"]
     assert "× 0.30 (12 of 40 trades)" in leg["why"]
     assert "×" not in rb.leg_risk("auto:reversal", now)["why"]
+
+
+def test_no_leg_risks_more_than_the_cap_share_of_its_own_book(monkeypatch):
+    """2026-11-17: the budget gave copy_stocks $2.5k a leg on a $33k book; a LIT copy risked 2.1% of its book and lost it in 21 minutes."""
+    now = 1_794_700_000.0
+    def slow(n, r, risk):                                                                   # one leg every eight hours: ~3 legs a day
+        return [{"id": f"s{i}", "pnl_usd": r * risk, "risk_usd": risk, "opened_ts": now - i * 28_800} for i in range(n)]
+    rows = {"auto:reversal": slow(40, 0.02, 150.0), "copy_trading": slow(40, 0.02, 165.0), "copy_stocks": slow(40, 0.5, 165.0)}
+    monkeypatch.setattr(rb, "closed_trades", lambda b: rows[b])
+    monkeypatch.setattr(rb, "base_equity", lambda: 50_000.0)
+    monkeypatch.setattr(rb, "book_equity", lambda b: {"auto:reversal": 50_000.0, "copy_trading": 30_000.0, "copy_stocks": 33_000.0}[b])
+    monkeypatch.setattr(rb, "day_pnl", lambda now_: {})
+    monkeypatch.setattr(rb, "ENABLED", True)
+    monkeypatch.setattr(rb, "DAILY_RISK_PCT", 10.0)
+    monkeypatch.setattr(rb, "LEG_CAP_PCT", 1.0)
+    rep = rb.compute(now)
+    b = rep["books"]
+    assert b["copy_stocks"]["leg_cap_usd"] == 330.0 and b["copy_stocks"]["leg_capped"] and b["copy_stocks"]["leg_risk_usd"] == 330.0
+    assert b["copy_stocks"]["leg_risk_full_usd"] > 330.0
+    assert not b["auto:reversal"]["leg_capped"] and b["auto:reversal"]["leg_risk_usd"] == pytest.approx(b["auto:reversal"]["leg_risk_full_usd"], abs=0.01)
+    rb._cache.update(at=0.0, report=None)
+    monkeypatch.setattr(rb, "report", lambda now=None, max_age_s=0: rep)
+    leg = rb.leg_risk("copy_stocks", now)
+    assert leg["risk_usd"] == 330.0 and leg["leg_capped"] and "capped at 1% of the book ($330)" in leg["why"]

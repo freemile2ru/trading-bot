@@ -125,6 +125,10 @@ LEG_PCT = float(os.getenv("COPY_LEG_PCT", "10"))                  # floor: 10% o
 from trading import risk_budget as _risk_budget                   # the daily risk budget (2026-11-14) scales the copy caps with it
 MAX_LEG_PCT = float(os.getenv("COPY_MAX_LEG_PCT", "100" if _risk_budget.ENABLED else "25"))   # cap: a leg is never more than this share of the book (a quarter until 2026-11-14; a $1.7k risk at a 2% stop is 2.5× a $33k book, so the whole book under the budget)
 MAX_GROSS_PCT = float(os.getenv("COPY_MAX_GROSS_PCT", "300" if _risk_budget.ENABLED else "150"))   # everything open in a book together (1.5× its equity until 2026-11-14)
+MAX_RISK_PCT = float(os.getenv("COPY_MAX_RISK_PCT", "1"))        # a copy never risks more than this share of the book at its stop, whatever the budget and the record multipliers
+                                                                   # say (2026-11-17: a LIT short on the research instance risked $568 = 2.1% of a $29k book — the budget's $358 leg
+                                                                   # × 1.25 for the shorts cell × 1.25 for the leader's week — and lost −$605 in 21 minutes; replayed on both
+                                                                   # ledgers the cap removes 18 of the research book's 24 legs over $400 and costs prod ~$10 over 45 copies)
 DAY_LOSS_HALT_PCT = float(os.getenv("COPY_DAY_LOSS_HALT_PCT", "3"))   # a book that has lost this much of itself today (closed) opens nothing more until the next UTC day
 # Sized by record (2026-11-04, the lane allocator's idea applied to the people we copy): on the research machine one
 # Hyperliquid wallet cost −$1,789 over 7 copies and the venue −$2,704 over 13, while Lighter's 43 copies lost −$561.
@@ -1129,13 +1133,19 @@ async def mirror(now: float | None = None) -> dict:
                 cap = min(MAX_LEG_PCT, MAX_LEG_PCT_BY_MARKET.get(market, MAX_LEG_PCT))
                 from trading import risk_budget
                 rb = risk_budget.leg_risk(book, now)                                                    # the day's budget share per copy (2026-11-14)
+                size_x_full = size_x
+                if rb.get("on") and size_x > 1.0:                                                      # under the budget the record multipliers only shrink (2026-11-17): the
+                    size_x = 1.0                                                                       # budget already sized the leg by the record, ×1.56 on top double-counted it
                 if rb.get("blocked"):
                     _record_skip({"ts": now, "leader": name, "venue": L.get("venue"), "symbol": r["symbol"], "side": r["side"], "position_id": r["position_id"],
                                   "variant": variant, "reason": rb["why"], "mark": mark, "leader_entry": r["entry"],
                                   "moved_pct": round(moved, 3), "age_h": round(age_h, 1), "consensus": n_agree})
                     logger.info("Copy %s %s skipped: %s", r["side"], r["symbol"], rb["why"])
                     continue
-                notional = min(leg_notional(equity, stop, market, rb.get("risk_usd")) * size_x, equity * cap / 100)   # sized up, never past the cap
+                risk_cap_notional = equity * MAX_RISK_PCT / stop                                        # the stop costs at most MAX_RISK_PCT of the book (2026-11-17)
+                wanted = min(leg_notional(equity, stop, market, rb.get("risk_usd")) * size_x, equity * cap / 100)   # sized up, never past the cap
+                notional = min(wanted, risk_cap_notional)
+                risk_cap = {"pct": MAX_RISK_PCT, "bound": wanted > risk_cap_notional, "wanted_notional": round(wanted, 2), "size_x_full": round(size_x_full, 2)}
                 from ops import calendar
                 from trading import capital
                 room = capital.coin_room(r["symbol"], r["side"], notional, book)
@@ -1154,7 +1164,7 @@ async def mirror(now: float | None = None) -> dict:
                                         "be_at_pct": BE_PCT if BE_LIVE else None,
                                         "leader_id": L["id"], "leader": name, "venue": L.get("venue"), "leader_position_id": r["position_id"],
                                         "leader_entry": r["entry"], "leader_leverage": r.get("leverage"), "moved_pct_at_entry": round(moved, 3),
-                                        "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why,
+                                        "age_h_at_entry": round(age_h, 1), "consensus": n_agree, "size_x": round(size_x, 2), "stop_pct": stop, "entry_note": why, "risk_cap": risk_cap,
                                         "venue_x": venue_x, "venue_why": venue_why, "pattern_x": pattern_x, "pattern_why": pattern_why,
                                         "week_x": week_x, "week_why": week_why,
                                         "second_look_view": look["view"], "second_look_why": look["why"], "second_look_x": look["x"],
@@ -1165,6 +1175,12 @@ async def mirror(now: float | None = None) -> dict:
                 else:
                     opened.append(t)
                     logger.info("Copied %s [%s] into %s: %s %s @ %.6g (%d leader(s) agree) — %s", name, L.get("venue"), book, r["side"], r["symbol"], mark, n_agree, why)
+                    if book == "copy_stocks":
+                        try:
+                            from experiments import composite                     # the one book mirrors the stock-perp short (2026-11-18)
+                            await composite.mirror("copy_stocks", t)
+                        except Exception as e:
+                            logger.warning("Composite book copy_stocks mirror failed: %s", e)
         _mark_seen(L["id"], seen)
     # exits: the leader closed (we close), the leader halved (we close REDUCE_FRAC once and ride the rest), the backstop clock
     for (pid, _variant), (w, t) in ours.items():
@@ -1442,7 +1458,7 @@ def _why_not(by_leader: dict, open_: list[dict]) -> dict:
 
 def config() -> dict:
     return {"leaders_n": LEADERS_N, "wide_n": WIDE_N, "max_leader_leverage": MAX_LEADER_LEVERAGE, "max_per_leader": MAX_PER_LEADER, "pattern_n": PATTERN_N,
-            "pattern_up": PATTERN_UP, "pattern_down": PATTERN_DOWN, "week_n": WEEK_N, "week_days": WEEK_DAYS, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
+            "pattern_up": PATTERN_UP, "pattern_down": PATTERN_DOWN, "week_n": WEEK_N, "week_days": WEEK_DAYS, "fast_hold_h": FAST_HOLD_H, "late_size_x": LATE_SIZE_X, "venues": list(VENUES), "leg_pct": LEG_PCT, "risk_pct": RISK_PCT, "max_risk_pct": MAX_RISK_PCT, "max_leverage": MAX_LEVERAGE, "max_open": MAX_OPEN, "disaster_pct": DISASTER_PCT,
             "stop_x": STOP_X, "stop_pct_min": STOP_PCT_MIN, "max_leg_pct": MAX_LEG_PCT, "max_gross_pct": MAX_GROSS_PCT, "day_loss_halt_pct": DAY_LOSS_HALT_PCT,
             "leader_probation_n": LEADER_PROBATION_N, "leader_probation_days": LEADER_PROBATION_DAYS, "venue_measure_n": VENUE_MEASURE_N, "venue_measure_x": VENUE_MEASURE_X, "max_leg_pct_by_market": MAX_LEG_PCT_BY_MARKET, "fee_gate_x": FEE_GATE_X, "round_trip_pct": round(round_trip_pct(), 3), "reduce_frac": REDUCE_FRAC,
             "late_age_frac": LATE_AGE_FRAC, "late_move_frac": LATE_MOVE_FRAC, "adverse_frac": ADVERSE_FRAC, "max_hold_h": MAX_HOLD_H, "consensus_x": CONSENSUS_X, "be_pct": BE_PCT, "be_live": BE_LIVE, "sides": COPY_SIDES,

@@ -59,3 +59,36 @@ Local longs overall: 351 trades, −$7,283, 43% won; the 47 longs that lasted un
 2. **Express the reversal signal in the index or majors**, or add an index leg, when the index-shadow verdict lands (8 episodes away).
 3. **Retire cascade at 120** per its rule; nothing more to learn from it.
 4. **Reversal exits**: the hold_check at ~9h is the drag; the ATR trail is live since 11-14 — read its 40-leg record before touching hold_check.
+
+## Addendum, 22:40 UTC — the LIT copy and the per-leg cap
+
+A LIT short in the research copy book (opened 22:11, stopped 22:32) lost −$605 = 2.1% of its $29k book in 21 minutes. The leg was the risk budget's $358 (43.5% of the day on a +0.031R record ÷ 5.93 legs) × 1.25 for the shorts cell × 1.25 for the leader's week = $568 at the 2% stop; the second look said "doubt" (chasing, −4.3% below its 24h VWAP) but halves only in veto mode, and prod's audit still says the doubted copies win (+$265 over 23 vs −$367 over 10 agreed), so that stays.
+
+Replayed on both ledgers (every closed copy, P&L scaled with the notional):
+
+| rule | local 156 copies (net −$4,089) | prod 45 copies (net +$247) |
+|---|---|---|
+| multipliers ≤ 1 under the budget | +$96, 6 legs | −$66, 2 legs |
+| stop ≤ 1% of the book | +$748, 24 legs; legs over $400 24 → 6; worst −$717 → −$621 | −$10, 1 leg |
+| stop ≤ 1.5% of the book | +$278, 19 legs; legs over $400 24 → 20 | −$7 |
+| both (1%) | +$603 | −$71 |
+
+Built (candidate 1's companion): `COPY_MAX_RISK_PCT` = 1 — a copy's stop never costs more than 1% of the book, after every multiplier; and under the risk budget the record multipliers only shrink the leg (the budget already sized it by the record). Each copy stamps `risk_cap` (pct, bound, wanted_notional, size_x_full). Prod pays about $70 over its 45 copies for the cap (NEAR and PLTR were sized up and won); the research book would have kept $600 and lost its $400–1,000 bucket almost entirely.
+
+## Addendum, 2026-11-18 00:15 UTC — three of the candidates built (the user: "go ahead")
+
+1. **The reversal signal's index leg** (`experiments/reversal_index.py`, book `reversal_index`, $10k, local only): when the reversal lane opens a slot's legs, one ALTIDX leg (an equal-weight index of the shadow's twenty alts, rebased to 100 at the book's first tick; the book marks itself at the level each minute) in the slot's direction at one coin leg's risk, a 4% stop, closed when the slot's last coin leg closes or at the 72h cap. Every index leg is paired with its slot's coin legs in R; verdict at 40 slots: "index better" (≥ +0.1R a slot, t ≥ 2, both halves agree) is the case for moving the lane to the index. A slot first seen more than 30 minutes old (a restart) is not taken.
+2. **The side switch** (`trading/sides.py`): `auto:ta`, `auto:weekly`, `auto:factor` and the `weekly_rs` book open no long. Each refused long is written down at its price (`entry_cells.refuse_long`, flag `side_off`) and scored 24h on; longs return to a book once its last 20 refused longs average ≥ +0.3% net with both halves positive. Not switched: the reversal lane (its own long shadow), unlocks and events (short by construction), cascade (retires at 120), the burst longs (their short mirrors are the comparison), hedge legs.
+3. **The budget's per-leg cap** (`risk_budget.LEG_CAP_PCT` = 1): no leg risks more than 1% of its own book, after the record share and maturity. Locally it binds on both copy books (copy_trading $358 → $286, copy_stocks → $326); on prod it will bind on copy-stocks ($756 → about $330). The reversal lane's $240 on the $50k ledger is under its $500 cap.
+
+Pre-registration: the index leg's verdict rule above; the side switch's return rule above. Neither has a replay (the first is forward by design, the second is the copy rule's shape on records that start today).
+
+## Addendum, 2026-11-18 — the prop book's AMD trade and the margin cap
+
+The research prop book (local) shorted AMD from the auction source at 17:45 UTC on 11-17 and was stopped at 21:03 for −$283, 1.1% of the $25k account. The leg was sized by the pre-registered rule — 1% of the account at the level stop — and the level stop was 1.46% away, so the rule asked for $17,785 of notional, $8,892 of margin at 2×: 70% of the account on one name, against a median margin of $504 across the book's other 24 legs (the reversal legs: 0.4% at a 10% stop = $1,000 of notional). The only other bound, half the leverage cap's worth of the account ($25k), never touched it. The same AMD trade in the Mentor book lost −$334 on $21k.
+
+Built: `prop_rules.MAX_MARGIN_PCT` = 2 — no leg puts up more than 2% of the account as margin ($500 on the $25K card: $1,000 of notional at 2×, $2,500 on BTC/ETH at 5×). The risk rule stays and the margin cap binds first whenever the stop is tighter than risk × leverage ÷ 2% (every auction trade, and a reversal leg only if its stop were under 5%). Each leg stamps `margin_cap` (pct, bound, wanted_notional, margin_usd); the log and the Prop tab show it.
+
+Replay of the local book's 25 closed legs at the cap: only AMD changes, −$283 → −$16 (its $508 of margin); the book's net +$135 → +$402. With six legs at the cap the book's worst case from open positions is about 1.76% of the account (four reversal stops at $100 and two auction stops at ~$20), under our 2.25% flatten floor — the firm's daily limit can no longer be reached by open legs alone. The ledger is left as the record (the trade was taken under the registered rule).
+
+Production: the prop book has not opened a trade in 9.5 days — `docker-compose.yml`'s `PROMOTED_BOOKS` was never updated when the book was promoted on 11-09 (the code default had it, the compose override did not), so the wallet sat at the $10k seed and the book waited for funding. Added to the compose list; the next deploy funds it at $25k and it starts.

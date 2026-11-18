@@ -152,6 +152,20 @@ BOOKS = [
                     "2× leverage with 5× on BTC/ETH) on a book of the account's size, flattening at our own tighter floors. "
                     "Paper here; PROP_EXEC=beta|live mirrors it to the firm's API once there is an account (2026-11-09).",
      "off_means": "No new legs; open ones run to their stop, target or expiry; the account ledger keeps ticking."},
+    {"name": "reversal_index", "label": "Reversal · index leg (the signal in the alt index)", "kind": "experiment",
+     "description": "The reversal lane's timing expressed in the market instead of the picked coin (2026-11-17): when the lane opens a "
+                    "slot's legs, one short (or long) in ALTIDX — an equal-weight index of the shadow's twenty alts, rebased to 100 — at "
+                    "one coin leg's risk, a 4% stop, closed when the slot's last coin leg closes. Paired with the coin legs in R; the "
+                    "pre-registered verdict at 40 episodes (index better / coin better / no difference) decides whether the lane moves "
+                    "to the index. Local only until then.",
+     "off_means": "No new index legs; open ones close with their slot or at the stop."},
+    {"name": "composite", "label": "Composite · one book, the short slices with a record", "kind": "experiment",
+     "description": "The single system (2026-11-18): every short the reversal lane, the weekly, factor, unlock and event lanes, the "
+                    "weekly_rs book and the copy-stocks book open — the slices with a record — taken into one $50k book at 1% of "
+                    "equity per leg (notional ≤ 25% of equity, gross ≤ 150%, 10 legs), the ATR trail and a 72h cap for the exit, "
+                    "no new legs at 0.75% down on the day and flat at 1%, flat and stopped at a 5% drawdown. Verdict at 40 legs and "
+                    "20 days: ≥ $150 a calendar day with t ≥ 2 promotes it. Local only until then.",
+     "off_means": "No new legs; open ones run to their stop, trail or cap; the floors keep ticking."},
     {"name": "fade24", "label": "Fade the scanner (24h vs BTC)", "kind": "experiment",
      "description": "Trades AGAINST strong scanner conviction (|conviction| ≥ 0.30) for 24h, hedged with an opposite "
                     "BTC position. Since 2026-10-24: conviction has pointed the wrong way for weeks (IC −0.26 at 24h); "
@@ -239,7 +253,7 @@ def unavailable(name: str) -> str | None:
     """Why a book can't be switched at all (not promoted to this instance, or turned off in .env), or None."""
     if not promoted(name):
         return NOT_PROMOTED
-    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "burst_down", "burst_rip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction", "prop") or name.startswith("copy_"):
+    if name in ("auto_rules", "signals_claude", "signals_rules", "claude_swing", "hold72", "carry", "fade24", "weekly_rs", "events", "cascade", "carry_q", "unlocks", "vol_premium", "burst_up", "burst_dip", "burst_down", "burst_rip", "copy_trading", "copy_stocks", "copy_futures", "multi_factor", "auction", "prop", "reversal_index", "composite") or name.startswith("copy_"):
         from experiments import books
         if not books.ENABLED:
             return "EXPERIMENTS_ENABLED=false in .env"

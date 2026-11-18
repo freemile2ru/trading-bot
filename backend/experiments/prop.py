@@ -153,6 +153,8 @@ async def _enter(source: str, symbol: str, direction: str, px: float, stop: floa
         return None
     cap = R.leverage_cap(coin)
     notional, lev = R.size(led["equity"], px, stop, source, cap)
+    wanted = led["equity"] * R.RISK_PCT[source] / 100 / (abs(px - stop) / px) if px and stop != px else 0.0
+    margin_cap = {"pct": R.MAX_MARGIN_PCT, "bound": wanted > notional + 0.01, "wanted_notional": round(wanted, 2), "margin_usd": round(notional / lev, 2)}
     if notional < 10:
         _log({"ts": now, "event": "refused", "source": source, "symbol": symbol, "direction": direction, "why": "size under $10"})
         return None
@@ -168,14 +170,14 @@ async def _enter(source: str, symbol: str, direction: str, px: float, stop: floa
                      extra={"strategy": BOOK, "source": source, "exit_policy": "manual", "shadows": False, "claude_verdict": "skipped", "entry_type": "market", **trail,
                             "near_event": __import__("ops.calendar", fromlist=["near_event"]).near_event(symbol),
                             "prop_attempt": st["attempt"], "hl_coin": coin, "leverage_cap": cap, "risk_pct": R.RISK_PCT[source],
-                            "equity_at_entry": led["equity"], **extra})
+                            "equity_at_entry": led["equity"], "margin_cap": margin_cap, **extra})
     if t.get("error"):
         _log({"ts": now, "event": "refused", "source": source, "symbol": symbol, "direction": direction, "why": t["error"][:120]})
         return None
     if expires_at:
         w.annotate(t["id"], expires_at=expires_at)
     _log({"ts": now, "event": "opened", "source": source, "symbol": symbol, "direction": direction, "coin": coin, "notional": notional,
-          "leverage": lev, "stop": stop, "equity": led["equity"]})
+          "leverage": lev, "stop": stop, "equity": led["equity"], "margin_usd": margin_cap["margin_usd"], "margin_capped": margin_cap["bound"]})
     return t
 
 
@@ -329,10 +331,11 @@ def status() -> dict:
                    "to_go_usd": round(R.PLAN["size"] * (1 + R.PLAN["target_pct"] / 100) - led["balance"], 2)},
         "assess": a, "halted_day": st.get("halted_day"), "halt_why": st.get("halt_why"), "halts": st.get("halts", 0), "flattens": st.get("flattens", 0),
         "ours": {"halt_daily_pct": R.HALT_DAILY_PCT, "flatten_daily_pct": R.FLATTEN_DAILY_PCT, "halt_dd_pct": R.HALT_DD_PCT, "flatten_dd_pct": R.FLATTEN_DD_PCT,
-                 "risk_pct": R.RISK_PCT, "max_open_by_source": R.MAX_OPEN_BY_SOURCE},
+                 "risk_pct": R.RISK_PCT, "max_open_by_source": R.MAX_OPEN_BY_SOURCE, "max_margin_pct": R.MAX_MARGIN_PCT,
+                 "max_margin_usd": round(R.PLAN["size"] * R.MAX_MARGIN_PCT / 100, 2)},
         "leverage": {"default": R.LEVERAGE_DEFAULT, "overrides": R.LEVERAGE},
         "open": [{"id": t["id"], "symbol": t["symbol"], "coin": t.get("hl_coin"), "direction": t["direction"], "source": t.get("source"),
-                  "notional": t.get("notional_usd"), "leverage": t.get("leverage"), "entry": t["entry_price"], "stop": t.get("stop_loss"),
+                  "notional": t.get("notional_usd"), "leverage": t.get("leverage"), "margin": t.get("margin_usd"), "entry": t["entry_price"], "stop": t.get("stop_loss"),
                   "pnl_usd": t.get("pnl_usd"), "opened_at": t.get("opened_at"), "exec": t.get("exec")} for t in led["open"]],
         "closed_n": len(closed), "closed_pnl": round(sum(t.get("pnl_usd") or 0 for t in closed), 2),
         "wins": sum(1 for t in closed if (t.get("pnl_usd") or 0) > 0), "by_source": by_source,

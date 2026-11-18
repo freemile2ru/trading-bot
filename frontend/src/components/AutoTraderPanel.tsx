@@ -481,6 +481,24 @@ export function AutoTraderPanel({
             </div>
           ))}
           <div className="text-[10px] text-gray-600">{auto.lanes.rule} Lanes marked off are traded only in their own book, so no signal is ever held twice.</div>
+          {auto.lanes.sides && (
+            <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-1.5">
+              <span className="text-gray-400">Sides:</span> {Object.entries(auto.lanes.sides.books).map(([book, b]) => (
+                <span key={book} className="mr-2">{book} <span className={b.longs_off ? 'text-amber-300' : 'text-emerald-300'}>{b.longs_off ? 'shorts only' : 'both sides'}</span>
+                  {b.record.n > 0 && <span className="text-gray-600"> · {b.record.settled} refused longs scored{b.record.mean_pct != null ? `, ${b.record.mean_pct >= 0 ? '+' : ''}${b.record.mean_pct.toFixed(2)}% over 24h` : ''}</span>}</span>
+              ))}
+              <span className="text-gray-600">{auto.lanes.sides.rule}.</span>
+            </div>
+          )}
+          {auto.lanes.index_leg && (
+            <div className="text-[10px] text-gray-500">
+              <span className="text-gray-400">Index leg:</span> {auto.lanes.index_leg.n}/{auto.lanes.index_leg.verdict_n} slots paired{auto.lanes.index_leg.open > 0 && <>, {auto.lanes.index_leg.open} open</>}
+              {auto.lanes.index_leg.n > 0 && <>: index {signed(auto.lanes.index_leg.index_pnl)} vs coins {signed(auto.lanes.index_leg.coin_pnl)}
+                {auto.lanes.index_leg.diff.mean != null && <> ({auto.lanes.index_leg.diff.mean >= 0 ? '+' : ''}{auto.lanes.index_leg.diff.mean.toFixed(3)}R a slot, t {auto.lanes.index_leg.diff.t ?? '—'})</>}</>}
+              {' — '}<span className={auto.lanes.index_leg.verdict === 'index better' ? 'text-emerald-300' : auto.lanes.index_leg.verdict === 'coin better' ? 'text-rose-300' : 'text-gray-400'}>{auto.lanes.index_leg.verdict}</span>.
+              <span className="text-gray-600"> One ALTIDX leg per reversal slot at a coin leg's risk, a {auto.lanes.index_leg.stop_pct}% stop, closed with the slot; the verdict needs ≥ {auto.lanes.index_leg.min_gap_r}R with t ≥ 2 and both halves agreeing.</span>
+            </div>
+          )}
           {auto.lanes.sizing && (
             <div className="text-[10px] text-gray-500 border-t border-gray-800 pt-1.5">
               <span className="text-gray-400">Reversal sizing:</span> {auto.lanes.sizing.rule} Heat on now {usd(auto.lanes.sizing.heat_used_usd)} of {usd((auto.total_equity || 0) * auto.lanes.sizing.heat_cap_pct / 100)}.

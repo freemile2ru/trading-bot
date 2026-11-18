@@ -69,6 +69,13 @@ DESCRIPTIONS = {
                   "forward test, judged on its own 40 trades; each leg records BTC's 24h move at entry for the read by regime.",
     "burst_rip": "The short mirror of burst_dip (2026-11-17): after a ≥5% five-minute UP-burst, short 60 minutes later, held 4 hours, "
                  "a 15% disaster stop only. Not a lab line — a pure forward test, judged on its own 40 trades.",
+    "composite": "The single system (2026-11-18): the programme's short slices with a record — reversal, weekly, factor, unlock and event "
+                 "lanes, weekly_rs, copy-stocks — as one $50k book at 1% of equity a leg, notional ≤ 25%, the ATR trail + 72h cap, 1%/day "
+                 "and 5% drawdown floors. The replay of both ledgers at these rules made $219–$345 a calendar day (worst day −$557/−$665); "
+                 "the verdict at 40 legs and 20 days is ≥ $150/day with t ≥ 2.",
+    "reversal_index": "The reversal lane's timing in the alt index instead of the picked coin (2026-11-17): the index shadow's 54 "
+                      "episodes had the equal-weight index +0.75% our way (t 2.87) against the traded leg's +0.51%. One ALTIDX leg per slot "
+                      "at a coin leg's risk, closed with the slot; paired in R; verdict at 40 episodes.",
     "auction": "The mentor's NQ auction-level system on QQQ, NVDA, TSLA and AMD perps, 5-minute bars, New York session: accept beyond a "
                "session level, confirm, enter, stop under the acceptance bar, target the next level ≥ 50 bps away, grade ≥ 7 only, no trade "
                "near a macro release or earnings. Replay (research/auction_lab.py): −0.13% a trade at our costs — a forward test the user asked "

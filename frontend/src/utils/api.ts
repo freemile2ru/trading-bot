@@ -13,6 +13,7 @@ import type { CalendarPage, CalendarStatus, MarketState, WatchdogStatus } from '
 import type { CopyStatus } from '../types/copy'
 import type { AuctionChartData, AuctionSnapshot, StockFlowReport } from '../types/auction'
 import type { PropStatus } from '../types/prop'
+import type { CompositeStatus } from '../types/composite'
 import type { ControlReport, EntryCellsReport, IndexShadowReport } from '../types/control'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
@@ -87,6 +88,8 @@ export const api = {
     unpin: (symbol: string) => del<{ message: string }>(`/signals/watchlist/${symbol}`),
   },
   market: {
+    ohlcvRange: (symbol: string, start: number, end: number) =>
+      get<{ symbol: string; interval: string; interval_s: number; candles: Candle[] }>(`/ohlcv/${symbol}/range?start=${start}&end=${end}`),
     ohlcv: (symbol: string, interval = '1h', limit = 120) =>
       get<{ symbol: string; interval: string; candles: Candle[] }>(
         `/ohlcv/${symbol}?interval=${interval}&limit=${limit}`,
@@ -170,6 +173,11 @@ export const api = {
     status: () => get<PropStatus>('/prop'),
     tick: () => post<{ tick: unknown; status: PropStatus }>('/prop/tick'),
     reset: (note: string) => post<PropStatus>(`/prop/reset?note=${encodeURIComponent(note)}`),
+  },
+  composite: {
+    status: () => get<CompositeStatus>('/composite'),
+    tick: () => post<{ tick: unknown; status: CompositeStatus }>('/composite/tick'),
+    reset: (note: string) => post<unknown>(`/composite/reset?note=${encodeURIComponent(note)}`),
   },
   auction: {
     status: () => get<AuctionSnapshot>('/auction'),

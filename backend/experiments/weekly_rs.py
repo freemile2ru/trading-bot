@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timezone
 
 from storage import state as kv
-from trading import book_switches, monitor
+from trading import book_switches, monitor, sides
 
 logger = logging.getLogger("experiments.weekly_rs")
 
@@ -130,6 +130,9 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
         price = await monitor.live_price(sym)
         if not price:
             continue
+        if d == "long" and sides.longs_off(BOOK):                                              # the side switch (2026-11-17)
+            logger.info("Weekly RS long %s skipped: %s", sym, await sides.refuse(BOOK, sym, time.time(), price))
+            continue
         s = 1 if d == "long" else -1
         try:
             from autotrader import sizing
@@ -143,6 +146,11 @@ async def rebalance(force: bool = False, now: datetime | None = None) -> dict | 
                                 "score_from_7d_high": round(sc[sym], 4), "atr_pct": atr})
         if not t.get("error"):
             opened.append(f"{d} {sym}")
+            try:
+                from experiments import composite                                 # the one book mirrors the short (2026-11-18)
+                await composite.mirror("weekly_rs", t)
+            except Exception as e:
+                logger.warning("Composite book weekly_rs mirror failed: %s", e)
     kv.set_sync(_week_key(now), {"at": time.time(), "closed": closed, "opened": opened, "resized": resized}, 14 * 86400)
     logger.info("Weekly RS rebalanced: closed %s · opened %s", closed or "nothing", opened or "nothing")
     return {"closed": closed, "opened": opened, "scores": {s: round(v, 4) for s, v in sc.items()}}
