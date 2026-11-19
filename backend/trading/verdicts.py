@@ -18,6 +18,13 @@ on a lucky one. These rules are set once and applied the same way to every book:
   carry_q       the marked basis income per day on notional against the rate LOCKED at entry (2026-11-17), the same
                 clock and bars as carry: pass at ≥ half the locked rate after CARRY_DAYS, fail at ≤ 0.
   main          manual trading isn't a strategy — no verdict.
+  sized         (2026-11-19) the R rule strips size out on purpose — it asks whether the signal has an edge. Beside it,
+                the same trades in dollars at the plan's own sizing: the worst UTC day and the deepest drawdown of the
+                closed record, as a share of the book's planned capital, against the programme's floors (1% a day,
+                5% drawdown — the limits the user set for the single system). A book whose R range passes but whose
+                drawdown at its own size went past the floor is "oversized": an edge, but not deployable at this size
+                — the line says what fraction of the size would have kept it inside. The worst day is shown against
+                its floor but does not gate: a day is the risk budget's stop, a drawdown is the book's.
 
 The verdict is advice: nothing is switched off automatically. A "retire" shows on the Books tab.
 """
@@ -36,6 +43,8 @@ CARRY_DAYS = 60
 CARRY_EXPECTED_BPS_DAY = {"BTCUSDT": 1.015, "ETHUSDT": 0.571,      # research/carry_lab.py holdout
                           "XAUUSDT": 1.9}                            # gold: ~7%/yr, its last 3 months (tradfi_perp_lab)
 NO_VERDICT = {"main"}
+SIZED_DAY_PCT = float(os.getenv("VERDICT_SIZED_DAY_PCT", "1"))      # the programme's floors (2026-11-18, the user: "1% a day, 5% drawdown")
+SIZED_DD_PCT = float(os.getenv("VERDICT_SIZED_DD_PCT", "5"))
 
 
 def rule_since(book: str) -> float:
@@ -68,8 +77,34 @@ def bootstrap_ci(rs: list[float], seed: int = 7) -> tuple[float, float] | None:
     return round(lo, 3), round(hi, 3)
 
 
-def judge(rs: list[float]) -> dict:
-    """A trade book's verdict from its closed trades' R, oldest first."""
+def sized(trades: list[tuple[float, float]], plan_usd: float | None) -> dict | None:
+    """The record in dollars at the plan's own sizing: `trades` are (closed_ts, net P&L). The worst UTC day and the deepest
+    drawdown, as a share of `plan_usd` when the book has a plan; `ok` is whether the drawdown stayed inside SIZED_DD_PCT
+    (None without a plan), `fit_x` the fraction of the size that would have kept it there."""
+    import time
+    if not trades:
+        return None
+    by_day: dict[str, float] = {}
+    cum = peak = dd = 0.0
+    for ts, pnl in sorted(trades):
+        day = time.strftime("%Y-%m-%d", time.gmtime(ts or 0))
+        by_day[day] = by_day.get(day, 0.0) + pnl
+        cum += pnl
+        peak = max(peak, cum)
+        dd = min(dd, cum - peak)
+    worst_day, worst = min(by_day.items(), key=lambda kv: kv[1])
+    out = {"plan_usd": plan_usd, "days": len(by_day), "worst_day": worst_day, "worst_day_usd": round(worst, 2), "max_dd_usd": round(dd, 2),
+           "day_floor_pct": SIZED_DAY_PCT, "dd_floor_pct": SIZED_DD_PCT, "worst_day_pct": None, "max_dd_pct": None, "ok": None, "fit_x": None}
+    if plan_usd and plan_usd > 0:
+        day_pct, dd_pct = round(worst / plan_usd * 100, 2), round(dd / plan_usd * 100, 2)
+        out.update(worst_day_pct=day_pct, max_dd_pct=dd_pct, ok=-dd_pct <= SIZED_DD_PCT, day_ok=-day_pct <= SIZED_DAY_PCT,
+                   fit_x=round(min(1.0, SIZED_DD_PCT / -dd_pct), 2) if dd_pct < 0 else 1.0)
+    return out
+
+
+def judge(rs: list[float], sized_: dict | None = None) -> dict:
+    """A trade book's verdict from its closed trades' R, oldest first; `sized_` (from sized()) can turn a pass into
+    "oversized" when the dollar drawdown at the plan's size broke the floor."""
     n = len(rs)
     mean = round(sum(rs) / n, 3) if n else None
     ci = bootstrap_ci(rs)
@@ -83,8 +118,12 @@ def judge(rs: list[float]) -> dict:
         status, note = "no_edge", f"still no clear edge after {n} trades — retire it"
     else:
         status, note = "unclear", f"the range straddles zero — keep going to {MAX} trades"
+    if status == "pass" and sized_ and sized_.get("ok") is False:
+        status = "oversized"
+        note = (f"an edge in R, but at the plan's ${sized_['plan_usd']:,.0f} the drawdown reached {sized_['max_dd_pct']:+.2f}% "
+                f"(floor {SIZED_DD_PCT:g}%) — deployable at {sized_['fit_x']:.2f}× this size, not at it")
     return {"rule": "trades", "status": status, "note": note, "trades": n, "target": TARGET, "max": MAX,
-            "avg_r": mean, "ci": ci, "level": LEVEL, "registered": REGISTERED}
+            "avg_r": mean, "ci": ci, "level": LEVEL, "registered": REGISTERED, "sized": sized_}
 
 
 def judge_carry(positions: list[dict]) -> dict:
@@ -142,8 +181,13 @@ def judge_carry_q(positions: list[dict]) -> dict:
 
 def for_books(rows: list[dict]) -> dict[str, dict]:
     """Every book's verdict from overview rows (any ledger mix the caller chose)."""
-    rs: dict[str, list[tuple[float, float]]] = {}
+    rs: dict[str, list[tuple[float, float, float]]] = {}
     since: dict[str, float] = {}
+    try:
+        from trading import capital
+        plans = {**capital.PLAN, **capital.plan()}
+    except Exception:
+        plans = {}
     for r in rows:
         if r.get("status") == "open" or r.get("r") is None:
             continue
@@ -152,8 +196,9 @@ def for_books(rows: list[dict]) -> dict[str, dict]:
             since[book] = rule_since(book)
         if (r.get("opened_ts") or 0) < since[book]:
             continue
-        rs.setdefault(book, []).append((r.get("closed_ts") or 0, r["r"]))
-    out = {b: judge([x for _, x in sorted(v)]) for b, v in rs.items() if b not in NO_VERDICT}
+        rs.setdefault(book, []).append((r.get("closed_ts") or 0, r["r"], r.get("net_pnl") or 0.0))
+    out = {b: judge([x for _, x, _ in sorted(v)], sized([(ts, p) for ts, _, p in v], plans.get(b)))
+           for b, v in rs.items() if b not in NO_VERDICT}
     try:
         from experiments import carry
         out["carry"] = judge_carry(carry._rows("SELECT * FROM carry"))

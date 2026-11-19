@@ -170,3 +170,24 @@ def test_whatsapp_falls_back_to_the_template_outside_the_window(monkeypatch):
     fake = _FakeTwilio(window_open=False)
     monkeypatch.setattr(n, "_twilio_client", lambda: fake)
     assert n.send_whatsapp("x") is False                                   # window closed, nothing to fall back on
+
+
+def test_a_restated_close_sends_the_corrected_number(tmp_path, sent):
+    # 2026-11-19, the user: "the email is not sending the scaled number" — a rescale after the close mails before → after
+    w = PaperWallet(str(tmp_path / "w.db"), label="copy_trading", initial_balance=32_750)
+    t = w.open_trade(symbol="NEARUSDT", direction="short", entry_price=3.187, stop_loss=3.3155, take_profit_1=1.6, take_profit_2=1.3,
+                     notional_usd=17_173.0, timeframe="copy", leverage=7, extra={"exit_policy": "manual_lock", "shadows": False, "stop_pct": 4.0})
+    w.close_trade_manually(t["id"], 3.317, "stop_loss")
+    ta.flush()
+    sent["email"].clear(); sent["whatsapp"].clear()
+    out = w.rescale_closed_trades({t["id"]: 0.4778}, "restated to the 1%-of-book risk cap")
+    ta.flush()
+    assert out["rescaled"] == 1 and len(sent["email"]) == 1
+    subject, body = sent["email"][0]
+    after = w.all_trades()["closed"][0]["pnl_usd"]
+    assert subject.startswith("[Oracle local] restated S NEARUSDT") and "→" in subject
+    assert "RESTATED" in body and ta._money(after) in body and "×0.48 the size" in body and "restated to the 1%-of-book risk cap" in body
+    html = ta.compose_html([{"kind": "restated", "book": "copy_trading", "ts": time.time(),
+                             "trade": {**w.all_trades()["closed"][0], "pnl_before": -723.16, "factor": 0.4778, "restate_note": "cap"}}])
+    assert "line-through" in html and ta._money(-723.16) in html and ta._money(after) in html and "×0.48" in html
+    assert sent["whatsapp"] and "RESTATED" in sent["whatsapp"][0][0]

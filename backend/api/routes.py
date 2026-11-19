@@ -743,6 +743,23 @@ async def portfolio_overview(include_retired: bool = Query(False, description="i
     return await asyncio.to_thread(overview.portfolio, include_retired)
 
 
+@router.get("/copy/oversized")
+async def copy_oversized(book: str = Query("copy_trading", pattern=r"^copy_[a-z_]+$")):
+    """Closed copies sized before the 1%-of-book risk cap, with the factor that restates each to today's rule (a preview
+    of /copy/restate)."""
+    from experiments import copy_trading
+    return {"book": book, "rows": await asyncio.to_thread(copy_trading.oversized_copies, book)}
+
+
+@router.post("/copy/restate")
+async def copy_restate(book: str = Query("copy_trading", pattern=r"^copy_[a-z_]+$"),
+                       ids: str | None = Query(None, description="comma-separated trade ids; every oversized copy when empty")):
+    """Restate those copies at today's size: quantity, notional, costs and P&L scale together, the P&L difference leaves
+    the book, the trade keeps a `rescaled` stamp (the user, 2026-11-19)."""
+    from experiments import copy_trading
+    return await asyncio.to_thread(copy_trading.restate_oversized, book, {x.strip() for x in ids.split(",") if x.strip()} if ids else None)
+
+
 @router.get("/copy/leaders")
 async def copy_leaders():
     """The copy-trading book: chosen leaders and their profiles, open copies, skipped entries and how they went."""

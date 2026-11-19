@@ -1368,6 +1368,47 @@ def floor_audit() -> dict:
     return {**_copy_shadow_audit("manual_lock_floor"), "live": BE_LIVE}
 
 
+def oversized_copies(book: str) -> list[dict]:
+    """Closed copies sized before the 1%-of-book risk cap (2026-11-18: no `risk_cap` stamp) that the cap, or the budget's
+    own figure with the record multipliers at ×1.0, would have made smaller — each with the factor that restates it to
+    today's rule. The book's equity at entry is read back from the leg's own share of it (size_pct)."""
+    from experiments import books
+    w = books.WALLETS.get(book)
+    if w is None:
+        return []
+    out = []
+    for t in w.all_trades()["closed"]:
+        if t.get("risk_cap") or t.get("rescaled") or not t.get("notional_usd") or not t.get("size_pct") or not t.get("stop_pct"):
+            continue
+        equity = t["notional_usd"] / (t["size_pct"] / 100)
+        stop = float(t["stop_pct"])
+        want = [equity * MAX_RISK_PCT / stop]                                                  # the cap: 1% of the book at the stop
+        rb = t.get("risk_budget") or {}
+        if rb.get("on") and rb.get("risk_usd"):
+            want.append(rb["risk_usd"] / (stop / 100))                                         # the budget's figure, multipliers ×1.0
+        target = min(want)
+        f = target / t["notional_usd"]
+        if f < 0.999:
+            out.append({"id": t["id"], "symbol": t["symbol"], "direction": t["direction"], "closed_at": t.get("closed_at"),
+                        "equity_at_entry": round(equity, 2), "stop_pct": stop, "size_x": t.get("size_x"),
+                        "notional_usd": t["notional_usd"], "target_notional": round(target, 2), "factor": round(f, 4),
+                        "risk_usd": t.get("risk_usd"), "risk_after": round((t.get("risk_usd") or 0.0) * f, 2),
+                        "pnl_usd": t.get("pnl_usd"), "pnl_after": round((t.get("pnl_usd") or 0.0) * f, 2)})
+    return out
+
+
+def restate_oversized(book: str, ids: set[str] | None = None) -> dict:
+    """Restate those copies at today's size (trading/paper_trader.rescale_closed_trades, the P&L difference leaves the
+    book): the user, 2026-11-19, after the NEAR copy sized ×1.56 over the budget and uncapped lost $723 on a $32.75k book —
+    "rescale the results from the lost trade so our data isn't soiled by it". `ids` limits it to some of them."""
+    from experiments import books
+    rows = [r for r in oversized_copies(book) if ids is None or r["id"] in ids]
+    if not rows:
+        return {"rescaled": 0, "pnl_shift": 0.0, "rows": []}
+    out = books.WALLETS[book].rescale_closed_trades({r["id"]: r["factor"] for r in rows}, "restated to the 1%-of-book risk cap (2026-11-19)")
+    return {**out, "rows": rows}
+
+
 def status() -> dict:
     wallets = _wallets()
     all_w = _all_wallets()

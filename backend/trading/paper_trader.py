@@ -1142,6 +1142,10 @@ class PaperWallet:
             self._snapshot_equity(state, force=True)
             self._save(state, full=True)
             logger.warning("%s: rescaled %d closed trades (%s), P&L %+.2f", self.label, len(done), note, -shift)
+            from trading import trade_alerts
+            for t in state["closed"]:
+                if t["id"] in done:                                     # the close's alert carried the old number: send the corrected one
+                    trade_alerts.restated(self.label, t, t["rescaled"][-1]["pnl_before"], t["rescaled"][-1]["factor"], note)
             return {"rescaled": len(done), "pnl_shift": round(-shift, 2), "ids": done}
 
     def reset_portfolio(self, starting_balance: float = 10000.0) -> dict:

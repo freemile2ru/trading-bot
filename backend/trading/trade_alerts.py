@@ -49,6 +49,13 @@ def closed(book: str, trade: dict) -> None:
     _put("closed", book, trade)
 
 
+def restated(book: str, trade: dict, pnl_before: float, factor: float, note: str = "") -> None:
+    """A closed trade restated at another size (trading/paper_trader.rescale_closed_trades): the close's email carried the
+    old number, so the corrected one goes out the same way (2026-11-19, the user: "the email is not sending the scaled
+    number")."""
+    _put("restated", book, {**trade, "pnl_before": pnl_before, "factor": factor, "restate_note": note})
+
+
 def _put(kind: str, book: str, trade: dict) -> None:
     if not CHANNELS:
         return
@@ -125,6 +132,11 @@ def line(ev: dict) -> str:
         return "\n".join(x for x in (head, what, nums, f"why: {why}" if why else "") if x)
     pnl = t.get("pnl_usd") or 0.0
     r = _r(t)
+    if ev["kind"] == "restated":
+        head = f"🔁 RESTATED {at} · {_where(book, t)}"
+        what = f"{side} {sym} · {_money(t.get('pnl_before'))} → {_money(pnl)}" + (f" ({r:+.2f}R)" if r is not None else "") + f" · ×{t.get('factor') or 0:.2f} the size"
+        nums = f"now ${t.get('notional_usd') or 0:,.0f} at risk ${t.get('risk_usd') or 0:,.0f} · closed {_hours(t)} after entry" + (f" · {t['restate_note']}" if t.get("restate_note") else "")
+        return "\n".join((head, what, nums))
     head = f"{'🟢' if pnl >= 0 else '🔴'} CLOSED {at} · {_where(book, t)}"
     what = f"{side} {sym} · {_money(pnl)}" + (f" ({r:+.2f}R)" if r is not None else "")
     nums = f"{t.get('close_reason') or 'closed'} · held {_hours(t)} · {_px(t.get('entry_price'))} → {_px(t.get('exit_price'))}"
@@ -141,7 +153,9 @@ def compose(events: list[dict]) -> tuple[str, str]:
         head = f"{(t.get('direction') or '?')[0].upper()} {t.get('symbol', '?')}"
         if ev["kind"] == "closed":
             head += f" {_money(t.get('pnl_usd'))}"
-        heads.append(("opened " if ev["kind"] == "opened" else "closed ") + head)
+        elif ev["kind"] == "restated":
+            head += f" {_money(t.get('pnl_before'))} → {_money(t.get('pnl_usd'))}"
+        heads.append({"opened": "opened ", "closed": "closed ", "restated": "restated "}.get(ev["kind"], "") + head)
     n_open, n_close = sum(e["kind"] == "opened" for e in events), sum(e["kind"] == "closed" for e in events)
     subject = f"[Oracle {INSTANCE}] " + "; ".join(heads[:4]) + (f" (+{len(heads) - 4} more)" if len(heads) > 4 else "")
     net = sum((e["trade"].get("pnl_usd") or 0.0) for e in events if e["kind"] == "closed")
@@ -186,6 +200,7 @@ def compose_html(events: list[dict]) -> str:
     when = datetime.fromtimestamp(events[0]["ts"], timezone.utc).strftime("%a %d %b %Y · %H:%M UTC")
     opened = [e for e in events if e["kind"] == "opened"]
     closed = [e for e in events if e["kind"] == "closed"]
+    restated_ = [e for e in events if e["kind"] == "restated"]
     parts = [f'<div style="{_CSS}">',
              f'<div style="margin:0 0 14px"><span style="font-size:16px;font-weight:700">Crypto Oracle</span> '
              f'<span style="color:{_GRAY}">· {_esc(INSTANCE)} · {_esc(when)}</span></div>']
@@ -217,6 +232,20 @@ def compose_html(events: list[dict]) -> str:
         parts.append(f'<div style="margin:16px 0 6px;font-weight:600">{_pill("CLOSED", _GREEN if net >= 0 else _RED)} {len(closed)} position{"s" if len(closed) != 1 else ""}'
                      + (f' <span style="color:{_GREEN if net >= 0 else _RED}">· {_esc(_money(net))} net</span>' if len(closed) > 1 else "") + '</div>')
         parts.append(_table(["Book", "Position", "P&L", "Exit", "Held", "Entry → Exit", "Lock kept"], rows))
+    if restated_:
+        rows = []
+        for e in restated_:
+            t = e["trade"]
+            pnl, r = t.get("pnl_usd") or 0.0, _r(t)
+            color = _GREEN if pnl >= 0 else _RED
+            rows.append([_esc(_where(e["book"], t)), f'{_side(t)} <b>{_esc(t.get("symbol", "?"))}</b>',
+                         f'<span style="color:{_GRAY};text-decoration:line-through">{_esc(_money(t.get("pnl_before")))}</span> → <b style="color:{color}">{_esc(_money(pnl))}</b>'
+                         + (f' <span style="color:{_GRAY}">({r:+.2f}R)</span>' if r is not None else ""),
+                         f'×{t.get("factor") or 0:.2f}', f'${t.get("notional_usd") or 0:,.0f} <span style="color:{_GRAY}">risk ${t.get("risk_usd") or 0:,.0f}</span>',
+                         f'<span style="white-space:normal;color:{_GRAY}">{_esc(t.get("restate_note") or "")}</span>'])
+        parts.append(f'<div style="margin:16px 0 6px;font-weight:600">{_pill("RESTATED", _GRAY)} {len(restated_)} closed position{"s" if len(restated_) != 1 else ""} '
+                     f'<span style="color:{_GRAY};font-weight:400">· resized after the close; the % move and the R are unchanged</span></div>')
+        parts.append(_table(["Book", "Position", "P&L before → after", "Size", "Now", "Why"], rows))
     parts.append(f'<div style="margin-top:16px;font-size:12px;color:{_GRAY}">Sent by the {_esc(INSTANCE)} instance. Times are UTC.</div></div>')
     return "".join(parts)
 

@@ -34,6 +34,7 @@ function Switch({ on, disabled, busy, onChange, label }: { on: boolean; disabled
 const VERDICT: Record<BookVerdict['status'], [string, string]> = {
   collecting: ['Collecting', 'bg-gray-800 text-gray-300'],
   pass: ['Pass', 'bg-emerald-900/60 text-emerald-300'],
+  oversized: ['Pass · oversized', 'bg-amber-900/50 text-amber-300'],
   unclear: ['Unclear', 'bg-amber-900/50 text-amber-300'],
   fail: ['Fail · retire', 'bg-red-900/60 text-red-300'],
   no_edge: ['No edge · retire', 'bg-red-900/60 text-red-300'],
@@ -64,7 +65,26 @@ function VerdictLine({ v }: { v: BookVerdict }) {
         </span>
       )}
       <span className="text-gray-500">{v.note}</span>
+      {v.rule === 'trades' && v.sized && <SizedLine s={v.sized} />}
     </div>
+  )
+}
+
+/** The record in dollars at the plan's own sizing: the R verdict strips size out, this line puts it back (2026-11-19). */
+function SizedLine({ s }: { s: NonNullable<BookVerdict['sized']> }) {
+  const pct = (x: number | null) => (x == null ? '—' : `${signed(x)}%`)
+  const dayBad = s.worst_day_pct != null && -s.worst_day_pct > s.day_floor_pct
+  const ddBad = s.ok === false
+  return (
+    <span className="basis-full text-gray-500 tabular-nums"
+      title={`The same closed trades in dollars, as traded: the worst UTC day (${s.worst_day}) and the deepest drawdown, against the programme's floors of ${s.day_floor_pct}% a day and ${s.dd_floor_pct}% drawdown. The drawdown decides; the day is shown.`}>
+      sized{s.plan_usd ? ` at $${(s.plan_usd / 1000).toFixed(s.plan_usd >= 10_000 ? 0 : 1)}k` : ''}: worst day{' '}
+      <span className={clsx(dayBad && 'text-amber-300')}>{fmtUsdSigned(s.worst_day_usd)}{s.worst_day_pct != null && ` (${pct(s.worst_day_pct)})`}</span>
+      {' · '}drawdown{' '}
+      <span className={clsx(ddBad && 'text-red-300')}>{fmtUsdSigned(s.max_dd_usd)}{s.max_dd_pct != null && ` (${pct(s.max_dd_pct)})`}</span>
+      {s.plan_usd ? ` · floors ${s.day_floor_pct}% / ${s.dd_floor_pct}%` : ' · no plan size'}
+      {ddBad && s.fit_x != null && ` · fits at ${s.fit_x.toFixed(2)}× the size`}
+    </span>
   )
 }
 

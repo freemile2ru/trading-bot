@@ -8,8 +8,14 @@ export interface Book {
   verdict: BookVerdict | null
 }
 export interface BookVerdict {
-  rule: 'trades' | 'carry'; status: 'collecting' | 'pass' | 'fail' | 'unclear' | 'no_edge'; note: string; registered: string
+  rule: 'trades' | 'carry' | 'carry_q'; status: 'collecting' | 'pass' | 'oversized' | 'fail' | 'unclear' | 'no_edge'; note: string; registered: string
   trades?: number; target?: number; max?: number; avg_r?: number | null; ci?: [number, number] | null; level?: number
+  /** The same trades in dollars at the plan's own sizing (2026-11-19): the worst UTC day and the deepest drawdown. */
+  sized?: {
+    plan_usd: number | null; days: number; worst_day: string; worst_day_usd: number; max_dd_usd: number
+    day_floor_pct: number; dd_floor_pct: number; worst_day_pct: number | null; max_dd_pct: number | null
+    ok: boolean | null; day_ok?: boolean; fit_x: number | null
+  } | null
   days?: number; target_days?: number; funding_bps_day?: number | null; expected_bps_day?: number | null
 }
 export interface BookWallet {
