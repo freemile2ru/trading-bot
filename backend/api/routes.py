@@ -743,6 +743,15 @@ async def portfolio_overview(include_retired: bool = Query(False, description="i
     return await asyncio.to_thread(overview.portfolio, include_retired)
 
 
+@router.post("/capital/restatement-note")
+async def capital_restatement_note(book: str = Query(..., pattern=r"^[a-z_]+$"), amount: float = Query(...), note: str = Query("restatement"),
+                                   ts: float | None = Query(None, description="when the restatement happened (epoch seconds); now when empty")):
+    """Note a balance shift that was not trading in the capital ledger, so the day's P&L leaves it out (the copies restated
+    by hand on production on 2026-11-19 need this for that day)."""
+    from trading import capital
+    return capital.note_adjustment(book, amount, note, ts)
+
+
 @router.get("/copy/oversized")
 async def copy_oversized(book: str = Query("copy_trading", pattern=r"^copy_[a-z_]+$")):
     """Closed copies sized before the 1%-of-book risk cap, with the factor that restates each to today's rule (a preview

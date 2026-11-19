@@ -5,7 +5,11 @@ of 42 closed legs, the 29 that expired as losers had peaked at +1–3% of notion
 of theirs. Instead of a clock, every monitor pass asks whether the thesis still stands. The stop and the profit lock
 still act first (trading/exits.py); this decides only the exits a clock used to make. Pre-registered rules:
 
-  grace        the first GRACE_H hours are the trade's: nothing but the stop acts.
+  grace        the first GRACE_H hours are the trade's: nothing but the stop acts. 24 since 2026-11-20 (was 4): the
+               control replays said for three weeks that the legs closed by this check would have earned more held a
+               day (prod, 87 legs: $334 taken, $661 held 24h, $1,486 held 48h; the "reverted" rule banked 31 legs at
+               +0.06R and "flipped" closed 10 at −0.12R inside the day). So the first day is a time hold; after it the
+               horizon rule decides, and the stop and the profit lock still act first throughout.
   flipped      the coin now ranks on the other side of the reversal score (a short's coin scoring above zero): the
                reason for the leg is gone — close.
   reverted     the leg is in profit and the price has come back through the 24-hour VWAP in its favour: the mean
@@ -23,7 +27,7 @@ import time
 
 logger = logging.getLogger("autotrader.hold_check")
 
-GRACE_H = float(os.getenv("AUTOTRADER_HOLD_GRACE_H", "4"))
+GRACE_H = float(os.getenv("AUTOTRADER_HOLD_GRACE_H", "24"))        # 24 since 2026-11-20 (was 4)
 HORIZON_H = float(os.getenv("AUTOTRADER_HOLD_HORIZON_H", "24"))
 HARD_CAP_H = float(os.getenv("AUTOTRADER_HOLD_CAP_H", "72"))
 FOLLOW_H = 4

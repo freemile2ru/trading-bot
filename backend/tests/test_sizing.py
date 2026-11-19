@@ -76,7 +76,16 @@ def _leg(hours: float, pnl: float, direction="short", now=1_000_000.0):
     return {"direction": direction, "opened_ts": now - hours * 3600, "pnl_usd": pnl, "symbol": "ZECUSDT"}
 
 
-def test_the_hold_check_rules_fire_in_order():
+def test_the_first_day_is_a_time_hold_since_2026_11_20():
+    now = 1_000_000.0
+    assert hold_check.GRACE_H == 24
+    assert hold_check.verdict(_leg(5, 20), now, 0.12, None) == (True, "grace: 5.0h of 24h", "grace")       # flipped, but inside the day: held
+    assert hold_check.verdict(_leg(23.9, 35), now, -0.2, {"price": 99.0, "vwap24": 100.0})[2] == "grace"    # reverted, but inside the day: held
+    assert hold_check.verdict(_leg(25, 20), now, 0.12, None)[2] == "flipped"                                # after the day the rules act
+
+
+def test_the_hold_check_rules_fire_in_order(monkeypatch):
+    monkeypatch.setattr(hold_check, "GRACE_H", 4.0)                                                 # the rules' mechanics, at the old grace
     now = 1_000_000.0
     assert hold_check.verdict(_leg(1, -50), now, 0.4, {"price": 90, "vwap24": 100}) == (True, "grace: 1.0h of 4h", "grace")
     hold, why, rule = hold_check.verdict(_leg(5, 20), now, 0.12, None)

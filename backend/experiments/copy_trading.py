@@ -153,7 +153,8 @@ CONSENSUS_X = float(os.getenv("COPY_CONSENSUS_X", "1"))           # 1.0 since 20
 MAX_LEG_PCT_BY_MARKET = {"stocks": 25.0, "futures": 25.0}         # a single stock or commodity perp: the same quarter (they gap at the home market's open), never above MAX_LEG_PCT
 DISASTER_PCT = float(os.getenv("COPY_DISASTER_PCT", "4"))         # the widest stop a copy gets (and the stop for a leader without a loss profile)
 STOP_X = float(os.getenv("COPY_STOP_X", "2"))                     # the stop: STOP_X × the leader's median losing move, bounded STOP_PCT_MIN..DISASTER_PCT
-STOP_PCT_MIN = 2.0                                                # 2 since 2026-11-04 (was 1): a 1% stop on a crypto perp is intraday noise
+from trading import stop_floor as _stop_floor
+STOP_PCT_MIN = _stop_floor.MIN_STOP_PCT["crypto"]                 # 2 since 2026-11-04 (was 1): a 1% stop on a crypto perp is intraday noise; the programme's floor since 2026-11-20
 FEE_GATE_X = float(os.getenv("COPY_FEE_GATE_X", "3"))             # what is left of the leader's median win must cover the round trip this many times
 REDUCE_FRAC = 0.5                                                 # the leader halves → we close this much and ride the rest to their close
 MAX_HOLD_H = 7 * 24                                               # the only clock, a backstop: the copy otherwise ends when the leader's position does
@@ -1073,7 +1074,7 @@ async def mirror(now: float | None = None) -> dict:
                     _record_skip({**skip, "reason": "no price feed", "mark": None})
                     continue
                 ok, why, moved, age_h, size_x = judge(r, L.get("profile") or {}, mark, now, variant)
-                fights = tape.against_tape(r["side"], tape_) if ok and VARIANTS[variant].get("tape_gate") else None
+                fights = tape.against_tape(r["side"], tape_) if ok and VARIANTS[variant].get("tape_gate") and market == "crypto" else None   # BTC's VWAP gates crypto copies only (2026-11-20: it had refused NVDA, PLTR and CRWV shorts)
                 room = book_room(w, now) if ok and not fights else None
                 if not ok or fights or room:
                     _record_skip({**skip, "reason": why if not ok else (fights or room), "mark": mark, "leader_entry": r["entry"],
@@ -1406,6 +1407,9 @@ def restate_oversized(book: str, ids: set[str] | None = None) -> dict:
     if not rows:
         return {"rescaled": 0, "pnl_shift": 0.0, "rows": []}
     out = books.WALLETS[book].rescale_closed_trades({r["id"]: r["factor"] for r in rows}, "restated to the 1%-of-book risk cap (2026-11-19)")
+    if out.get("pnl_shift"):
+        from trading import capital
+        capital.note_adjustment(book, out["pnl_shift"], f"restated {out['rescaled']} copies to the 1%-of-book risk cap")   # the day's P&L leaves it out
     return {**out, "rows": rows}
 
 

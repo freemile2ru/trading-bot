@@ -129,6 +129,16 @@ def deposits() -> list[dict]:
     return kv.get_sync(_k("ledger")) or []
 
 
+def note_adjustment(book: str, amount: float, note: str, ts: float | None = None) -> dict:
+    """A ledger entry that moves no money: a restatement shifted the book's balance by `amount` (2026-11-20, after the
+    copies restated on 11-19 showed as $365 of that day's earnings). The day's P&L (trading/target.daily_pnl) treats it
+    like a deposit and leaves it out; `added` is untouched because no capital moved."""
+    entry = {"ts": ts or time.time(), "book": book, "amount": round(float(amount), 2), "note": note, "kind": "restatement"}
+    kv.set_sync(_k("ledger"), deposits() + [entry])
+    logger.info("Capital: %+.0f %s noted as a restatement (%s)", entry["amount"], book, note)
+    return entry
+
+
 def _wallet(book: str):
     """The PaperWallet behind a book, or None for a pair-ledger book."""
     from experiments import books

@@ -18,7 +18,7 @@ services:
       ALLOWED_ORIGINS: https://${DOMAIN}
       # Experiments run on the local instance. Production runs only the books promoted to it; every other book is
       # unavailable here (trading/book_switches.py). Promote a book by adding it, then redeploy.
-      PROMOTED_BOOKS: main,auto,auction,copy_trading,copy_stocks,prop
+      PROMOTED_BOOKS: main,auto,copy_trading,copy_stocks,prop   # auction paused on prod 2026-11-20: −0.56R over 10, every loss a sub-1% stop inside 30 minutes
     volumes:
       - ./data:/app/data
     depends_on:

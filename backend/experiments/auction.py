@@ -252,7 +252,13 @@ async def step(sym: str, df: pd.DataFrame, now: float) -> dict | None:
                 elif (room := capital.coin_room(sym, entering["direction"], notional, BOOK))["notional"] <= 0:
                     _log({"ts": now, "sym": sym, "event": "skipped", "why": room["why"], "level": entering["level_name"]})
                 elif notional >= 10 and good:
-                    notional = room["notional"]
+                    from trading import stop_floor
+                    entering["stop"], floored = stop_floor.apply(px, entering["stop"], entering["direction"], "stocks")   # 2026-11-20: never inside the noise
+                    if floored:
+                        notional, lev = _size(equity, px, entering["stop"])                                          # the same risk at the wider stop
+                        _log({"ts": now, "sym": sym, "event": "stop_floored", "why": f"stop widened to {stop_floor.min_pct('stocks'):g}% ({abs(px - entering['stop']) / px * 100:.2f}%)",
+                              "level": entering["level_name"]})
+                    notional = min(room["notional"], notional)
                     from ops import calendar
                     end_et = datetime.fromtimestamp(now, ET).replace(hour=SESSION_END[0], minute=SESSION_END[1], second=0, microsecond=0)
                     t = w.open_trade(symbol=sym, direction=entering["direction"], entry_price=px, stop_loss=entering["stop"],
