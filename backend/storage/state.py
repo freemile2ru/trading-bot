@@ -10,6 +10,7 @@ Operations are sub-millisecond, so they run inline under a lock rather than in t
 """
 
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -51,6 +52,24 @@ def key(*parts: str) -> str:
     return "state:" + ":".join(str(p) for p in parts)
 
 
+# Tenancy (2026-11-20, tenancy/engines.py): while a tenant's request or engine run is the current context, every key is
+# scoped to that tenant at access time — including the engines' import-time key constants — so their switches, watchlist,
+# cooldowns and books' state are theirs alone. Market reads and the one LLM budget stay shared (SHARED_PREFIXES).
+SHARED_PREFIXES = tuple(p.strip() for p in os.getenv(
+    "TENANT_SHARED_STATE",
+    "state:scan:,state:llm_budget,state:llm_cd,state:meta:,state:ops:,state:experiment:started,state:calendar,state:news,"
+    "state:positioning,state:funding,state:markets:,state:copy:leaders,state:copy:board,state:index_shadow,state:control,"
+    "state:entry_cells,state:stock_flow,state:watchdog").split(",") if p.strip())
+
+
+def _scope(k: str) -> str:
+    from tenancy import context
+    tid = context.tenant_id()
+    if tid == context.OWNER or not k.startswith("state:") or k.startswith("state:t:") or k.startswith(SHARED_PREFIXES):
+        return k
+    return f"state:t:{tid}:" + k[len("state:"):]
+
+
 def _sweep(con, now: float) -> None:
     global _last_sweep
     if now - _last_sweep > 300:
@@ -61,6 +80,7 @@ def _sweep(con, now: float) -> None:
 # ── Sync core ──────────────────────────────────────────────────────────────────
 
 def get_sync(k: str) -> Any | None:
+    k = _scope(k)
     with _lock:
         row = _db().execute("SELECT value, expires_at FROM kv WHERE key=?", (k,)).fetchone()
     if not row or (row[1] is not None and row[1] <= time.time()):
@@ -69,6 +89,7 @@ def get_sync(k: str) -> Any | None:
 
 
 def set_sync(k: str, value: Any, ttl: float | None = None) -> None:
+    k = _scope(k)
     now = time.time()
     with _lock:
         con = _db()
@@ -81,6 +102,7 @@ def set_sync(k: str, value: Any, ttl: float | None = None) -> None:
 def delete_sync(*keys: str) -> None:
     if not keys:
         return
+    keys = tuple(_scope(k) for k in keys)
     with _lock:
         con = _db()
         con.executemany("DELETE FROM kv WHERE key=?", [(k,) for k in keys])
@@ -103,12 +125,14 @@ async def delete(*keys: str) -> None:
 
 
 async def hgetall(k: str) -> dict:
+    k = _scope(k)
     with _lock:
         rows = _db().execute("SELECT field, value FROM hashes WHERE key=?", (k,)).fetchall()
     return {f: json.loads(v) for f, v in rows}
 
 
 async def hset(k: str, field: str, value: Any) -> None:
+    k = _scope(k)
     with _lock:
         con = _db()
         con.execute("INSERT OR REPLACE INTO hashes VALUES (?,?,?)", (k, field, json.dumps(value, default=str)))
@@ -118,6 +142,7 @@ async def hset(k: str, field: str, value: Any) -> None:
 async def hdel(k: str, *fields: str) -> None:
     if not fields:
         return
+    k = _scope(k)
     with _lock:
         con = _db()
         con.executemany("DELETE FROM hashes WHERE key=? AND field=?", [(k, f) for f in fields])
@@ -126,6 +151,7 @@ async def hdel(k: str, *fields: str) -> None:
 
 async def acquire_once(k: str, ttl: float) -> bool:
     """Atomic claim (like SET NX EX): True only if no live value exists."""
+    k = _scope(k)
     now = time.time()
     with _lock:
         con = _db()
@@ -138,6 +164,7 @@ async def acquire_once(k: str, ttl: float) -> bool:
 
 
 async def incr_with_expire(k: str, ttl: float) -> int:
+    k = _scope(k)
     now = time.time()
     with _lock:
         con = _db()

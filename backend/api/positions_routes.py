@@ -31,12 +31,20 @@ class Levels(BaseModel):
 
 def _swing_wallet(system: str):
     from live import swing as live_swing
+    from tenancy import context as tenant, wallets as tenant_wallets
     base = system.removesuffix("_live")
+    if not tenant.is_owner():
+        if system.endswith("_live"):
+            raise HTTPException(403, "not available to subscriber accounts")
+        return tenant_wallets.get(tenant.tenant_id(), base)                     # a subscriber acts on their own legs only
     return live_swing.LIVE[base] if system.endswith("_live") else live_swing.paper(base)
 
 
 def _refuse_experiment(system: str) -> None:
     from markets import engine as markets
+    from tenancy import context as tenant
+    if not tenant.is_owner():
+        return                                                                  # a subscriber's mirror legs are theirs to close
     if system in experiment_books.LABELS or system in PAIR_BOOKS or system in markets.WALLETS:
         raise HTTPException(409, "experiment books are managed by the experiment — acting by hand would spoil the test")
 
@@ -44,6 +52,9 @@ def _refuse_experiment(system: str) -> None:
 def _book_wallet(system: str):
     """The paper wallet of an experiment or markets book (None for the swing systems, pair books and scalpers)."""
     from markets import engine as markets
+    from tenancy import context as tenant, wallets as tenant_wallets
+    if not tenant.is_owner():
+        return tenant_wallets.get(tenant.tenant_id(), system) if system in tenant_wallets.existing(tenant.tenant_id()) else None
     return experiment_books.WALLETS.get(system) or markets.WALLETS.get(system)
 
 

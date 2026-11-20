@@ -17,6 +17,7 @@ import type { CompositeStatus } from '../types/composite'
 import type { ControlReport, EntryCellsReport, IndexShadowReport } from '../types/control'
 import type { Edition, EditionSummary, Mood, NewsFilters, NewsItem, NewsResearch, NewsScores, NewsStatus, StoryBrief } from '../types/news'
 import type { Candle as TradeCandle, ClosedTrade, OrderRequest, Position, SymbolInfo, Ticker, TradeAccount, Venue } from '../types/trade'
+import type { AdminTenant, AuthConfig, BillingStatus, ExchangeVenue, Pricing, RunnerStatus, Session, Settings, SettingsPatch, TierId } from '../types/auth'
 
 const BASE = '/api'
 
@@ -30,12 +31,39 @@ function errorMessage(body: any, res: Response): string {
   return `${res.status} ${res.statusText}`
 }
 
+/**
+ * Every failed request throws one of these: `status` lets callers tell 401 (no session) and
+ * 402 (the tier lacks `feature`; `upgrade` names the tier that has it) from other failures.
+ */
+export interface ApiError extends Error {
+  status: number
+  feature?: string
+  upgrade?: 'pro' | 'elite'
+}
+export const isApiError = (e: unknown): e is ApiError => e instanceof Error && typeof (e as ApiError).status === 'number'
+
+let unauthorized: (() => void) | null = null
+/** Called whenever a non-auth request comes back 401 — the AuthProvider re-checks the session and shows sign-in. */
+export function onUnauthorized(cb: (() => void) | null) {
+  unauthorized = cb
+}
+
+async function fail(res: Response, path: string): Promise<never> {
+  const body = await res.json().catch(() => ({ detail: res.statusText }))
+  const msg = errorMessage(body, res)
+  const err = new Error(res.status === 401 || res.status === 402 ? `${res.status}: ${msg}` : msg) as ApiError
+  err.status = res.status
+  if (res.status === 402 && body && typeof body === 'object') {
+    if (typeof body.feature === 'string') err.feature = body.feature
+    if (body.upgrade === 'pro' || body.upgrade === 'elite') err.upgrade = body.upgrade
+  }
+  if (res.status === 401 && !path.startsWith('/auth/')) unauthorized?.()
+  throw err
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`)
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(errorMessage(detail, res))
-  }
+  if (!res.ok) await fail(res, path)
   return res.json()
 }
 
@@ -45,16 +73,13 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   })
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(errorMessage(detail, res))
-  }
+  if (!res.ok) await fail(res, path)
   return res.json()
 }
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(errorMessage(await res.json().catch(() => null), res))
+  if (!res.ok) await fail(res, path)
   return res.json()
 }
 
@@ -246,6 +271,38 @@ export const api = {
     edition: (id?: number | null) => get<Edition>(`/news/brief${id ? `?id=${id}` : ''}`),
     editions: () => get<{ editions: EditionSummary[]; calls_today: number; daily_calls: number; every_s: number }>('/news/briefs'),
     newEdition: () => post<Edition>('/news/brief'),
+  },
+  // Multi-tenant: sessions, tiers, billing, per-tenant settings, admin (docs/saas.md).
+  auth: {
+    config: () => get<AuthConfig>('/auth/config'),
+    google: (credential: string) => post<Session>('/auth/google', { credential }),
+    devLogin: (email: string, name?: string) => post<Session>('/auth/dev-login', name ? { email, name } : { email }),
+    logout: () => post<{ ok: boolean }>('/auth/logout'),
+    me: () => get<Session>('/auth/me'),
+  },
+  pricing: {
+    get: () => get<Pricing>('/pricing'),
+  },
+  billing: {
+    checkout: (tier: 'pro' | 'elite') => post<{ url: string }>('/billing/checkout', { tier }),
+    portal: () => post<{ url: string }>('/billing/portal'),
+    status: () => get<BillingStatus>('/billing/status'),
+  },
+  me: {
+    settings: {
+      get: () => get<Settings>('/me/settings'),
+      set: (patch: SettingsPatch) => post<Settings>('/me/settings', patch),
+    },
+    exchangeKeys: {
+      set: (venue: ExchangeVenue, api_key: string, api_secret: string) =>
+        post<{ ok: boolean }>('/me/exchange-keys', { venue, api_key, api_secret }),
+      delete: (venue: ExchangeVenue) => del<{ ok: boolean }>(`/me/exchange-keys/${venue}`),
+    },
+  },
+  admin: {
+    tenants: () => get<{ tenants: AdminTenant[] }>('/admin/tenants'),
+    setTier: (id: string, tier: TierId) => post<AdminTenant>(`/admin/tenants/${encodeURIComponent(id)}/tier`, { tier }),
+    runner: () => get<RunnerStatus>('/admin/runner'),
   },
   notify: {
     signal: (oracle: OracleResult, signal: SignalPackage) => {

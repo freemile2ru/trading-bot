@@ -44,3 +44,6 @@ infra/terraform/*.tfstate.*
 infra/terraform/tfplan
 infra/terraform/plan.txt
 infra/terraform/*.tfvars
+# accounts, tenants and subscriptions (tenancy/) and subscribers' wallets
+backend/data/accounts.db*
+backend/data/tenants/

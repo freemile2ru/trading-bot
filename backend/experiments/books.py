@@ -49,9 +49,10 @@ PAIRS = {"auto_rules": "auto", "signals_rules": "signals_claude", "signals_claud
          "copy_trading": None, "copy_stocks": None, "copy_futures": None, "multi_factor": None, "auction": None, "burst_up": None, "burst_dip": None, "burst_down": None, "burst_rip": None, "prop": None, "reversal_index": None, "composite": None,
          **{f"copy_{m}_{v}": None for m in ("crypto", "stocks", "futures") for v in ("wide", "fast", "late")}}
 
-WALLETS: dict[str, PaperWallet] = {
+from tenancy.proxies import TenantWallets as _TenantWallets
+WALLETS: dict[str, PaperWallet] = _TenantWallets({                # the owner's wallets, or the current tenant's (tenancy/engines.py)
     name: PaperWallet(SWING_DB, label=name, history_cap=3000, min_snapshot_seconds=120) for name in LABELS
-}
+})
 
 
 def started_at(name: str) -> float:

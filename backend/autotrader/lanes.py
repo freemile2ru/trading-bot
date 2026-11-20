@@ -223,8 +223,9 @@ def reversal_exit_audit(closed: list[dict], shadow_results: list[dict] | None = 
 
 TIGHT_LOCK_N = 40
 TIGHT_LOCK_MIN_R = 0.03
-LOCK_SHADOW_POLICIES = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")
+LOCK_SHADOW_POLICIES = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_trail_1", "manual_lock_tight")
 LOCK_SHADOW_LABEL = {"manual_lock_65": "the old 65%-of-peak lock", "manual_lock_trail_half": "a ½-ATR trail", "manual_lock_tight": "arm 0.5% / keep 80%",
+                     "manual_lock_trail_1": "the 1-ATR trail without the half-of-peak floor (2026-11-20)",
                      "manual_lock_bits": "bits: half out at +2%, half back at the entry", "manual_lock_trail": "the 1-ATR trail",
                      "manual_lock_floor": "the +2% breakeven floor"}
 

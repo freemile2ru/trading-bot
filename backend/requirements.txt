@@ -15,6 +15,10 @@ redis==5.2.1
 # Production database (storage/engine.py: PostgreSQL when DATABASE_URL is set; SQLite otherwise)
 psycopg[binary]==3.2.3
 
+# Accounts (tenancy/): the session cookie and the exchange keys at rest
+PyJWT==2.12.1
+cryptography==48.0.0
+
 # AI / Claude
 anthropic==0.40.0
 

@@ -243,10 +243,11 @@ def enabled(name: str) -> bool:
         return False
     if not promoted(name):
         return False
-    if name == "auto":
-        from autotrader.engine import PAUSED_KEY
+    from tenancy import context as _tenant
+    if name == "auto" and _tenant.is_owner():
+        from autotrader.engine import PAUSED_KEY                   # the owner's autotrader has a pause of its own (an import-time key)
         return not kv.get_sync(PAUSED_KEY)
-    return kv.get_sync(_key(name)) is None
+    return kv.get_sync(_key(name)) is None                        # a subscriber's "auto" is their mirror book: a plain switch under their prefix
 
 
 def unavailable(name: str) -> str | None:
@@ -274,7 +275,8 @@ async def set_enabled(name: str, on: bool) -> None:
     why = unavailable(name)
     if why:
         raise PermissionError(why)
-    if name == "auto":
+    from tenancy import context as _tenant
+    if name == "auto" and _tenant.is_owner():
         from autotrader import engine
         await engine.set_paused(not on)
         return

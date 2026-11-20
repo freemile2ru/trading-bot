@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
 import HeaderClock from './components/ui/Clock'
-import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users, Crosshair, Trophy, FlaskConical } from 'lucide-react'
+import { Zap, BarChart2, Briefcase, RefreshCw, AlertCircle, Activity, Clock, Radar, History, List, ShieldAlert, CandlestickChart, Microscope, Archive, Newspaper, Layers, Globe2, CalendarClock, Users, Crosshair, Trophy, FlaskConical, CreditCard, ShieldCheck, Lock } from 'lucide-react'
+import { useAuth } from './auth/AuthProvider'
+import { SignIn } from './auth/SignIn'
+import { AccountMenu } from './components/account/AccountMenu'
 import { AllSignals } from './components/AllSignals'
 import { OracleSignal } from './components/OracleSignal'
 import { SignalScores } from './components/SignalScores'
@@ -33,14 +36,45 @@ const BooksPage = lazy(() => import('./components/BooksPage').then(m => ({ defau
 const CalendarPage = lazy(() => import('./components/CalendarPage').then(m => ({ default: m.CalendarPage })))
 const NewsPage = lazy(() => import('./components/NewsPage').then(m => ({ default: m.NewsPage })))
 const Portfolio = lazy(() => import('./components/Portfolio').then(m => ({ default: m.Portfolio })))
+const PricingPage = lazy(() => import('./components/PricingPage').then(m => ({ default: m.PricingPage })))
+const AdminPage = lazy(() => import('./components/AdminPage').then(m => ({ default: m.AdminPage })))
+const SettingsPanel = lazy(() => import('./components/account/SettingsPanel').then(m => ({ default: m.SettingsPanel })))
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
-type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'prop' | 'one' | 'control' | 'lab' | 'retired' | 'live' | 'books'
+type Tab = 'all' | 'signal' | 'news' | 'calendar' | 'trade' | 'portfolio' | 'trades' | 'history' | 'markets' | 'copy' | 'mentor' | 'prop' | 'one' | 'control' | 'lab' | 'retired' | 'live' | 'books' | 'pricing' | 'admin'
 type Focus = { system: SystemKey; id: string }
 
+/**
+ * Tab → feature key (docs/saas.md "Tab → feature"). A tab whose feature the tier lacks is shown locked and opens the
+ * plans instead. `null` = everyone. all/signal are special: the free tier has `signals.delayed`, so they open but
+ * carry a delay banner; they lock only when the tier has neither signals key.
+ */
+const TAB_FEATURE: Record<Tab, string | null> = {
+  all: 'signals.live', signal: 'signals.live', news: 'news', calendar: 'calendar',
+  trade: 'trades', trades: 'trades', history: 'trades', portfolio: 'trades', books: 'trades',
+  markets: 'markets', copy: 'copy.view', mentor: 'mentor', prop: 'prop', one: 'one', control: 'control',
+  lab: 'lab', retired: 'retired', live: 'mirror.exchange', pricing: null, admin: null,
+}
+const SIGNAL_TABS: Tab[] = ['all', 'signal']
+
+/** The shell behind the gate: a session (or an ungated local instance) is guaranteed here. */
 export default function App() {
+  const auth = useAuth()
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen bg-oracle-bg text-gray-100 flex items-center justify-center">
+        <div className="flex items-center gap-2 text-sm text-gray-500"><Activity className="w-4 h-4 animate-pulse text-blue-400" /> Loading…</div>
+      </div>
+    )
+  }
+  if (auth.config?.auth_required && !auth.session) return <SignIn />
+  return <Shell />
+}
+
+function Shell() {
+  const { session, has, isAdmin } = useAuth()
   // The tab lives in the URL hash (#trades, #history…) so views can be bookmarked and shared.
-  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'mentor', 'prop', 'one', 'control', 'lab', 'retired', 'live', 'books', 'portfolio']
+  const TABS: Tab[] = ['all', 'signal', 'news', 'calendar', 'trade', 'trades', 'history', 'markets', 'copy', 'mentor', 'prop', 'one', 'control', 'lab', 'retired', 'live', 'books', 'portfolio', 'pricing', 'admin']
   const [tab, setTabState] = useState<Tab>(() => {
     const h = window.location.hash.slice(1).split('/')[0] as Tab
     return TABS.includes(h) ? h : 'all'
@@ -49,6 +83,24 @@ export default function App() {
     setTabState(t)
     if (window.location.hash.slice(1).split('/')[0] !== t) window.history.replaceState(null, '', `#${t}`)
   }, [])
+  // Tier gating: is a tab locked for this session, and which feature the plans page should light up (#pricing/<feature>).
+  const locked = useCallback((t: Tab): string | null => {
+    const f = TAB_FEATURE[t]
+    if (!f) return null
+    if (SIGNAL_TABS.includes(t)) return has('signals.live') || has('signals.delayed') ? null : 'signals.delayed'
+    return has(f) ? null : f
+  }, [has])
+  const [wantFeature, setWantFeature] = useState<string | null>(() => {
+    const [h, f] = window.location.hash.slice(1).split('/')
+    return h === 'pricing' && f ? f : null
+  })
+  const openPricing = useCallback((feature?: string | null) => {
+    setWantFeature(feature ?? null)
+    setTabState('pricing')
+    window.history.replaceState(null, '', feature ? `#pricing/${feature}` : '#pricing')
+  }, [])
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const delayedSignals = SIGNAL_TABS.includes(tab) && !!session && has('signals.delayed') && !has('signals.live')
   // A trade followed on the Trade tab's chart lives in the hash too: #trade/<system>/<id> (opened from the Trades tab).
   const focusFromHash = (): Focus | null => {
     const [h, sys, id] = window.location.hash.slice(1).split('/')
@@ -67,9 +119,11 @@ export default function App() {
   // In-page links (<a href="#live">) switch tabs too.
   useEffect(() => {
     const onHash = () => {
-      const h = window.location.hash.slice(1).split('/')[0] as Tab
+      const parts = window.location.hash.slice(1).split('/')
+      const h = parts[0] as Tab
       if (TABS.includes(h)) setTabState(h)
       if (h === 'trade') setTradeFocus(focusFromHash())
+      if (h === 'pricing') setWantFeature(parts[1] || null)
     }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
@@ -214,6 +268,9 @@ export default function App() {
             {oracle?.cached && !loading && (
               <span className="text-xs bg-gray-800 text-gray-500 px-2 py-0.5 rounded">cached</span>
             )}
+
+            {/* Account: who is signed in, their plan; Plans & billing, Settings, Sign out */}
+            <AccountMenu onOpenPricing={() => openPricing()} onOpenSettings={() => setSettingsOpen(true)} />
           </div>
         </div>
       </header>
@@ -311,23 +368,49 @@ export default function App() {
             ['live', ShieldAlert, 'Live'],
             ['books', Layers, 'Books'],
             ['portfolio', Briefcase, 'Portfolio'],
-          ] as const).map(([t, Icon, label]) => (
-            <button
-              key={t}
-              onClick={() => {
-                if (t === 'signal') setSignalTabOpened(true)
-                setTab(t)
-              }}
-              className={clsx(
-                'flex items-center gap-2 pb-3 px-1 mr-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap shrink-0',
-                tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300',
-              )}
-            >
-              <Icon className="w-4 h-4" />
-              {label}
-            </button>
-          ))}
+            ['pricing', CreditCard, 'Plans'],
+            ['admin', ShieldCheck, 'Admin'],
+          ] as const).filter(([t]) => t !== 'admin' || isAdmin).map(([t, Icon, label]) => {
+            const lock = locked(t)
+            return (
+              <button
+                key={t}
+                onClick={() => {
+                  if (lock) { openPricing(lock); return }
+                  if (t === 'signal') setSignalTabOpened(true)
+                  setTab(t)
+                }}
+                title={lock ? 'Not in your plan — see the plans' : undefined}
+                aria-disabled={lock ? true : undefined}
+                className={clsx(
+                  'flex items-center gap-2 pb-3 px-1 mr-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap shrink-0',
+                  tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300',
+                  lock && 'text-gray-600 hover:text-gray-500',
+                )}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+                {lock && <Lock className="w-3 h-3 text-gray-600" aria-label="locked" />}
+              </button>
+            )
+          })}
         </div>
+
+        {/* Free plan: the signals are there, 15 minutes late */}
+        {delayedSignals && (
+          <div className="flex flex-wrap items-center gap-2 bg-amber-900/30 border border-amber-800 rounded-lg px-4 py-2 text-amber-300 text-xs">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            <span>Signals are delayed {session?.limits.signal_delay_min || 15} minutes on the Free plan — <button onClick={() => openPricing('signals.live')} className="underline font-semibold hover:text-amber-200">upgrade for live signals</button>.</span>
+          </div>
+        )}
+
+        {/* A locked tab reached by hash (bookmark, sign-out and back) goes to the plans */}
+        {locked(tab) && tab !== 'pricing' && (
+          <div className="card text-sm text-gray-400 flex flex-wrap items-center gap-2">
+            <Lock className="w-4 h-4 text-gray-500" /> This tab is not part of your plan.
+            <button onClick={() => openPricing(locked(tab))} className="text-blue-300 hover:underline">See the plans</button>
+          </div>
+        )}
 
         {/* Error */}
         {tab === 'signal' && error && (
@@ -338,7 +421,7 @@ export default function App() {
         )}
 
         {/* All Signals tab */}
-        {tab === 'all' && (
+        {tab === 'all' && !locked('all') && (
           <AllSignals
             onSelectSymbol={openSignalTab}
             onTrade={handleSignalTrade}
@@ -363,7 +446,7 @@ export default function App() {
         )}
 
         {/* Signal tab */}
-        {tab === 'signal' && oracle && (
+        {tab === 'signal' && oracle && !locked('signal') && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <OracleSignal oracle={oracle.oracle} lastUpdated={lastUpdated} />
@@ -381,6 +464,11 @@ export default function App() {
         )}
 
         <Suspense fallback={<div className="card text-sm text-gray-500">Loading…</div>}>
+          {/* Plans (everyone) and the admin console (role admin) */}
+          {tab === 'pricing' && <PricingPage highlight={wantFeature} />}
+          {tab === 'admin' && (isAdmin ? <AdminPage /> : <div className="card text-sm text-gray-500">The admin console is for administrators.</div>)}
+
+          {!locked(tab) && <>
           {/* Binance-style terminal: your own orders, paper or live (main wallet) */}
           {tab === 'news' && <NewsPage />}
           {tab === 'calendar' && <CalendarPage />}
@@ -410,6 +498,9 @@ export default function App() {
 
           {/* Paper/live switch per system, Binance account, kill switch, audit */}
           {tab === 'live' && <LivePage onChange={refreshLive} />}
+          </>}
+
+          {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onOpenPricing={f => { setSettingsOpen(false); openPricing(f) }} />}
         </Suspense>
       </div>
     </div>

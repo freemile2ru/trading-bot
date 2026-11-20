@@ -139,21 +139,31 @@ def _scalper_con():
 def all_rows() -> tuple[list[dict], dict]:
     """Every trade from every system, plus each system's starting balance."""
     rows, initial = [], {}
-    for system, wallet in history.WALLETS.items():
+    from tenancy import context as _tenant, wallets as _tenant_wallets
+    for system, wallet in _tenant_wallets.view(history.WALLETS).items():
         data = wallet.all_trades()
         initial[system] = data["initial_balance"]
         rows += [_swing_row({**t, "status": "closed"}, system) for t in data["closed"]]
         rows += [_swing_row({**t, "status": "open"}, system) for t in data["open"]]
 
-    # Live swing ledgers — listed only once they've been used.
+    # Live swing ledgers — listed only once they've been used (the owner's; a subscriber has none).
     from live import swing as live_swing
-    for system, wallet in live_swing.LIVE.items():
+    for system, wallet in (live_swing.LIVE if _tenant.is_owner() else {}).items():
         data = wallet.all_trades()
         if data["closed"] or data["open"]:
             initial[f"{system}_live"] = data["initial_balance"]
             rows += [_swing_row({**t, "status": "closed"}, f"{system}_live") for t in data["closed"]]
             rows += [_swing_row({**t, "status": "open"}, f"{system}_live") for t in data["open"]]
 
+    if not _tenant.is_owner():
+        # A subscriber's record is their own wallets, nothing else (the owner's scalper, pair and markets books are not theirs).
+        for name, wallet in _tenant_wallets.view(_experiments.WALLETS).items():
+            data = wallet.all_trades()
+            if data["closed"] or data["open"]:
+                initial[name] = data["initial_balance"]
+                rows += [_swing_row({**t, "status": "closed"}, name) for t in data["closed"]]
+                rows += [_swing_row({**t, "status": "open"}, name) for t in data["open"]]
+        return rows, initial
     initial["scalper"] = SC.INITIAL_BALANCE
     try:
         con = _scalper_con()

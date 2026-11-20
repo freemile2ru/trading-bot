@@ -47,6 +47,16 @@ Policies:
                    wins were keeping 46% of peaks that were themselves small), and a trade may carry its own arm share
                    and keep (lock_arm_pct / lock_keep on the trade: the reversal legs arm at 1% of notional, where the
                    global 3% sat above the lane's median peak of 2–3.6%).
+                   2026-11-20 (the user, seeing the open gains unlocked: "build the best one"): a floor under the ATR
+                   trail — once a leg is LOCK_FLOOR_R (0.5R) up, the stop never sits below LOCK_FLOOR_KEEP (half) of the
+                   peak open P&L; the trail still rules where it is the tighter of the two, so the floor only ever
+                   tightens. Chosen on a 5m-bar replay of every closed ATR-trail leg: on prod's 34 it bound on none (the
+                   trail's record stands as it is), locally it turned the two SENT legs that peaked +0.6R and left as
+                   tightened-stop losses (−$76) into +$212. The tighter alternatives lose: keeping 65% past 0.5R −$41
+                   on prod and −$423 locally (INJ), a 0.25R arm −0.032R a leg (t −1.7); and the lock shadows on prod's
+                   26–33 legs all trail the live trail (65%-of-peak $276 vs $639, ½-ATR trail −$743 vs $453, the tight
+                   lock $284 vs $722). The trail without the floor runs beside every sized reversal leg as the
+                   manual_lock_trail_1 shadow, judged in lanes.reversal_exit_audit on the lock shadows' terms.
   protect_quick, protect_cut6, protect_trim — shadow-only candidates (see each one's note).
 
 The replay covers one week of mostly-long signals in a rising market; the shadow book
@@ -93,6 +103,8 @@ class Policy:
     lock_arm_pct: float | None = None     # …or this share of the notional, whichever of the two is smaller (2026-11-05: 1R of a 10% stop never came)
     lock_trail_atr: float | None = None   # 2026-11-14: once armed, trail the stop this many daily ATRs from the best price instead of keeping a
                                           # share of the peak P&L (needs atr_pct on the trade; a trade's own lock_trail_atr overrides)
+    lock_floor_r: float | None = None     # 2026-11-20: the floor under the ATR trail — once this many R up, the stop never sits below…
+    lock_floor_keep: float = 0.5          # …this share of the peak open P&L (the trail rules where it is tighter; the floor only tightens)
     bits_out_pct: float | None = None     # 2026-11-16 "bits": sell bits_frac of the opening size once price is this % of the entry in profit…
     bits_frac: float = 0.5
     bits_readd: bool = False              # …and buy that bit back when price returns to within bits_readd_band_pct of the entry while the
@@ -120,7 +132,8 @@ POLICIES: dict[str, Policy] = {
     "manual": Policy("manual", breakeven=None, stale=False),
     "manual_lock": Policy("manual_lock", breakeven=None, stale=False,
                           lock_arm_usd=float(os.getenv("LOCK_ARM_USD", "10")), lock_keep=float(os.getenv("LOCK_KEEP", "0.65")),
-                          lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100),
+                          lock_arm_pct=float(os.getenv("LOCK_ARM_PCT", "3")) / 100,
+                          lock_floor_r=float(os.getenv("LOCK_FLOOR_R", "0.5")) or None, lock_floor_keep=float(os.getenv("LOCK_FLOOR_KEEP", "0.5"))),
     # Shadow-only candidate (2026-11-14, the user: "build as measurement"): the reversal legs' wins are +0.6% of notional
     # because the live lock arms at 1% and keeps 65% while the legs' peaks run 0.8–1.7% (median 1.15% on prod's 42 sized
     # legs). Replaying arm/keep on those recorded peaks: arm 0.5% / keep 80% +$347 vs +$87 actual — in-sample on 42 legs,
@@ -140,6 +153,9 @@ POLICIES: dict[str, Policy] = {
                              lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01),
     "manual_lock_trail_half": Policy("manual_lock_trail_half", breakeven=None, stale=False, max_hold_h=72,
                                      lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01, lock_trail_atr=0.5),
+    # 2026-11-20: the live trail without its floor, so the floor is judged against the rule it replaced.
+    "manual_lock_trail_1": Policy("manual_lock_trail_1", breakeven=None, stale=False, max_hold_h=72,
+                                  lock_arm_usd=10.0, lock_keep=0.65, lock_arm_pct=0.01, lock_trail_atr=1.0),
     # 2026-11-16 "bits" (the user, watching a $24k NEAR copy fall from +$606 to +$200 under a lock that arms at 3%: "why
     # couldn't we sell in bits and buy back in bits?"): the live copy lock (arm at the smaller of 1R and 3% of notional,
     # keep 65%) plus: sell half the opening size at +2% of the entry, buy it back at the entry (±0.3%) while the leader
@@ -184,7 +200,7 @@ POLICIES: dict[str, Policy] = {
                           max_hold_h=24, run_if_r=0.5, run_extend_h=24, run_cap_h=168),
 }
 DEFAULT_POLICY = os.getenv("EXIT_POLICY", "protect")
-LOCK_SHADOWS = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_tight")      # the lock variants shadowed beside every sized reversal leg
+LOCK_SHADOWS = ("manual_lock_65", "manual_lock_trail_half", "manual_lock_trail_1", "manual_lock_tight")   # the lock variants shadowed beside every sized reversal leg
 COPY_SHADOWS = ("manual_lock_bits",)                                                   # shadowed beside every copy (a trade with a leader_id)
 FLOOR_SHADOW = "manual_lock_floor"                                                     # …and beside every copy that does not carry the floor itself
 WEEKLY_SHADOWS = ("manual_lock_trail",)                                                # shadowed beside every weekly leg (the book and the mirror)
@@ -445,11 +461,20 @@ def apply_bar(
         if peak_pnl >= lock_arm_usd(t, p):
             keep_frac = lock_keep(t, p)
             trail_atr = t.get("lock_trail_atr", p.lock_trail_atr)
+            floor_bound = False
             if trail_atr and t.get("atr_pct"):
                 # The ATR trail (2026-11-14): on 2026-11-14 prod's ten reversal shorts were all right and the 65%-of-peak lock
                 # banked +$144 of a +$1,061 move. The stop sits trail_atr daily ATRs from the best price and ratchets with it.
                 keep = t["peak_price"] - s * trail_atr * t["atr_pct"] / 100 * t["peak_price"]
                 keep_frac = max(0.0, (keep - t["entry_price"]) * s * t["quantity"] / peak_pnl) if peak_pnl else 0.0
+                # The floor under the trail (2026-11-20): a leg lock_floor_r up never gives back more than 1 − lock_floor_keep of
+                # its peak — a 1-ATR trail on a 0.6R move leaves the stop on the losing side (two SENT legs, +0.6R → −$76).
+                floor_r = t.get("lock_floor_r", p.lock_floor_r)
+                if floor_r and (t.get("risk_usd") or 0) > 0 and peak_pnl >= floor_r * t["risk_usd"]:
+                    floor_keep = t.get("lock_floor_keep", p.lock_floor_keep)
+                    floor_px = t["entry_price"] + s * (floor_keep * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
+                    if (floor_px - keep) * s > 0:
+                        keep, keep_frac, floor_bound = floor_px, floor_keep, True
             else:
                 keep = t["entry_price"] + s * (keep_frac * peak_pnl + t.get("fees_usd", 0.0) + t.get("funding_usd", 0.0)) / t["quantity"]
             # Never a stop the price has already crossed: on a trade whose peak predates the policy (HYPE, 2026-11-02,
@@ -460,6 +485,7 @@ def apply_bar(
                 t["trailing"] = True
                 t["stop_moved"] = True
                 t["locked_usd"] = round(keep_frac * peak_pnl, 2)
+                t["lock_floor_bound"] = floor_bound
 
     # 6. Time: cut trades going nowhere; cap how long anything is held.
     if t.get("stale_after_s") and bar_end - t.get("opened_ts", bar_end) >= t["stale_after_s"] \

@@ -164,6 +164,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+# Accounts (2026-11-20, docs/saas.md): who is asking, and what their plan lets them reach. Registered before CORS so CORS
+# stays outermost and its headers reach the 401/402 answers too.
+from tenancy.middleware import session_middleware
+app.middleware("http")(session_middleware)
 
 # The app can place real Binance orders and has no login, so only this machine's own UI may
 # change anything. CORS alone doesn't stop another website from *sending* a simple POST (a
@@ -199,6 +203,8 @@ app.include_router(books_router, prefix="/api")
 app.include_router(markets_router, prefix="/api")
 app.include_router(guards_router, prefix="/api")
 app.include_router(ops_router, prefix="/api")
+from api.tenancy_routes import router as tenancy_router
+app.include_router(tenancy_router, prefix="/api")
 
 
 @app.get("/")

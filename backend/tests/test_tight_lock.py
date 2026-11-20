@@ -17,6 +17,9 @@ def test_a_sized_reversal_leg_gets_the_tight_lock_shadow_and_other_manual_trades
     monkeypatch.setattr(exits, "LOCK_MODE", "live")
     sh = exits.make_shadows(_leg(atr_pct=8.0), "auto")
     assert [s["exit_policy"] for s in sh] == list(exits.LOCK_SHADOWS) and sh[-1]["id"] == "leg1:manual_lock_tight"
+    assert "manual_lock_trail_1" in exits.LOCK_SHADOWS and "manual_lock_trail_1" in lanes.LOCK_SHADOW_POLICIES    # the live trail without its floor (2026-11-20)
+    pure = exits.POLICIES["manual_lock_trail_1"]
+    assert pure.lock_trail_atr == 1.0 and pure.lock_arm_pct == 0.01 and pure.lock_floor_r is None and pure.max_hold_h == 72
     assert all(s["expires_at"] == pytest.approx(1_794_700_000.0 + 72 * 3600) for s in sh)   # the lane's hard cap, not the 4h window
     assert all(s["atr_pct"] == 8.0 for s in sh)                                              # the trail shadows need the coin's ATR
     assert exits.make_shadows(_leg(sizing=None), "auto") == []                              # an unsized manual trade: nothing
@@ -48,7 +51,8 @@ def test_the_verdict_pairs_each_leg_with_its_shadow_and_waits_for_forty():
 
 def test_the_atr_trail_ratchets_the_stop_one_atr_from_the_best_price_once_armed():
     t = exits.stamp({"direction": "short", "entry_price": 100.0, "stop_loss": 110.0, "take_profit_1": 50.0, "take_profit_2": 40.0, "quantity": 10.0,
-                     "notional_usd": 1000.0, "risk_usd": 100.0, "timeframe": "4h", "fees_usd": 0.0, "lock_arm_pct": 0.01, "lock_trail_atr": 1.0, "atr_pct": 8.0},
+                     "notional_usd": 1000.0, "risk_usd": 100.0, "timeframe": "4h", "fees_usd": 0.0, "lock_arm_pct": 0.01, "lock_trail_atr": 1.0, "atr_pct": 8.0,
+                     "lock_floor_r": None},                                                                     # the trail's mechanics alone (the floor since 2026-11-20 has its own test)
                     "manual_lock", 1_794_700_000.0)
     T0 = 1_794_700_000.0
     assert exits.apply_bar(t, 100, 100.2, 99.5, 99.6, T0 + 300) is None and t["stop_loss"] == 110.0      # +0.5%: not armed (arm is 1% = $10)
@@ -59,3 +63,38 @@ def test_the_atr_trail_ratchets_the_stop_one_atr_from_the_best_price_once_armed(
     old = exits.stamp({**{k: v for k, v in t.items() if k not in ("lock_trail_atr",)}, "stop_loss": 110.0, "trailing": False, "stop_moved": False, "lock_keep": 0.65}, "manual_lock", T0)
     exits.apply_bar(old, 99.6, 99.7, 98.0, 98.5, T0 + 600)
     assert old["stop_loss"] == pytest.approx(100.0 - 0.65 * 2.0)                                           # the 65% keep: stop at 98.7 on a $20 peak
+
+
+def _trail_leg(T0: float) -> dict:
+    return exits.stamp({"direction": "short", "entry_price": 100.0, "stop_loss": 110.0, "take_profit_1": 50.0, "take_profit_2": 40.0, "quantity": 10.0,
+                        "notional_usd": 1000.0, "risk_usd": 100.0, "timeframe": "4h", "fees_usd": 0.0, "lock_arm_pct": 0.01, "lock_trail_atr": 1.0, "atr_pct": 8.0},
+                       "manual_lock", T0)
+
+
+def test_the_floor_under_the_atr_trail_keeps_half_the_peak_once_half_an_r_up():
+    # 2026-11-20: a 10% stop ($100 of risk), an 8% daily ATR. The trail alone leaves a +0.6R leg with its stop on the losing side.
+    p = exits.POLICIES["manual_lock"]
+    assert p.lock_floor_r == 0.5 and p.lock_floor_keep == 0.5
+    T0 = 1_794_700_000.0
+    t = _trail_leg(T0)
+    assert exits.apply_bar(t, 100, 100.2, 96.0, 96.5, T0 + 300) is None                              # low 96: +$40 = 0.4R — armed, the trail alone
+    assert t["stop_loss"] == pytest.approx(96.0 * 1.08) and t["locked_usd"] == 0.0 and t["lock_floor_bound"] is False   # 103.68: a loss if hit
+    assert exits.apply_bar(t, 96.5, 97.0, 94.0, 94.5, T0 + 600) is None                              # low 94: +$60 = 0.6R — the floor binds
+    assert t["stop_loss"] == pytest.approx(97.0) and t["locked_usd"] == pytest.approx(30.0) and t["lock_floor_bound"] is True
+    out = exits.apply_bar(t, 94.5, 98.0, 94.5, 97.9, T0 + 900)                                        # back up through 97: out with half the peak
+    assert out[0] == "trailing_stop" and out[1] == pytest.approx(97.0)
+    big = _trail_leg(T0)
+    assert exits.apply_bar(big, 100, 100.2, 80.0, 81.0, T0 + 300) is None                            # a 20% move: the trail (86.4, $136) is tighter than the floor (90, $100)
+    assert big["stop_loss"] == pytest.approx(80.0 * 1.08) and big["locked_usd"] == pytest.approx(136.0) and big["lock_floor_bound"] is False
+
+
+def test_the_floor_is_off_without_the_trail_and_when_disabled():
+    T0 = 1_794_700_000.0
+    copy = exits.stamp({"direction": "short", "entry_price": 100.0, "stop_loss": 110.0, "take_profit_1": 50.0, "take_profit_2": 40.0, "quantity": 10.0,
+                        "notional_usd": 1000.0, "risk_usd": 100.0, "timeframe": "4h", "fees_usd": 0.0, "lock_arm_pct": 0.01, "lock_keep": 0.65}, "manual_lock", T0)
+    assert exits.apply_bar(copy, 100, 100.2, 94.0, 94.5, T0 + 300) is None
+    assert copy["stop_loss"] == pytest.approx(100.0 - 0.65 * 6.0) and copy["lock_floor_bound"] is False   # the 65% keep already holds more than half
+    off = _trail_leg(T0)
+    off["lock_floor_r"] = None                                                                         # LOCK_FLOOR_R=0 reads as None: the plain trail
+    assert exits.apply_bar(off, 100, 100.2, 94.0, 94.5, T0 + 300) is None
+    assert off["stop_loss"] == pytest.approx(94.0 * 1.08) and off["locked_usd"] == 0.0 and off["lock_floor_bound"] is False

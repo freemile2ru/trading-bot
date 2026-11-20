@@ -81,8 +81,9 @@ MARKETS: dict[str, dict] = {
 KINDS = {"trend": "Trend (6-month)", "rules": "Scanner rules", "claude": "Claude-confirmed"}
 BOOK_NAMES = [f"{m}_{k}" for m in MARKETS for k in KINDS]
 LABELS = {f"{m}_{k}": f"{MARKETS[m]['label']} · {v}" for m in MARKETS for k, v in KINDS.items()}
-WALLETS: dict[str, PaperWallet] = {n: PaperWallet(SWING_DB, label=n, history_cap=3000, min_snapshot_seconds=120)
-                                   for n in BOOK_NAMES}
+from tenancy.proxies import TenantWallets as _TenantWallets
+WALLETS: dict[str, PaperWallet] = _TenantWallets({n: PaperWallet(SWING_DB, label=n, history_cap=3000, min_snapshot_seconds=120)
+                                                  for n in BOOK_NAMES})
 _state: dict = {"scans": {}, "last_sweep": {}, "last_trend": {}}
 
 

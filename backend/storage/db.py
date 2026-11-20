@@ -14,6 +14,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 STATE_DB = os.getenv("STATE_DB", os.path.join(DATA_DIR, "state.db"))
 SWING_DB = os.getenv("SWING_DB", os.path.join(DATA_DIR, "swing_trading.db"))
 SIGNALS_DB = os.getenv("SIGNALS_DB", os.path.join(DATA_DIR, "signals.db"))
+ACCOUNTS_DB = os.getenv("ACCOUNTS_DB", os.path.join(DATA_DIR, "accounts.db"))   # users, tenants, subscriptions (tenancy/accounts.py)
 
 
 def connect(path: str):

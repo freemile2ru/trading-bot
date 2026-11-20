@@ -221,9 +221,13 @@ class PaperWallet:
         min_snapshot_seconds: float = 0.0,
         label: str | None = None,
         legacy_json: str | None = None,
+        tenant: str | None = None,
     ):
         """`path` is the SQLite database; wallets sharing a file are separated by `label`.
-        A `.json` path (older callers, tests) maps to the `.db` beside it and is imported."""
+        A `.json` path (older callers, tests) maps to the `.db` beside it and is imported.
+        `tenant` marks a subscriber's own wallet (tenancy/wallets.py); the owner's wallets (None) publish their opens
+        and closes to the tenant runner, a tenant's never do."""
+        self.tenant = tenant
         if path.endswith(".json"):
             legacy_json = legacy_json or path
             path = path[:-5] + ".db"
@@ -246,6 +250,16 @@ class PaperWallet:
         self._rcon = connect(path)
         self._read_lock = threading.Lock()
         self._import_legacy_json(legacy_json)
+
+    def _publish(self, kind: str, state: dict, trade: dict) -> None:
+        """An owner wallet's open or close, for the tenant runner (tenancy/runner.py). Never raises into a trade."""
+        if self.tenant is not None:
+            return
+        try:
+            from tenancy import runner
+            runner.publish(kind, self.label, trade, self._equity(state))
+        except Exception as e:                                           # pragma: no cover — a runner fault must not touch the ledger
+            logger.warning("Tenant runner publish failed (%s)", e)
 
     # ── Storage ──────────────────────────────────────────────────────────────
 
@@ -430,7 +444,9 @@ class PaperWallet:
                                  f"free ${self._free_margin(state):.2f}"}
             state["open"].append(trade)
             state.setdefault("shadows", []).extend(exits.make_shadows(trade, self.label))
-            trade_alerts.opened(self.label, trade)
+            if self.tenant is None:
+                trade_alerts.opened(self.label, trade)                 # the owner's channels carry the owner's trades only
+            self._publish("opened", state, trade)
             self._snapshot_equity(state, force=True)
             self._save(state)
             return trade
@@ -584,8 +600,10 @@ class PaperWallet:
         trade = _close_trade(trade, price, reason)
         state["closed"].append(trade)
         state["balance"] = round(state["balance"] + trade["pnl_usd"], 2)
-        trade_alerts.closed(self.label, trade)
-        coin_lock.record_stop_out(self.label, trade)
+        if self.tenant is None:
+            trade_alerts.closed(self.label, trade)                     # a subscriber's leg is not the owner's news, nor their coin lock
+            coin_lock.record_stop_out(self.label, trade)
+        self._publish("closed", state, trade)
         # A shadow that only makes sense while the live trade is on (the copy "bits" variants: the leader's exit is the
         # trade's end) closes with it when the live close was not the price's doing (leader closed, manual, consolidated).
         if reason not in exits.PRICE_EXITS and exits.FOLLOW_LIVE_CLOSE:
@@ -743,7 +761,9 @@ class PaperWallet:
         )
         state["open"].append(trade)
         state.setdefault("shadows", []).extend(exits.make_shadows(trade, self.label))
-        trade_alerts.opened(self.label, trade)
+        if self.tenant is None:
+            trade_alerts.opened(self.label, trade)
+        self._publish("opened", state, trade)
         order["trade_id"] = trade["id"]
         order["fill_price"] = price
         self._retire_order(state, order, "filled", "filled")
@@ -924,7 +944,8 @@ class PaperWallet:
                 part = _close_trade(part, price, reason)
                 state["closed"].append(part)
                 state["balance"] = round(state["balance"] + part["pnl_usd"], 2)
-                trade_alerts.closed(self.label, part)
+                if self.tenant is None:
+                    trade_alerts.closed(self.label, part)
                 trade["quantity"] = round(trade["quantity"] * (1 - frac), 8)
                 for k in shared:
                     trade[k] = round((trade.get(k) or 0.0) * (1 - frac), 4)

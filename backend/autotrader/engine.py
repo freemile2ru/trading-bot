@@ -74,8 +74,10 @@ REUSE_SIGNAL_SECONDS = 3600  # a scanner signal this fresh counts as Claude's co
 MAX_DRIFT_OF_STOP = 0.5    # market entries: skip if price moved > half the stop distance
 
 AUTO_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "auto_trades.json")
-auto_wallet = PaperWallet(SWING_DB, label="auto", legacy_json=AUTO_FILE,
-                          history_cap=3000, min_snapshot_seconds=120)
+_owner_auto_wallet = PaperWallet(SWING_DB, label="auto", legacy_json=AUTO_FILE,
+                                 history_cap=3000, min_snapshot_seconds=120)
+from tenancy.proxies import WalletProxy as _WalletProxy
+auto_wallet = _WalletProxy(_owner_auto_wallet, "auto")      # the owner's wallet, or the current tenant's (tenancy/engines.py)
 FLIP_CONFIRM_SECONDS = int(os.getenv("AUTOTRADER_FLIP_CONFIRM", "900"))   # a flip must persist this long
 # Retired 2026-10-19: tightening a trade's stop when its coin left the watchlist made no difference —
 # research/tighten_lab.py replayed 120 such trades without it: +0.017R, 90% range −0.10…+0.13 — and on the

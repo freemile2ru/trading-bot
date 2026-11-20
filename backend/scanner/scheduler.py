@@ -305,6 +305,9 @@ async def run_watchlist_sweep() -> dict | None:
     await experiment_books.monitor_all()
     from markets import engine as markets
     await markets.monitor_all()
+    from tenancy import engines as tenant_engines
+    if tenant_engines.FLAG:
+        await tenant_engines.tick()                 # opted-in tenants' own engines, each in its own context (tenancy/engines.py)
     async with _locks["watchlist"]:
         return await _watchlist_sweep()
 
@@ -392,6 +395,12 @@ async def _run_autotrader(scans: list[dict], shared: dict) -> None:
         )
     except Exception as e:
         logger.warning("Autotrader failed: %s", e)
+    from tenancy import engines as tenant_engines
+    if tenant_engines.FLAG:
+        try:
+            await tenant_engines.on_scans(scans, set(await watchlist.symbols()), shared.get("global_market", {}))
+        except Exception as e:
+            logger.warning("Tenant autotraders failed: %s", e)
     # Scale open positions in/out on the same fresh data (each trade at most every few minutes).
     await position_manager.review(scans)
 
@@ -461,6 +470,10 @@ def start() -> None:
     from trading import target
     # Pair-book equity log + the $/day tracker and its circuit breaker.
     _tasks.append(asyncio.create_task(_loop("target", 900, target.tick, initial_delay=90), name="target"))
+    from tenancy import runner as tenant_runner
+    if tenant_runner.ENABLED:
+        # Subscribers' own books: the engines' entries mirrored into their wallets, their legs managed (tenancy/runner.py).
+        _tasks.append(asyncio.create_task(_loop("tenants", tenant_runner.TICK_S, tenant_runner.tick, initial_delay=75), name="tenant-runner"))
     from ops import watchdog
     if watchdog.ENABLED:
         # Says so (macOS notification, SMS, app banner) when prices or scans stop arriving.

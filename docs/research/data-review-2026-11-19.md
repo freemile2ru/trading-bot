@@ -59,3 +59,29 @@ risk at the stop; t = the mean's t-statistic against zero.
 
 Not done: raising the 10× leader-leverage cap for stock copies (the 15× and 20× leaders were prod's two big losers on
 11-06 — that decision stands until a record says otherwise).
+
+## Follow-up, 2026-11-20: the floor under the ATR trail (the user: "are these gains locked?" → "build the best one")
+
+Of the open winners on local that afternoon, six had a stop past entry (the ATR trail or the 65% lock) and the rest
+nothing: the index leg book by design (its exit is the coin legs' episode, pre-registered), the composite and reversal
+legs because a 1-daily-ATR trail (6–10%) on a 2–3% move leaves the stop above entry. Two candidates: a lock on the index
+legs (rejected — it would break the paired measurement) and a profit floor under the trail.
+
+Replay (scratchpad `replay_floor.py`, 5m bars, every closed ATR-trail leg: prod 34, local 17), the trail against the
+trail plus a floor that keeps a share of the peak once the leg is N R up:
+
+| variant | prod 34 legs | local 17 legs |
+|---|---|---|
+| the trail as live | +$792 | +$51 |
+| floor 0.5R / keep 50% | +$792 (bound on 0) | +$338 (+0.041R/leg, t 1.5, the two SENT legs) |
+| floor 1R / keep 50% | +$792 (0) | +$51 (0) |
+| floor 0.5R / keep 65% | +$751 (−0.007R) | −$21 (INJ 633 → 210) |
+| floor 0.25R / keep 50% | +$630 (−0.032R, t −1.7) | +$412 |
+
+The lock shadows beside prod's sized reversal legs say the same thing about tighter rules: the 65%-of-peak lock $276
+against the trail's $639 (32 legs), the ½-ATR trail −$743 against $453 (26, t −6.8), the tight lock $284 against
+$722 (33). So the trail stays; the floor at 0.5R / 50% is built (`exits.Policy.lock_floor_r/lock_floor_keep`, on
+`manual_lock`, env `LOCK_FLOOR_R` / `LOCK_FLOOR_KEEP`, 0 turns it off): it never bound on prod's record, it only
+tightens, and it catches the one give-back the trail allows — a leg past 0.5R whose trail stop still sits on the losing
+side. The trail without the floor runs as the `manual_lock_trail_1` shadow beside every sized reversal leg, judged in
+`lanes.reversal_exit_audit` with the other lock shadows. Trades stamp `lock_floor_bound` when the floor set the stop.
